@@ -6,13 +6,17 @@ const player = {
   y: 280,
   width: 40,
   height: 40,
-  speed: 240
+  speed: 240,
+  hp: 5,
+  maxHp: 5
 };
 
 const enemies = [];
+const bullets = [];
 const maxEnemies = 10;
 const spawnInterval = 2;
 let spawnTimer = 0;
+let isGameOver = false;
 
 const keys = {
   w: false,
@@ -21,8 +25,55 @@ const keys = {
   d: false
 };
 
+const mouse = {
+  x: 0,
+  y: 0
+};
+
+canvas.addEventListener("mousemove", (event) => {
+  const rect = canvas.getBoundingClientRect();
+
+  mouse.x = event.clientX - rect.left;
+  mouse.y = event.clientY - rect.top;
+});
+
+canvas.addEventListener("click", () => {
+  if (isGameOver) {
+    return;
+  }
+
+  const playerCenterX = player.x + player.width / 2;
+  const playerCenterY = player.y + player.height / 2;
+  let directionX = mouse.x - playerCenterX;
+  let directionY = mouse.y - playerCenterY;
+  const directionLength = Math.hypot(directionX, directionY);
+
+  if (directionLength > 0) {
+    directionX /= directionLength;
+    directionY /= directionLength;
+  }
+
+  const bullet = {
+    x: playerCenterX - 5,
+    y: playerCenterY - 5,
+    width: 10,
+    height: 10,
+    speed: 480,
+    damage: 1,
+    directionX,
+    directionY
+  };
+
+  bullets.push(bullet);
+});
+
 document.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
+
+  if (key === "r" && isGameOver) {
+    resetGame();
+    return;
+  }
 
   if (key in keys) {
     keys[key] = true;
@@ -37,7 +88,21 @@ document.addEventListener("keyup", (event) => {
   }
 });
 
+function resetGame() {
+  player.x = 380;
+  player.y = 280;
+  player.hp = player.maxHp;
+  enemies.length = 0;
+  bullets.length = 0;
+  spawnTimer = 0;
+  isGameOver = false;
+}
+
 function update(deltaTime) {
+  if (isGameOver) {
+    return;
+  }
+
   let directionX = 0;
   let directionY = 0;
 
@@ -74,6 +139,33 @@ function update(deltaTime) {
 
   updateEnemySpawning(deltaTime);
   updateEnemies(deltaTime);
+  handlePlayerEnemyCollisions();
+
+  if (isGameOver) {
+    return;
+  }
+
+  updateBullets(deltaTime);
+  handleBulletEnemyCollisions();
+}
+
+function updateBullets(deltaTime) {
+  for (let index = bullets.length - 1; index >= 0; index--) {
+    const bullet = bullets[index];
+
+    bullet.x += bullet.directionX * bullet.speed * deltaTime;
+    bullet.y += bullet.directionY * bullet.speed * deltaTime;
+
+    const isOutsideCanvas =
+      bullet.x + bullet.width < 0 ||
+      bullet.x > canvas.width ||
+      bullet.y + bullet.height < 0 ||
+      bullet.y > canvas.height;
+
+    if (isOutsideCanvas) {
+      bullets.splice(index, 1);
+    }
+  }
 }
 
 function updateEnemySpawning(deltaTime) {
@@ -94,7 +186,9 @@ function spawnEnemy() {
     y: 0,
     width: 40,
     height: 40,
-    speed: 120
+    speed: 120,
+    hp: 3,
+    maxHp: 3
   };
   const edge = Math.floor(Math.random() * 4);
 
@@ -120,6 +214,44 @@ function isOverlapping(rectangleA, rectangleB) {
     rectangleA.y < rectangleB.y + rectangleB.height &&
     rectangleA.y + rectangleA.height > rectangleB.y
   );
+}
+
+function handleBulletEnemyCollisions() {
+  for (let bulletIndex = bullets.length - 1; bulletIndex >= 0; bulletIndex--) {
+    const bullet = bullets[bulletIndex];
+
+    for (let enemyIndex = enemies.length - 1; enemyIndex >= 0; enemyIndex--) {
+      const enemy = enemies[enemyIndex];
+
+      if (isOverlapping(bullet, enemy)) {
+        enemy.hp -= bullet.damage;
+        bullets.splice(bulletIndex, 1);
+
+        if (enemy.hp <= 0) {
+          enemies.splice(enemyIndex, 1);
+        }
+
+        break;
+      }
+    }
+  }
+}
+
+function handlePlayerEnemyCollisions() {
+  for (let enemyIndex = enemies.length - 1; enemyIndex >= 0; enemyIndex--) {
+    const enemy = enemies[enemyIndex];
+
+    if (isOverlapping(player, enemy)) {
+      player.hp -= 1;
+      enemies.splice(enemyIndex, 1);
+
+      if (player.hp <= 0) {
+        player.hp = 0;
+        isGameOver = true;
+        return;
+      }
+    }
+  }
 }
 
 function getPlayerCollision() {
@@ -164,10 +296,6 @@ function hasOtherEnemyCollision(enemy) {
   return false;
 }
 
-function hasEnemyCollision(enemy) {
-  return isOverlapping(enemy, player) || hasOtherEnemyCollision(enemy);
-}
-
 function updateEnemies(deltaTime) {
   for (const enemy of enemies) {
     let directionX = player.x - enemy.x;
@@ -179,13 +307,13 @@ function updateEnemies(deltaTime) {
       directionY /= directionLength;
       enemy.x += directionX * enemy.speed * deltaTime;
 
-      if (hasEnemyCollision(enemy)) {
+      if (hasOtherEnemyCollision(enemy)) {
         enemy.x -= directionX * enemy.speed * deltaTime;
       }
 
       enemy.y += directionY * enemy.speed * deltaTime;
 
-      if (hasEnemyCollision(enemy)) {
+      if (hasOtherEnemyCollision(enemy)) {
         enemy.y -= directionY * enemy.speed * deltaTime;
       }
     }
@@ -195,6 +323,21 @@ function updateEnemies(deltaTime) {
 function drawPlayer() {
   ctx.fillStyle = "#2563eb";
   ctx.fillRect(player.x, player.y, player.width, player.height);
+  drawHealthBar(player);
+}
+
+function drawHealthBar(entity) {
+  const healthRatio = entity.hp / entity.maxHp;
+  const barHeight = 5;
+  const barY = entity.y - barHeight - 3;
+
+  ctx.save();
+  ctx.fillStyle = "#6b7280";
+  ctx.fillRect(entity.x, barY, entity.width, barHeight);
+
+  ctx.fillStyle = "#22c55e";
+  ctx.fillRect(entity.x, barY, entity.width * healthRatio, barHeight);
+  ctx.restore();
 }
 
 function drawEnemies() {
@@ -202,7 +345,31 @@ function drawEnemies() {
 
   for (const enemy of enemies) {
     ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+    drawHealthBar(enemy);
   }
+}
+
+function drawBullets() {
+  ctx.fillStyle = "#facc15";
+
+  for (const bullet of bullets) {
+    ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+  }
+}
+
+function drawGameOver() {
+  if (!isGameOver) {
+    return;
+  }
+
+  ctx.save();
+  ctx.fillStyle = "#111827";
+  ctx.font = "48px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("GAME OVER", canvas.width / 2, canvas.height / 2);
+  ctx.font = "20px sans-serif";
+  ctx.fillText("Press R to Restart", canvas.width / 2, canvas.height / 2 + 40);
+  ctx.restore();
 }
 
 let lastTime = null;
@@ -215,6 +382,8 @@ function gameLoop(timestamp) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawPlayer();
   drawEnemies();
+  drawBullets();
+  drawGameOver();
 
   requestAnimationFrame(gameLoop);
 }
