@@ -102,6 +102,10 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (isGameOver || isVictory) {
+    return;
+  }
+
   if (isChoosingUpgrade) {
     if (!event.repeat) {
       chooseUpgrade(key);
@@ -144,6 +148,10 @@ function resetGame() {
   weapon.damage = 1;
   weapon.bulletSpeed = 480;
   weapon.bulletSize = 10;
+  keys.w = false;
+  keys.a = false;
+  keys.s = false;
+  keys.d = false;
 }
 
 function update(deltaTime) {
@@ -191,6 +199,11 @@ function update(deltaTime) {
   updateBoss(deltaTime);
   updateBossDamageCooldown(deltaTime);
   handlePlayerEnemyCollisions();
+
+  if (isGameOver) {
+    return;
+  }
+
   handleBossPlayerCollision();
 
   if (isGameOver) {
@@ -199,6 +212,11 @@ function update(deltaTime) {
 
   updateBullets(deltaTime);
   handleBulletEnemyCollisions();
+
+  if (isChoosingUpgrade) {
+    return;
+  }
+
   handleBulletBossCollisions();
 }
 
