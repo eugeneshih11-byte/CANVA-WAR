@@ -5,6 +5,7 @@ const vm = require("node:vm");
 
 const gamePath = path.join(__dirname, "..", "game.js");
 const gameSource = fs.readFileSync(gamePath, "utf8");
+const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
 
 const testHook = `
 globalThis.__gameTest = {
@@ -14,6 +15,7 @@ globalThis.__gameTest = {
   weapon,
   keys,
   listeners: globalThis.__listeners,
+  elements: globalThis.__elements,
   resetGame,
   update,
   handleBulletBossCollisions,
@@ -25,6 +27,7 @@ globalThis.__gameTest = {
       hasBossSpawned,
       isBossDefeated,
       bossDamageCooldown,
+      isGameStarted,
       isGameOver,
       isVictory,
       isChoosingUpgrade,
@@ -41,6 +44,7 @@ globalThis.__gameTest = {
     if ("hasBossSpawned" in values) hasBossSpawned = values.hasBossSpawned;
     if ("isBossDefeated" in values) isBossDefeated = values.isBossDefeated;
     if ("bossDamageCooldown" in values) bossDamageCooldown = values.bossDamageCooldown;
+    if ("isGameStarted" in values) isGameStarted = values.isGameStarted;
     if ("isGameOver" in values) isGameOver = values.isGameOver;
     if ("isVictory" in values) isVictory = values.isVictory;
     if ("isChoosingUpgrade" in values) isChoosingUpgrade = values.isChoosingUpgrade;
@@ -56,27 +60,52 @@ globalThis.__gameTest = {
 
 function loadGame() {
   const listeners = {};
+  const createElement = (id) => ({
+    textContent: "",
+    hidden: id === "gameInterface",
+    classList: {
+      values: new Set(),
+      add(name) { this.values.add(name); },
+      remove(name) { this.values.delete(name); },
+      contains(name) { return this.values.has(name); }
+    },
+    addEventListener(type, handler) {
+      listeners[`${id}:${type}`] = handler;
+    }
+  });
+  const canvas = {
+    width: 800,
+    height: 600,
+    getContext() {
+      return {
+        clearRect() {}, fillRect() {}, fillText() {}, save() {}, restore() {}
+      };
+    },
+    getBoundingClientRect() {
+      return { left: 0, top: 0 };
+    },
+    addEventListener(type, handler) {
+      listeners[`canvas:${type}`] = handler;
+    }
+  };
+  const elements = {
+    gameCanvas: canvas,
+    startScreen: createElement("startScreen"),
+    gameInterface: createElement("gameInterface"),
+    playButton: createElement("playButton"),
+    hpValue: createElement("hpValue"),
+    scoreValue: createElement("scoreValue"),
+    levelValue: createElement("levelValue"),
+    xpValue: createElement("xpValue")
+  };
   const context = {
     Math,
     console,
     __listeners: listeners,
+    __elements: elements,
     document: {
-      getElementById() {
-        return {
-          width: 800,
-          height: 600,
-          getContext() {
-            return {
-              clearRect() {}, fillRect() {}, fillText() {}, save() {}, restore() {}
-            };
-          },
-          getBoundingClientRect() {
-            return { left: 0, top: 0 };
-          },
-          addEventListener(type, handler) {
-            listeners[`canvas:${type}`] = handler;
-          }
-        };
+      getElementById(id) {
+        return elements[id];
       },
       addEventListener(type, handler) {
         listeners[type] = handler;
@@ -88,6 +117,10 @@ function loadGame() {
   vm.createContext(context);
   vm.runInContext(gameSource + testHook, context, { filename: gamePath });
   return context.__gameTest;
+}
+
+function startGame(game) {
+  game.listeners["playButton:click"]();
 }
 
 function makeBoss(overrides = {}) {
@@ -136,6 +169,7 @@ function assertResetState(game) {
   assert.equal(state.hasBossSpawned, false);
   assert.equal(state.isBossDefeated, false);
   assert.equal(state.bossDamageCooldown, 0);
+  assert.equal(state.isGameStarted, true);
   assert.equal(state.isGameOver, false);
   assert.equal(state.isVictory, false);
   assert.equal(state.isChoosingUpgrade, false);
@@ -154,6 +188,7 @@ function makeDirtyRun(game, endState) {
     hasBossSpawned: true,
     isBossDefeated: true,
     bossDamageCooldown: 0.5,
+    isGameStarted: true,
     isGameOver: endState === "gameOver",
     isVictory: endState === "victory",
     isChoosingUpgrade: true,
@@ -168,6 +203,7 @@ function makeDirtyRun(game, endState) {
 
 function testInputReset() {
   const game = loadGame();
+  startGame(game);
   Object.assign(game.keys, { w: true, a: true, s: true, d: true });
   game.resetGame();
   assert.deepEqual({ ...game.keys }, { w: false, a: false, s: false, d: false });
@@ -175,6 +211,7 @@ function testInputReset() {
 
 function testUpgradePause() {
   const game = loadGame();
+  startGame(game);
   game.player.x = 100;
   game.player.y = 100;
   game.keys.w = true;
@@ -195,8 +232,9 @@ function testUpgradePause() {
   assert.equal(game.bullets.includes(bossBullet), true);
 }
 
-function testBossBulletDamageAndVictory() {
+function testBossBulletDamageAndContinuedGameplay() {
   const game = loadGame();
+  startGame(game);
   const bullet = makeBullet({ damage: 2 });
   game.bullets.push(bullet);
   game.setState({ boss: makeBoss({ hp: 5 }) });
@@ -209,11 +247,16 @@ function testBossBulletDamageAndVictory() {
   const state = game.getState();
   assert.equal(state.boss, null);
   assert.equal(state.isBossDefeated, true);
-  assert.equal(state.isVictory, true);
+  assert.equal(state.isVictory, false);
+  game.keys.d = true;
+  const playerX = game.player.x;
+  game.update(1);
+  assert.equal(game.player.x > playerX, true);
 }
 
 function testBossContactCooldown() {
   const game = loadGame();
+  startGame(game);
   game.player.x = 100;
   game.player.y = 100;
   game.player.hp = 5;
@@ -229,6 +272,7 @@ function testBossContactCooldown() {
 
 function testVictoryStopsUpdates() {
   const game = loadGame();
+  startGame(game);
   game.player.x = 100;
   game.player.y = 100;
   game.keys.d = true;
@@ -240,16 +284,44 @@ function testVictoryStopsUpdates() {
 function testRestartFromGameOverAndVictory() {
   for (const endState of ["gameOver", "victory"]) {
     const game = loadGame();
+    startGame(game);
     makeDirtyRun(game, endState);
     game.listeners.keydown({ key: "r" });
     assertResetState(game);
   }
 }
 
+function testStartScreenAndPlay() {
+  const game = loadGame();
+  assert.equal(game.getState().isGameStarted, false);
+  assert.equal(game.elements.startScreen.hidden, false);
+  assert.equal(game.elements.gameInterface.hidden, true);
+  game.keys.d = true;
+  game.update(1);
+  assert.equal(game.player.x, 380);
+
+  makeDirtyRun(game, "gameOver");
+  startGame(game);
+  assertResetState(game);
+  assert.equal(game.elements.startScreen.hidden, true);
+  assert.equal(game.elements.gameInterface.hidden, false);
+  assert.equal(game.elements.hpValue.textContent, "5 / 5");
+  assert.equal(game.elements.scoreValue.textContent, 0);
+  assert.equal(game.elements.levelValue.textContent, 1);
+  assert.equal(game.elements.xpValue.textContent, "0 / 5");
+}
+
+function testInitialPageMarkup() {
+  assert.match(indexSource, /<section id="gameInterface" class="game-screen" hidden>/);
+  assert.match(indexSource, /href="style\.css\?v=2"/);
+}
+
 const tests = [
+  ["initial page markup", testInitialPageMarkup],
+  ["start screen and Play", testStartScreenAndPlay],
   ["input reset", testInputReset],
   ["upgrade pause", testUpgradePause],
-  ["boss bullet damage and victory", testBossBulletDamageAndVictory],
+  ["boss bullet damage and continued gameplay", testBossBulletDamageAndContinuedGameplay],
   ["boss contact cooldown", testBossContactCooldown],
   ["victory stops updates", testVictoryStopsUpdates],
   ["restart from Game Over and Victory", testRestartFromGameOverAndVictory]

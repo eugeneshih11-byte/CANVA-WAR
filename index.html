@@ -4,10 +4,35 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>2D Game</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
-  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  <main class="app">
+    <section id="startScreen" class="start-screen">
+      <h1>GAME 01</h1>
+      <button id="playButton" type="button">Play</button>
+    </section>
+
+    <section id="gameInterface" class="game-screen" hidden>
+      <header class="hud">
+        <span>HP: <strong id="hpValue"></strong></span>
+        <span>Score: <strong id="scoreValue"></strong></span>
+        <span>Level: <strong id="levelValue"></strong></span>
+        <span>XP: <strong id="xpValue"></strong></span>
+      </header>
+
+      <div class="main-game-layout">
+        <div class="canvas-area">
+          <canvas id="gameCanvas" width="800" height="600"></canvas>
+        </div>
+
+        <aside class="inventory-area">
+          <h2>Items / Inventory</h2>
+          <p>Items and equipment will appear here.</p>
+        </aside>
+      </div>
+    </section>
+  </main>
 
   <script src="game.js"></script>
 </body>

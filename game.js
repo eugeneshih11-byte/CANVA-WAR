@@ -1,5 +1,12 @@
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
+const startScreen = document.getElementById("startScreen");
+const gameInterface = document.getElementById("gameInterface");
+const playButton = document.getElementById("playButton");
+const hpValue = document.getElementById("hpValue");
+const scoreValue = document.getElementById("scoreValue");
+const levelValue = document.getElementById("levelValue");
+const xpValue = document.getElementById("xpValue");
 
 const player = {
   x: 380,
@@ -36,6 +43,7 @@ const enemyColors = {
   tank: "#7c3aed"
 };
 let spawnTimer = 0;
+let isGameStarted = false;
 let isGameOver = false;
 let isVictory = false;
 let isChoosingUpgrade = false;
@@ -57,6 +65,14 @@ const mouse = {
   y: 0
 };
 
+playButton.addEventListener("click", () => {
+  resetGame();
+  isGameStarted = true;
+  startScreen.hidden = true;
+  gameInterface.hidden = false;
+  updateHud();
+});
+
 canvas.addEventListener("mousemove", (event) => {
   const rect = canvas.getBoundingClientRect();
 
@@ -65,7 +81,7 @@ canvas.addEventListener("mousemove", (event) => {
 });
 
 canvas.addEventListener("click", () => {
-  if (isGameOver || isVictory || isChoosingUpgrade) {
+  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade) {
     return;
   }
 
@@ -102,7 +118,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
-  if (isGameOver || isVictory) {
+  if (!isGameStarted || isGameOver || isVictory) {
     return;
   }
 
@@ -155,7 +171,7 @@ function resetGame() {
 }
 
 function update(deltaTime) {
-  if (isGameOver || isVictory || isChoosingUpgrade) {
+  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade) {
     return;
   }
 
@@ -367,8 +383,6 @@ function handleBulletBossCollisions() {
       if (boss.hp <= 0) {
         boss = null;
         isBossDefeated = true;
-        isVictory = true;
-        isChoosingUpgrade = false;
         return;
       }
     }
@@ -576,32 +590,20 @@ function drawBullets() {
   }
 }
 
-function drawScore() {
-  ctx.save();
-  ctx.fillStyle = "#111827";
-  ctx.font = "20px sans-serif";
-  ctx.textAlign = "left";
-  ctx.fillText(`Score: ${score}`, 15, 30);
-  ctx.restore();
-}
-
 function drawWeaponDamage() {
   ctx.save();
   ctx.fillStyle = "#111827";
   ctx.font = "20px sans-serif";
-  ctx.textAlign = "left";
-  ctx.fillText(`Damage: ${weapon.damage}`, 15, 55);
+  ctx.textAlign = "right";
+  ctx.fillText(`Damage: ${weapon.damage}`, canvas.width - 15, 30);
   ctx.restore();
 }
 
-function drawProgression() {
-  ctx.save();
-  ctx.fillStyle = "#111827";
-  ctx.font = "20px sans-serif";
-  ctx.textAlign = "left";
-  ctx.fillText(`Level: ${level}`, 15, 80);
-  ctx.fillText(`XP: ${xp} / ${xpToNextLevel}`, 15, 105);
-  ctx.restore();
+function updateHud() {
+  hpValue.textContent = `${player.hp} / ${player.maxHp}`;
+  scoreValue.textContent = score;
+  levelValue.textContent = level;
+  xpValue.textContent = `${xp} / ${xpToNextLevel}`;
 }
 
 function drawUpgradeChoices() {
@@ -665,12 +667,11 @@ function gameLoop(timestamp) {
   drawEnemies();
   drawBoss();
   drawBullets();
-  drawScore();
   drawWeaponDamage();
-  drawProgression();
   drawUpgradeChoices();
   drawGameOver();
   drawVictory();
+  updateHud();
 
   requestAnimationFrame(gameLoop);
 }

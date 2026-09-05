@@ -1,11 +1,109 @@
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
+  min-width: 320px;
+  background: #111827;
+  font-family: sans-serif;
+}
+
+.app {
+  min-height: 100vh;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.start-screen {
   min-height: 100vh;
   display: grid;
-  place-items: center;
+  place-content: center;
+  gap: 24px;
+  color: #f9fafb;
+  text-align: center;
+}
+
+.start-screen h1 {
+  margin: 0;
+  font-size: clamp(48px, 10vw, 96px);
+}
+
+.start-screen button {
+  justify-self: center;
+  padding: 12px 36px;
+  font-size: 20px;
+}
+
+.game-screen {
+  min-height: 100vh;
+  padding: 20px;
+  color: #f9fafb;
+}
+
+.hud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 32px;
+  margin-bottom: 20px;
+  padding: 16px 20px;
+  background: #1f2937;
+}
+
+.main-game-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 800px) minmax(240px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.canvas-area {
+  overflow-x: auto;
   background: #1f2937;
 }
 
 #gameCanvas {
+  display: block;
+  width: 800px;
+  height: 600px;
   background: #87ceeb;
+}
+
+.inventory-area {
+  min-height: 600px;
+  padding: 20px;
+  background: #1f2937;
+}
+
+.inventory-area h2,
+.inventory-area p {
+  margin: 0;
+}
+
+.inventory-area p {
+  margin-top: 12px;
+  color: #d1d5db;
+}
+
+@media (max-width: 1100px) {
+  .main-game-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .inventory-area {
+    min-height: 160px;
+  }
+}
+
+@media (max-width: 600px) {
+  .game-screen {
+    padding: 12px;
+  }
+
+  .hud {
+    gap: 10px 16px;
+    padding: 12px;
+  }
 }
