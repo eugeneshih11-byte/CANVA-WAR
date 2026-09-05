@@ -13,10 +13,37 @@ const player = {
 
 const enemies = [];
 const bullets = [];
+let boss = null;
+let hasBossSpawned = false;
+let isBossDefeated = false;
+let bossDamageCooldown = 0;
+const bossDamageCooldownDuration = 1;
+const weapon = {
+  damage: 1,
+  bulletSpeed: 480,
+  bulletSize: 10
+};
 const maxEnemies = 10;
 const spawnInterval = 2;
+const enemyStats = {
+  normal: { width: 40, height: 40, speed: 120, hp: 3, maxHp: 3 },
+  fast: { width: 30, height: 30, speed: 200, hp: 1, maxHp: 1 },
+  tank: { width: 60, height: 60, speed: 70, hp: 8, maxHp: 8 }
+};
+const enemyColors = {
+  normal: "#dc2626",
+  fast: "#f97316",
+  tank: "#7c3aed"
+};
 let spawnTimer = 0;
 let isGameOver = false;
+let isVictory = false;
+let isChoosingUpgrade = false;
+let score = 0;
+let level = 1;
+let xp = 0;
+let previousXpRequirement = 3;
+let xpToNextLevel = 5;
 
 const keys = {
   w: false,
@@ -38,7 +65,7 @@ canvas.addEventListener("mousemove", (event) => {
 });
 
 canvas.addEventListener("click", () => {
-  if (isGameOver) {
+  if (isGameOver || isVictory || isChoosingUpgrade) {
     return;
   }
 
@@ -54,12 +81,12 @@ canvas.addEventListener("click", () => {
   }
 
   const bullet = {
-    x: playerCenterX - 5,
-    y: playerCenterY - 5,
-    width: 10,
-    height: 10,
-    speed: 480,
-    damage: 1,
+    x: playerCenterX - weapon.bulletSize / 2,
+    y: playerCenterY - weapon.bulletSize / 2,
+    width: weapon.bulletSize,
+    height: weapon.bulletSize,
+    speed: weapon.bulletSpeed,
+    damage: weapon.damage,
     directionX,
     directionY
   };
@@ -70,8 +97,15 @@ canvas.addEventListener("click", () => {
 document.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
 
-  if (key === "r" && isGameOver) {
+  if (key === "r" && (isGameOver || isVictory)) {
     resetGame();
+    return;
+  }
+
+  if (isChoosingUpgrade) {
+    if (!event.repeat) {
+      chooseUpgrade(key);
+    }
     return;
   }
 
@@ -94,12 +128,26 @@ function resetGame() {
   player.hp = player.maxHp;
   enemies.length = 0;
   bullets.length = 0;
+  boss = null;
+  hasBossSpawned = false;
+  isBossDefeated = false;
+  bossDamageCooldown = 0;
   spawnTimer = 0;
   isGameOver = false;
+  isVictory = false;
+  isChoosingUpgrade = false;
+  score = 0;
+  level = 1;
+  xp = 0;
+  previousXpRequirement = 3;
+  xpToNextLevel = 5;
+  weapon.damage = 1;
+  weapon.bulletSpeed = 480;
+  weapon.bulletSize = 10;
 }
 
 function update(deltaTime) {
-  if (isGameOver) {
+  if (isGameOver || isVictory || isChoosingUpgrade) {
     return;
   }
 
@@ -139,7 +187,11 @@ function update(deltaTime) {
 
   updateEnemySpawning(deltaTime);
   updateEnemies(deltaTime);
+  updateBossSpawning();
+  updateBoss(deltaTime);
+  updateBossDamageCooldown(deltaTime);
   handlePlayerEnemyCollisions();
+  handleBossPlayerCollision();
 
   if (isGameOver) {
     return;
@@ -147,6 +199,7 @@ function update(deltaTime) {
 
   updateBullets(deltaTime);
   handleBulletEnemyCollisions();
+  handleBulletBossCollisions();
 }
 
 function updateBullets(deltaTime) {
@@ -181,14 +234,18 @@ function updateEnemySpawning(deltaTime) {
 }
 
 function spawnEnemy() {
+  const types = Object.keys(enemyStats);
+  const type = types[Math.floor(Math.random() * types.length)];
+  const stats = enemyStats[type];
   const enemy = {
+    type,
     x: 0,
     y: 0,
-    width: 40,
-    height: 40,
-    speed: 120,
-    hp: 3,
-    maxHp: 3
+    width: stats.width,
+    height: stats.height,
+    speed: stats.speed,
+    hp: stats.hp,
+    maxHp: stats.maxHp
   };
   const edge = Math.floor(Math.random() * 4);
 
@@ -205,6 +262,39 @@ function spawnEnemy() {
   }
 
   enemies.push(enemy);
+}
+
+function updateBossSpawning() {
+  if (level >= 5 && !hasBossSpawned && !isBossDefeated) {
+    spawnBoss();
+  }
+}
+
+function spawnBoss() {
+  boss = {
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    speed: 50,
+    hp: 50,
+    maxHp: 50
+  };
+  const edge = Math.floor(Math.random() * 4);
+
+  if (edge === 0) {
+    boss.x = Math.random() * (canvas.width - boss.width);
+  } else if (edge === 1) {
+    boss.x = canvas.width - boss.width;
+    boss.y = Math.random() * (canvas.height - boss.height);
+  } else if (edge === 2) {
+    boss.x = Math.random() * (canvas.width - boss.width);
+    boss.y = canvas.height - boss.height;
+  } else {
+    boss.y = Math.random() * (canvas.height - boss.height);
+  }
+
+  hasBossSpawned = true;
 }
 
 function isOverlapping(rectangleA, rectangleB) {
@@ -229,12 +319,72 @@ function handleBulletEnemyCollisions() {
 
         if (enemy.hp <= 0) {
           enemies.splice(enemyIndex, 1);
+          score += 1;
+          xp += 1;
+          updateLevel();
+
+          if (isChoosingUpgrade) {
+            return;
+          }
         }
 
         break;
       }
     }
   }
+}
+
+function handleBulletBossCollisions() {
+  if (!boss) {
+    return;
+  }
+
+  for (let bulletIndex = bullets.length - 1; bulletIndex >= 0; bulletIndex--) {
+    const bullet = bullets[bulletIndex];
+
+    if (isOverlapping(bullet, boss)) {
+      boss.hp -= bullet.damage;
+      bullets.splice(bulletIndex, 1);
+
+      if (boss.hp <= 0) {
+        boss = null;
+        isBossDefeated = true;
+        isVictory = true;
+        isChoosingUpgrade = false;
+        return;
+      }
+    }
+  }
+}
+
+function updateLevel() {
+  if (isChoosingUpgrade || xp < xpToNextLevel) {
+    return;
+  }
+
+  xp -= xpToNextLevel;
+  level += 1;
+  updateBossSpawning();
+
+  const nextXpRequirement = previousXpRequirement + xpToNextLevel;
+  previousXpRequirement = xpToNextLevel;
+  xpToNextLevel = nextXpRequirement;
+  isChoosingUpgrade = true;
+}
+
+function chooseUpgrade(key) {
+  if (key === "1") {
+    weapon.damage += 1;
+  } else if (key === "2") {
+    weapon.bulletSpeed += 100;
+  } else if (key === "3") {
+    weapon.bulletSize += 2;
+  } else {
+    return;
+  }
+
+  isChoosingUpgrade = false;
+  updateLevel();
 }
 
 function handlePlayerEnemyCollisions() {
@@ -252,6 +402,28 @@ function handlePlayerEnemyCollisions() {
       }
     }
   }
+}
+
+function handleBossPlayerCollision() {
+  if (!boss || !isOverlapping(player, boss)) {
+    return;
+  }
+
+  if (bossDamageCooldown > 0) {
+    return;
+  }
+
+  player.hp -= 1;
+  bossDamageCooldown = bossDamageCooldownDuration;
+
+  if (player.hp <= 0) {
+    player.hp = 0;
+    isGameOver = true;
+  }
+}
+
+function updateBossDamageCooldown(deltaTime) {
+  bossDamageCooldown = Math.max(0, bossDamageCooldown - deltaTime);
 }
 
 function getPlayerCollision() {
@@ -320,6 +492,26 @@ function updateEnemies(deltaTime) {
   }
 }
 
+function updateBoss(deltaTime) {
+  if (!boss) {
+    return;
+  }
+
+  let directionX = player.x - boss.x;
+  let directionY = player.y - boss.y;
+  const directionLength = Math.hypot(directionX, directionY);
+
+  if (directionLength > 0) {
+    directionX /= directionLength;
+    directionY /= directionLength;
+    boss.x += directionX * boss.speed * deltaTime;
+    boss.y += directionY * boss.speed * deltaTime;
+  }
+
+  boss.x = Math.max(0, Math.min(boss.x, canvas.width - boss.width));
+  boss.y = Math.max(0, Math.min(boss.y, canvas.height - boss.height));
+}
+
 function drawPlayer() {
   ctx.fillStyle = "#2563eb";
   ctx.fillRect(player.x, player.y, player.width, player.height);
@@ -341,12 +533,21 @@ function drawHealthBar(entity) {
 }
 
 function drawEnemies() {
-  ctx.fillStyle = "#dc2626";
-
   for (const enemy of enemies) {
+    ctx.fillStyle = enemyColors[enemy.type];
     ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
     drawHealthBar(enemy);
   }
+}
+
+function drawBoss() {
+  if (!boss) {
+    return;
+  }
+
+  ctx.fillStyle = "#7e22ce";
+  ctx.fillRect(boss.x, boss.y, boss.width, boss.height);
+  drawHealthBar(boss);
 }
 
 function drawBullets() {
@@ -355,6 +556,53 @@ function drawBullets() {
   for (const bullet of bullets) {
     ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
   }
+}
+
+function drawScore() {
+  ctx.save();
+  ctx.fillStyle = "#111827";
+  ctx.font = "20px sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(`Score: ${score}`, 15, 30);
+  ctx.restore();
+}
+
+function drawWeaponDamage() {
+  ctx.save();
+  ctx.fillStyle = "#111827";
+  ctx.font = "20px sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(`Damage: ${weapon.damage}`, 15, 55);
+  ctx.restore();
+}
+
+function drawProgression() {
+  ctx.save();
+  ctx.fillStyle = "#111827";
+  ctx.font = "20px sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(`Level: ${level}`, 15, 80);
+  ctx.fillText(`XP: ${xp} / ${xpToNextLevel}`, 15, 105);
+  ctx.restore();
+}
+
+function drawUpgradeChoices() {
+  if (!isChoosingUpgrade || isVictory) {
+    return;
+  }
+
+  ctx.save();
+  ctx.fillStyle = "rgba(17, 24, 39, 0.8)";
+  ctx.fillRect(100, 160, 600, 280);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "32px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("Choose an Upgrade", canvas.width / 2, 220);
+  ctx.font = "24px sans-serif";
+  ctx.fillText("1: Damage +1", canvas.width / 2, 280);
+  ctx.fillText("2: Bullet Speed +100", canvas.width / 2, 330);
+  ctx.fillText("3: Bullet Size +2", canvas.width / 2, 380);
+  ctx.restore();
 }
 
 function drawGameOver() {
@@ -372,6 +620,21 @@ function drawGameOver() {
   ctx.restore();
 }
 
+function drawVictory() {
+  if (!isVictory) {
+    return;
+  }
+
+  ctx.save();
+  ctx.fillStyle = "#111827";
+  ctx.font = "48px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("YOU WIN", canvas.width / 2, canvas.height / 2);
+  ctx.font = "20px sans-serif";
+  ctx.fillText("Press R to Restart", canvas.width / 2, canvas.height / 2 + 40);
+  ctx.restore();
+}
+
 let lastTime = null;
 
 function gameLoop(timestamp) {
@@ -382,8 +645,14 @@ function gameLoop(timestamp) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawPlayer();
   drawEnemies();
+  drawBoss();
   drawBullets();
+  drawScore();
+  drawWeaponDamage();
+  drawProgression();
+  drawUpgradeChoices();
   drawGameOver();
+  drawVictory();
 
   requestAnimationFrame(gameLoop);
 }
