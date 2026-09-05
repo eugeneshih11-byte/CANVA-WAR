@@ -8,6 +8,74 @@ const scoreValue = document.getElementById("scoreValue");
 const levelValue = document.getElementById("levelValue");
 const xpValue = document.getElementById("xpValue");
 
+const saveStorageKey = "canva-war-save";
+let saveData = loadSave();
+
+function createDefaultSaveData() {
+  return {
+    version: 1,
+    progression: {
+      highestStage: 1,
+      defeatedBosses: []
+    },
+    unlocks: {
+      weapons: ["starter"],
+      equipment: []
+    },
+    statistics: {
+      totalRuns: 0,
+      totalKills: 0
+    }
+  };
+}
+
+function isValidSaveData(data) {
+  return (
+    data &&
+    typeof data === "object" &&
+    data.version === 1 &&
+    data.progression &&
+    typeof data.progression.highestStage === "number" &&
+    Array.isArray(data.progression.defeatedBosses) &&
+    data.unlocks &&
+    Array.isArray(data.unlocks.weapons) &&
+    Array.isArray(data.unlocks.equipment) &&
+    data.statistics &&
+    typeof data.statistics.totalRuns === "number" &&
+    typeof data.statistics.totalKills === "number"
+  );
+}
+
+function loadSave() {
+  try {
+    const savedData = localStorage.getItem(saveStorageKey);
+
+    if (!savedData) {
+      return createDefaultSaveData();
+    }
+
+    const parsedData = JSON.parse(savedData);
+    return isValidSaveData(parsedData) ? parsedData : createDefaultSaveData();
+  } catch {
+    return createDefaultSaveData();
+  }
+}
+
+function saveGame() {
+  try {
+    localStorage.setItem(saveStorageKey, JSON.stringify(saveData));
+  } catch {
+    // Saving is optional for the active local run; a storage error must not stop gameplay.
+  }
+}
+
+function recordBossOneDefeat() {
+  if (!saveData.progression.defeatedBosses.includes("boss-1")) {
+    saveData.progression.defeatedBosses.push("boss-1");
+    saveGame();
+  }
+}
+
 const player = {
   x: 380,
   y: 280,
@@ -67,6 +135,8 @@ const mouse = {
 
 playButton.addEventListener("click", () => {
   resetGame();
+  saveData.statistics.totalRuns += 1;
+  saveGame();
   isGameStarted = true;
   startScreen.hidden = true;
   gameInterface.hidden = false;
@@ -355,6 +425,8 @@ function handleBulletEnemyCollisions() {
           enemies.splice(enemyIndex, 1);
           score += 1;
           xp += 1;
+          saveData.statistics.totalKills += 1;
+          saveGame();
           updateLevel();
 
           if (isChoosingUpgrade) {
@@ -383,6 +455,7 @@ function handleBulletBossCollisions() {
       if (boss.hp <= 0) {
         boss = null;
         isBossDefeated = true;
+        recordBossOneDefeat();
         return;
       }
     }

@@ -18,9 +18,20 @@ globalThis.__gameTest = {
   elements: globalThis.__elements,
   resetGame,
   update,
+  createDefaultSaveData,
+  loadSave,
+  saveGame,
+  handleBulletEnemyCollisions,
   handleBulletBossCollisions,
   handleBossPlayerCollision,
   updateBossDamageCooldown,
+  getSaveData() {
+    return saveData;
+  },
+  setSaveData(value) {
+    saveData = value;
+  },
+  storage: globalThis.__storage,
   getState() {
     return {
       boss,
@@ -58,8 +69,9 @@ globalThis.__gameTest = {
 };
 `;
 
-function loadGame() {
+function loadGame(initialStorage = {}) {
   const listeners = {};
+  const storage = new Map(Object.entries(initialStorage));
   const createElement = (id) => ({
     textContent: "",
     hidden: id === "gameInterface",
@@ -103,6 +115,21 @@ function loadGame() {
     console,
     __listeners: listeners,
     __elements: elements,
+    __storage: storage,
+    localStorage: {
+      getItem(key) {
+        return storage.has(key) ? storage.get(key) : null;
+      },
+      setItem(key, value) {
+        storage.set(key, String(value));
+      },
+      removeItem(key) {
+        storage.delete(key);
+      },
+      clear() {
+        storage.clear();
+      }
+    },
     document: {
       getElementById(id) {
         return elements[id];
@@ -248,6 +275,22 @@ function testBossBulletDamageAndContinuedGameplay() {
   assert.equal(state.boss, null);
   assert.equal(state.isBossDefeated, true);
   assert.equal(state.isVictory, false);
+  assert.deepEqual(
+    Array.from(game.getSaveData().progression.defeatedBosses),
+    ["boss-1"]
+  );
+  assert.deepEqual(
+    JSON.parse(game.storage.get("canva-war-save")).progression.defeatedBosses,
+    ["boss-1"]
+  );
+
+  game.setState({ boss: makeBoss({ hp: 1 }) });
+  game.bullets.push(makeBullet({ damage: 1 }));
+  game.handleBulletBossCollisions();
+  assert.deepEqual(
+    Array.from(game.getSaveData().progression.defeatedBosses),
+    ["boss-1"]
+  );
   game.keys.d = true;
   const playerX = game.player.x;
   game.update(1);
@@ -309,16 +352,69 @@ function testStartScreenAndPlay() {
   assert.equal(game.elements.scoreValue.textContent, 0);
   assert.equal(game.elements.levelValue.textContent, 1);
   assert.equal(game.elements.xpValue.textContent, "0 / 5");
+  assert.equal(game.getSaveData().statistics.totalRuns, 1);
+  assert.equal(
+    JSON.parse(game.storage.get("canva-war-save")).statistics.totalRuns,
+    1
+  );
 }
 
 function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="gameInterface" class="game-screen" hidden>/);
   assert.match(indexSource, /href="style\.css\?v=2"/);
+  assert.match(indexSource, /<title>CANVA WAR<\/title>/);
+  assert.match(indexSource, /<h1>CANVA WAR<\/h1>/);
+}
+
+function testSaveDefaultsAndRoundTrip() {
+  const game = loadGame();
+  const defaultSave = game.createDefaultSaveData();
+  assert.deepEqual(JSON.parse(JSON.stringify(defaultSave)), {
+    version: 1,
+    progression: { highestStage: 1, defeatedBosses: [] },
+    unlocks: { weapons: ["starter"], equipment: [] },
+    statistics: { totalRuns: 0, totalKills: 0 }
+  });
+  assert.equal(game.getSaveData().version, 1);
+
+  defaultSave.statistics.totalRuns = 3;
+  game.setSaveData(defaultSave);
+  game.saveGame();
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(game.loadSave())),
+    JSON.parse(JSON.stringify(defaultSave))
+  );
+}
+
+function testCorruptedSaveFallsBackToDefaults() {
+  const game = loadGame({ "canva-war-save": "{invalid json" });
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(game.getSaveData())),
+    JSON.parse(JSON.stringify(game.createDefaultSaveData()))
+  );
+}
+
+function testNormalEnemyKillsPersist() {
+  const game = loadGame();
+  startGame(game);
+  const enemy = { x: 100, y: 100, width: 20, height: 20, hp: 1, maxHp: 1, speed: 0, type: "normal" };
+  game.enemies.push(enemy);
+  game.bullets.push(makeBullet({ x: 100, y: 100 }));
+  game.handleBulletEnemyCollisions();
+  assert.equal(game.getSaveData().statistics.totalKills, 1);
+  assert.equal(JSON.parse(game.storage.get("canva-war-save")).statistics.totalKills, 1);
+
+  game.enemies.push({ x: game.player.x, y: game.player.y, width: 20, height: 20, hp: 1, maxHp: 1, speed: 0, type: "normal" });
+  game.update(0);
+  assert.equal(game.getSaveData().statistics.totalKills, 1);
 }
 
 const tests = [
   ["initial page markup", testInitialPageMarkup],
+  ["save defaults and round trip", testSaveDefaultsAndRoundTrip],
+  ["corrupted save falls back to defaults", testCorruptedSaveFallsBackToDefaults],
   ["start screen and Play", testStartScreenAndPlay],
+  ["normal enemy kills persist", testNormalEnemyKillsPersist],
   ["input reset", testInputReset],
   ["upgrade pause", testUpgradePause],
   ["boss bullet damage and continued gameplay", testBossBulletDamageAndContinuedGameplay],

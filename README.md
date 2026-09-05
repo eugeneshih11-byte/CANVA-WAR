@@ -1,6 +1,6 @@
-# Game01
+# CANVA WAR
 
-Game01 is a simple 2D browser game learning project built with HTML, CSS, vanilla JavaScript, and HTML Canvas.
+CANVA WAR is a simple 2D browser game learning project built with HTML, CSS, vanilla JavaScript, and HTML Canvas.
 
 ## Controls
 
