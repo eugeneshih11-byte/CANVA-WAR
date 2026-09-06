@@ -5,6 +5,7 @@ const vm = require("node:vm");
 
 const gamePath = path.join(__dirname, "..", "game.js");
 const gameSource = fs.readFileSync(gamePath, "utf8");
+const settlementSource = fs.readFileSync(path.join(__dirname, "..", "settlement.js"), "utf8");
 const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
 
 const testHook = `
@@ -32,6 +33,14 @@ globalThis.__gameTest = {
     saveData = value;
   },
   storage: globalThis.__storage,
+  settlement: RunSettlement,
+  settleRun,
+  getRunSettlementState() {
+    return runSettlementState;
+  },
+  getLastSettlement() {
+    return lastSettlement;
+  },
   getState() {
     return {
       boss,
@@ -142,6 +151,7 @@ function loadGame(initialStorage = {}) {
   };
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(settlementSource, context, { filename: "settlement.js" });
   vm.runInContext(gameSource + testHook, context, { filename: gamePath });
   return context.__gameTest;
 }
@@ -370,12 +380,12 @@ function testSaveDefaultsAndRoundTrip() {
   const game = loadGame();
   const defaultSave = game.createDefaultSaveData();
   assert.deepEqual(JSON.parse(JSON.stringify(defaultSave)), {
-    version: 1,
-    progression: { highestStage: 1, defeatedBosses: [] },
+    version: 2,
+    progression: { highestStage: 1, defeatedBosses: [], points: 0 },
     unlocks: { weapons: ["starter"], equipment: [] },
     statistics: { totalRuns: 0, totalKills: 0 }
   });
-  assert.equal(game.getSaveData().version, 1);
+  assert.equal(game.getSaveData().version, 2);
 
   defaultSave.statistics.totalRuns = 3;
   game.setSaveData(defaultSave);
@@ -386,8 +396,175 @@ function testSaveDefaultsAndRoundTrip() {
   );
 }
 
+function testVersionOneSaveMigratesPoints() {
+  const legacySave = {
+    version: 1,
+    progression: { highestStage: 1, defeatedBosses: [] },
+    unlocks: { weapons: ["starter"], equipment: [] },
+    statistics: { totalRuns: 2, totalKills: 3 }
+  };
+  const game = loadGame({ "canva-war-save": JSON.stringify(legacySave) });
+  assert.deepEqual(JSON.parse(JSON.stringify(game.getSaveData())), {
+    ...legacySave,
+    version: 2,
+    progression: { ...legacySave.progression, points: 0 }
+  });
+}
+
+function completeWave(settlement, state, clearScore = 100, performanceScore = 25) {
+  settlement.completeEncounter(state, {
+    type: "wave",
+    clearScoreType: settlement.SCORE_TYPES.WAVE_CLEAR,
+    clearScore,
+    performanceBonuses: [{
+      type: settlement.SCORE_TYPES.FLAWLESS_WAVE,
+      score: performanceScore,
+      record: { wave: state.progress.completedWaves + 1 }
+    }]
+  });
+}
+
+function testWaveCheckpointIncludesClearAndPerformanceScore() {
+  const game = loadGame();
+  const { settlement } = game;
+  const state = settlement.createRunSettlementState();
+  settlement.awardScore(state, settlement.SCORE_TYPES.ENEMY_KILL, 10);
+  completeWave(settlement, state, 100, 25);
+
+  assert.equal(state.score, 135);
+  assert.equal(state.securedCheckpoint.score, 135);
+  assert.equal(state.securedCheckpoint.scoreBreakdown.base.waveClear, 100);
+  assert.equal(state.securedCheckpoint.scoreBreakdown.performance.flawlessWave, 25);
+  assert.equal(state.securedCheckpoint.performanceRecords.flawlessWaves.length, 1);
+}
+
+function testSettlementEndReasonSelection() {
+  const game = loadGame();
+  const { settlement } = game;
+  const state = settlement.createRunSettlementState();
+  completeWave(settlement, state, 100, 25);
+  settlement.awardScore(state, settlement.SCORE_TYPES.ENEMY_KILL, 40);
+
+  assert.equal(
+    settlement.selectSettlementState(state, settlement.RUN_END_REASONS.ABANDON).score,
+    125
+  );
+  assert.equal(
+    settlement.selectSettlementState(state, settlement.RUN_END_REASONS.DEATH).score,
+    165
+  );
+  assert.equal(
+    settlement.selectSettlementState(state, settlement.RUN_END_REASONS.VICTORY).score,
+    165
+  );
+}
+
+function testEarlyAbandonAndSnapshotIsolation() {
+  const game = loadGame();
+  const { settlement } = game;
+  const state = settlement.createRunSettlementState();
+  assert.equal(settlement.selectSettlementState(state, settlement.RUN_END_REASONS.ABANDON), null);
+  assert.doesNotThrow(() => settlement.calculateSettlement(state));
+  startGame(game);
+  assert.doesNotThrow(() => game.settleRun(settlement.RUN_END_REASONS.ABANDON));
+  assert.equal(game.getLastSettlement(), null);
+
+  completeWave(settlement, state);
+  state.performanceRecords.flawlessWaves[0].wave = 99;
+  assert.equal(state.securedCheckpoint.performanceRecords.flawlessWaves[0].wave, 1);
+}
+
+function testSettlementMathIsSafeMonotonicAndDeterministic() {
+  const game = loadGame();
+  const { settlement } = game;
+  const state = settlement.createRunSettlementState();
+  state.progress.currentEncounter = { scoreAllowance: 200 };
+  const capacity = settlement.calculateEfficientScoreCapacity(state);
+  assert.equal(settlement.calculatePoints(0), 0);
+  assert.equal(settlement.calculatePoints(0, {
+    points: { baselinePoints: 100, referenceEffectiveScore: 1000, exponent: 0 }
+  }), 0);
+  assert.equal(settlement.calculatePoints(1000, {
+    points: { baselinePoints: 100, referenceEffectiveScore: 1000, exponent: 0 }
+  }) > 0, true);
+  assert.equal(settlement.calculateEffectiveScore(50, capacity), 50);
+  assert.equal(settlement.calculateEffectiveScore(capacity, capacity), capacity);
+  assert.equal(settlement.calculateEffectiveScore(200, capacity, {
+    antiFarming: { excessDiminishingRate: 0 }
+  }), 200);
+
+  const atCapacity = settlement.calculateEffectiveScore(capacity, capacity);
+  const aboveCapacity = settlement.calculateEffectiveScore(capacity * 2, capacity);
+  assert.equal(aboveCapacity > atCapacity, true);
+  assert.equal(aboveCapacity - atCapacity < capacity, true);
+
+  const largeScore = 1e9;
+  const veryLargeScore = 1e12;
+  assert.equal(
+    settlement.calculateEffectiveScore(veryLargeScore, capacity) >
+      settlement.calculateEffectiveScore(largeScore, capacity),
+    true
+  );
+
+  let previousEffectiveScore = -1;
+  let previousPoints = -1;
+  for (let score = 0; score <= 10000; score += 25) {
+    const effectiveScore = settlement.calculateEffectiveScore(score, capacity);
+    const points = settlement.calculatePoints(effectiveScore);
+    assert.equal(effectiveScore >= previousEffectiveScore, true);
+    assert.equal(points >= previousPoints, true);
+    previousEffectiveScore = effectiveScore;
+    previousPoints = points;
+  }
+
+  assert.equal(Number.isFinite(settlement.calculateEffectiveScore(100, 0)), true);
+  assert.equal(Number.isFinite(settlement.calculateEffectiveScore(100, Number.NaN)), true);
+  const first = settlement.calculateSettlement(state);
+  const second = settlement.calculateSettlement(state);
+  assert.deepEqual(first, second);
+}
+
+function testResetClearsSettlementState() {
+  const game = loadGame();
+  startGame(game);
+  const state = game.getRunSettlementState();
+  game.settlement.awardScore(state, game.settlement.SCORE_TYPES.ENEMY_KILL, 50);
+  game.settlement.secureSettlementCheckpoint(state);
+  game.resetGame();
+  const resetState = game.getRunSettlementState();
+  assert.equal(resetState.score, 0);
+  assert.equal(resetState.securedCheckpoint, null);
+}
+
+function testDeathSettlesCurrentRunAndAwardsPointsOnce() {
+  const game = loadGame();
+  startGame(game);
+  const runState = game.getRunSettlementState();
+  game.settlement.awardScore(runState, game.settlement.SCORE_TYPES.ENEMY_KILL, 1000);
+  game.setState({ score: 1000 });
+  game.player.hp = 1;
+  game.enemies.push({ x: game.player.x, y: game.player.y, width: 20, height: 20, hp: 1, maxHp: 1, speed: 0, type: "normal" });
+  game.update(0);
+
+  const result = game.getLastSettlement();
+  assert.equal(result.finalScore, 1000);
+  assert.equal(game.getSaveData().progression.points, result.points);
+  game.settleRun(game.settlement.RUN_END_REASONS.DEATH);
+  assert.equal(game.getSaveData().progression.points, result.points);
+}
+
 function testCorruptedSaveFallsBackToDefaults() {
   const game = loadGame({ "canva-war-save": "{invalid json" });
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(game.getSaveData())),
+    JSON.parse(JSON.stringify(game.createDefaultSaveData()))
+  );
+}
+
+function testInvalidSaveShapeFallsBackToDefaults() {
+  const game = loadGame({
+    "canva-war-save": JSON.stringify({ version: 2, progression: {}, unlocks: {}, statistics: {} })
+  });
   assert.deepEqual(
     JSON.parse(JSON.stringify(game.getSaveData())),
     JSON.parse(JSON.stringify(game.createDefaultSaveData()))
@@ -412,9 +589,17 @@ function testNormalEnemyKillsPersist() {
 const tests = [
   ["initial page markup", testInitialPageMarkup],
   ["save defaults and round trip", testSaveDefaultsAndRoundTrip],
+  ["version one save migrates points", testVersionOneSaveMigratesPoints],
   ["corrupted save falls back to defaults", testCorruptedSaveFallsBackToDefaults],
+  ["invalid save shape falls back to defaults", testInvalidSaveShapeFallsBackToDefaults],
   ["start screen and Play", testStartScreenAndPlay],
   ["normal enemy kills persist", testNormalEnemyKillsPersist],
+  ["wave checkpoint includes clear and performance score", testWaveCheckpointIncludesClearAndPerformanceScore],
+  ["settlement end reason selection", testSettlementEndReasonSelection],
+  ["early abandon and snapshot isolation", testEarlyAbandonAndSnapshotIsolation],
+  ["settlement math is safe, monotonic, and deterministic", testSettlementMathIsSafeMonotonicAndDeterministic],
+  ["reset clears settlement state", testResetClearsSettlementState],
+  ["death settles current run and awards points once", testDeathSettlesCurrentRunAndAwardsPointsOnce],
   ["input reset", testInputReset],
   ["upgrade pause", testUpgradePause],
   ["boss bullet damage and continued gameplay", testBossBulletDamageAndContinuedGameplay],

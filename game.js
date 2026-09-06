@@ -7,16 +7,18 @@ const hpValue = document.getElementById("hpValue");
 const scoreValue = document.getElementById("scoreValue");
 const levelValue = document.getElementById("levelValue");
 const xpValue = document.getElementById("xpValue");
+const { RUN_END_REASONS, SCORE_TYPES, createRunSettlementState, awardScore, selectSettlementState, calculateSettlement } = RunSettlement;
 
 const saveStorageKey = "canva-war-save";
 let saveData = loadSave();
 
 function createDefaultSaveData() {
   return {
-    version: 1,
+    version: 2,
     progression: {
       highestStage: 1,
-      defeatedBosses: []
+      defeatedBosses: [],
+      points: 0
     },
     unlocks: {
       weapons: ["starter"],
@@ -33,10 +35,11 @@ function isValidSaveData(data) {
   return (
     data &&
     typeof data === "object" &&
-    data.version === 1 &&
+    data.version === 2 &&
     data.progression &&
     typeof data.progression.highestStage === "number" &&
     Array.isArray(data.progression.defeatedBosses) &&
+    typeof data.progression.points === "number" &&
     data.unlocks &&
     Array.isArray(data.unlocks.weapons) &&
     Array.isArray(data.unlocks.equipment) &&
@@ -44,6 +47,21 @@ function isValidSaveData(data) {
     typeof data.statistics.totalRuns === "number" &&
     typeof data.statistics.totalKills === "number"
   );
+}
+
+function migrateSaveData(data) {
+  if (data && typeof data === "object" && data.version === 1) {
+    return {
+      ...data,
+      version: 2,
+      progression: {
+        ...data.progression,
+        points: 0
+      }
+    };
+  }
+
+  return data;
 }
 
 function loadSave() {
@@ -54,7 +72,7 @@ function loadSave() {
       return createDefaultSaveData();
     }
 
-    const parsedData = JSON.parse(savedData);
+    const parsedData = migrateSaveData(JSON.parse(savedData));
     return isValidSaveData(parsedData) ? parsedData : createDefaultSaveData();
   } catch {
     return createDefaultSaveData();
@@ -116,6 +134,9 @@ let isGameOver = false;
 let isVictory = false;
 let isChoosingUpgrade = false;
 let score = 0;
+let runSettlementState = createRunSettlementState();
+let lastSettlement = null;
+let hasSettledRun = false;
 let level = 1;
 let xp = 0;
 let previousXpRequirement = 3;
@@ -227,6 +248,9 @@ function resetGame() {
   isVictory = false;
   isChoosingUpgrade = false;
   score = 0;
+  runSettlementState = createRunSettlementState();
+  lastSettlement = null;
+  hasSettledRun = false;
   level = 1;
   xp = 0;
   previousXpRequirement = 3;
@@ -423,7 +447,7 @@ function handleBulletEnemyCollisions() {
 
         if (enemy.hp <= 0) {
           enemies.splice(enemyIndex, 1);
-          score += 1;
+          awardRunScore(SCORE_TYPES.ENEMY_KILL, 1);
           xp += 1;
           saveData.statistics.totalKills += 1;
           saveGame();
@@ -438,6 +462,28 @@ function handleBulletEnemyCollisions() {
       }
     }
   }
+}
+
+function awardRunScore(scoreType, amount, performanceRecord) {
+  awardScore(runSettlementState, scoreType, amount, performanceRecord);
+  score = runSettlementState.score;
+}
+
+function settleRun(endReason) {
+  if (hasSettledRun) {
+    return lastSettlement;
+  }
+
+  const settlementState = selectSettlementState(runSettlementState, endReason);
+  if (!settlementState) {
+    return null;
+  }
+
+  lastSettlement = calculateSettlement(settlementState);
+  saveData.progression.points += lastSettlement.points;
+  saveGame();
+  hasSettledRun = true;
+  return lastSettlement;
 }
 
 function handleBulletBossCollisions() {
@@ -503,6 +549,7 @@ function handlePlayerEnemyCollisions() {
       if (player.hp <= 0) {
         player.hp = 0;
         isGameOver = true;
+        settleRun(RUN_END_REASONS.DEATH);
         return;
       }
     }
@@ -524,6 +571,7 @@ function handleBossPlayerCollision() {
   if (player.hp <= 0) {
     player.hp = 0;
     isGameOver = true;
+    settleRun(RUN_END_REASONS.DEATH);
   }
 }
 
