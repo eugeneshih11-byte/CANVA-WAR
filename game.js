@@ -110,14 +110,12 @@ let boss = null;
 let hasBossSpawned = false;
 let isBossDefeated = false;
 let bossDamageCooldown = 0;
-const bossDamageCooldownDuration = 1;
+const bossDamageCooldownDuration = Encounters.BOSSES["boss-1"].contactCooldown;
 const weapon = {
   damage: 1,
   bulletSpeed: 480,
   bulletSize: 10
 };
-const maxEnemies = 10;
-const spawnInterval = 2;
 const enemyStats = {
   normal: { width: 40, height: 40, speed: 120, hp: 3, maxHp: 3 },
   fast: { width: 30, height: 30, speed: 200, hp: 1, maxHp: 1 },
@@ -128,7 +126,123 @@ const enemyColors = {
   fast: "#f97316",
   tank: "#7c3aed"
 };
-let spawnTimer = 0;
+const RUN_PHASES = Object.freeze(Object.fromEntries([
+  "STAGE_ENTER", "WAVE_ACTIVE", "INTERMISSION", "BOSS_ACTIVE", "STAGE_CLEAR",
+  "STAGE_REWARD", "RUN_VICTORY", "RUN_DEAD"
+].map(phase => [phase, phase])));
+let runPhase = null;
+let stageIndex = 0;
+let stageRuntime = null;
+let currentWave = null;
+let waveRuntime = null;
+let bossRuntime = null;
+let intermissionTimer = 0;
+let stageClearTimer = 0;
+let isAbandonConfirmOpen = false;
+let isAbandoned = false;
+const abandonOverlay = document.getElementById("abandonOverlay");
+
+function clearInput() {
+  Object.keys(keys).forEach(key => { keys[key] = false; });
+}
+function startWave(index) {
+  currentWave = Encounters.generateWave(stageRuntime.definition, index, stageRuntime);
+  stageRuntime.waveIndex = index;
+  stageRuntime.recentTemplates.push(currentWave.templateId);
+  waveRuntime = Encounters.createWaveRuntime(currentWave);
+  runSettlementState.progress.currentEncounter = { id: currentWave.id, type: "wave" };
+  runPhase = RUN_PHASES.WAVE_ACTIVE;
+  clearInput();
+  observeTelemetry("startEncounter", () => ({ type: "wave", definition: currentWave, player: telemetryPlayer() }));
+}
+function enterStage() {
+  runPhase = RUN_PHASES.STAGE_ENTER;
+  stageRuntime = { definition: Encounters.STAGES[stageIndex], waveIndex: 0, recentTemplates: [], completed: false };
+  runSettlementState.progress.stage = stageIndex + 1;
+  startWave(0);
+}
+// Reserved hooks: no live clear, Boss or performance awards exist yet.
+function getEncounterAwards(type, runtime) {
+  return { type, clearScoreType: type === "wave" ? SCORE_TYPES.WAVE_CLEAR : SCORE_TYPES.BOSS_KILL,
+    clearScore: 0, performanceBonuses: [] };
+}
+function completeCurrentEncounter(type, runtime) {
+  RunSettlement.completeEncounter(runSettlementState, getEncounterAwards(type, runtime));
+  score = runSettlementState.score;
+  observeTelemetry("finishEncounter", () => ({ outcome: "clear", player: telemetryPlayer() }));
+}
+function enterIntermission() {
+  completeCurrentEncounter("wave", waveRuntime);
+  runPhase = RUN_PHASES.INTERMISSION;
+  intermissionTimer = 0;
+  bullets.length = 0;
+  clearInput();
+}
+function startBossEncounter() {
+  const definition = Encounters.BOSSES[stageRuntime.definition.boss];
+  bossRuntime = { encounterId: definition.id, elapsedTime: 0, damageTaken: 0,
+    analysis: definition.analysis, isComplete: false };
+  runSettlementState.progress.currentEncounter = { id: definition.id, type: "boss" };
+  spawnBoss();
+  runPhase = RUN_PHASES.BOSS_ACTIVE;
+  clearInput();
+  observeTelemetry("startEncounter", () => ({ type: "boss", definition,
+    stageId: stageRuntime.definition.id, waveIndex: stageRuntime.waveIndex, player: telemetryPlayer() }));
+}
+function completeBossEncounter() {
+  if (runPhase !== RUN_PHASES.BOSS_ACTIVE || !bossRuntime || bossRuntime.isComplete || !boss || boss.hp > 0 || player.hp <= 0) return;
+  bossRuntime.isComplete = true;
+  completeCurrentEncounter("boss", bossRuntime);
+  isBossDefeated = true;
+  boss = null;
+  recordBossOneDefeat();
+  stageRuntime.completed = true;
+  runSettlementState.progress.completedStages += 1;
+  saveData.progression.highestStage = Math.max(saveData.progression.highestStage, stageIndex + 1);
+  saveGame();
+  runPhase = RUN_PHASES.STAGE_CLEAR;
+  stageClearTimer = 0;
+  bullets.length = 0;
+  clearInput();
+}
+function handleStageReward(stageContext) {
+  // Architectural boundary only: no reward or healing.
+}
+function takeDamage(amount, enemyType) {
+  const hpBefore = player.hp;
+  player.hp = Math.max(0, player.hp - amount);
+  const runtime = runPhase === RUN_PHASES.BOSS_ACTIVE ? bossRuntime : waveRuntime;
+  if (runtime) runtime.damageTaken += amount;
+  observeTelemetry("recordDamage", () => ({ amount: hpBefore - player.hp, incomingDamage: amount,
+    hp: player.hp, maxHp: player.maxHp, enemyType }));
+  if (player.hp <= 0) {
+    runPhase = RUN_PHASES.RUN_DEAD;
+    isGameOver = true;
+    settleRun(RUN_END_REASONS.DEATH);
+  }
+}
+function openAbandon() {
+  if (!isGameStarted || isGameOver || isVictory || isAbandoned) return;
+  isAbandonConfirmOpen = true;
+  abandonOverlay.hidden = false;
+  clearInput();
+  document.getElementById("continueButton").focus?.();
+}
+function closeAbandon() {
+  isAbandonConfirmOpen = false;
+  abandonOverlay.hidden = true;
+  clearInput();
+}
+function abandonRun() {
+  if (!isAbandonConfirmOpen) return;
+  closeAbandon();
+  settleRun(RUN_END_REASONS.ABANDON);
+  isAbandoned = true;
+  bullets.length = 0;
+}
+document.getElementById("abandonButton").addEventListener("click", openAbandon);
+document.getElementById("continueButton").addEventListener("click", closeAbandon);
+document.getElementById("confirmAbandonButton").addEventListener("click", abandonRun);
 let isGameStarted = false;
 let isGameOver = false;
 let isVictory = false;
@@ -167,15 +281,16 @@ playButton.addEventListener("click", () => {
 canvas.addEventListener("mousemove", (event) => {
   const rect = canvas.getBoundingClientRect();
 
-  mouse.x = event.clientX - rect.left;
-  mouse.y = event.clientY - rect.top;
+  mouse.x = (event.clientX - rect.left) * canvas.width / rect.width;
+  mouse.y = (event.clientY - rect.top) * canvas.height / rect.height;
 });
 
 canvas.addEventListener("click", () => {
-  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade) {
+  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandonConfirmOpen || isAbandoned) {
     return;
   }
 
+  if (![RUN_PHASES.WAVE_ACTIVE, RUN_PHASES.BOSS_ACTIVE].includes(runPhase)) return;
   const playerCenterX = player.x + player.width / 2;
   const playerCenterY = player.y + player.height / 2;
   let directionX = mouse.x - playerCenterX;
@@ -199,17 +314,29 @@ canvas.addEventListener("click", () => {
   };
 
   bullets.push(bullet);
+  observeTelemetry("recordShot");
 });
 
 document.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
 
-  if (key === "r" && (isGameOver || isVictory)) {
+  if (key === "r" && (isGameOver || isVictory || isAbandoned)) {
     resetGame();
     return;
   }
 
-  if (!isGameStarted || isGameOver || isVictory) {
+  if (isAbandonConfirmOpen) {
+    if (key === "escape") closeAbandon();
+    if (key === "tab") {
+      event.preventDefault();
+      const continueButton = document.getElementById("continueButton");
+      const confirmButton = document.getElementById("confirmAbandonButton");
+      (document.activeElement === continueButton ? confirmButton : continueButton).focus?.();
+    }
+    return;
+  }
+
+  if (!isGameStarted || isGameOver || isVictory || isAbandoned) {
     return;
   }
 
@@ -220,7 +347,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
-  if (key in keys) {
+  if (key in keys && !event.repeat) {
     keys[key] = true;
   }
 });
@@ -243,7 +370,16 @@ function resetGame() {
   hasBossSpawned = false;
   isBossDefeated = false;
   bossDamageCooldown = 0;
-  spawnTimer = 0;
+  stageIndex = 0;
+  currentWave = null;
+  waveRuntime = null;
+  bossRuntime = null;
+  intermissionTimer = 0;
+  stageClearTimer = 0;
+  isAbandoned = false;
+  closeAbandon();
+  mouse.x = 0;
+  mouse.y = 0;
   isGameOver = false;
   isVictory = false;
   isChoosingUpgrade = false;
@@ -262,13 +398,26 @@ function resetGame() {
   keys.a = false;
   keys.s = false;
   keys.d = false;
+  observeTelemetry("startRun", () => ({ player: telemetryPlayer() }));
+  enterStage();
 }
 
 function update(deltaTime) {
-  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade) {
+  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandonConfirmOpen || isAbandoned) {
     return;
   }
 
+  if (runPhase === RUN_PHASES.STAGE_CLEAR) {
+    stageClearTimer += deltaTime;
+    if (stageClearTimer >= Encounters.CONFIG.stageClear) runPhase = RUN_PHASES.STAGE_REWARD;
+    return;
+  }
+  if (runPhase === RUN_PHASES.STAGE_REWARD) {
+    handleStageReward(stageRuntime);
+    if (stageIndex + 1 < Encounters.STAGES.length) { stageIndex++; enterStage(); }
+    else { runPhase = RUN_PHASES.RUN_VICTORY; isVictory = true; settleRun(RUN_END_REASONS.VICTORY); }
+    return;
+  }
   let directionX = 0;
   let directionY = 0;
 
@@ -303,31 +452,42 @@ function update(deltaTime) {
   player.x = Math.max(0, Math.min(player.x, canvas.width - player.width));
   player.y = Math.max(0, Math.min(player.y, canvas.height - player.height));
 
-  updateEnemySpawning(deltaTime);
-  updateEnemies(deltaTime);
-  updateBossSpawning();
-  updateBoss(deltaTime);
-  updateBossDamageCooldown(deltaTime);
-  handlePlayerEnemyCollisions();
-
-  if (isGameOver) {
+  if (runPhase === RUN_PHASES.INTERMISSION) {
+    observeTelemetry("recordIntermission", () => ({ deltaTime }));
+    intermissionTimer += deltaTime;
+    if (intermissionTimer >= Encounters.CONFIG.intermission) {
+      if (stageRuntime.waveIndex + 1 < stageRuntime.definition.waveCount) startWave(stageRuntime.waveIndex + 1);
+      else startBossEncounter();
+    }
     return;
   }
-
-  handleBossPlayerCollision();
-
-  if (isGameOver) {
-    return;
-  }
-
+  if (runPhase === RUN_PHASES.WAVE_ACTIVE) {
+    observeCombatFrame(deltaTime);
+    Encounters.updateWaveRuntime(currentWave, waveRuntime, enemies, deltaTime, spawnEnemy);
+    observeTelemetry("recordGroupRelease", () => ({ groupIndex: waveRuntime.nextSpawnGroupIndex - 1,
+      elapsedTime: waveRuntime.elapsedTime, activeEnemyCount: waveRuntime.aliveEnemyCount, activeThreat: waveRuntime.activeThreat }));
+    updateEnemies(deltaTime);
+    handlePlayerEnemyCollisions();
+    if (isGameOver) return;
+  } else if (runPhase === RUN_PHASES.BOSS_ACTIVE) {
+    observeCombatFrame(deltaTime);
+    bossRuntime.elapsedTime += deltaTime;
+    updateBoss(deltaTime);
+    updateBossDamageCooldown(deltaTime);
+    handleBossPlayerCollision();
+    if (isGameOver) return;
+  } else return;
   updateBullets(deltaTime);
-  handleBulletEnemyCollisions();
-
-  if (isChoosingUpgrade) {
-    return;
+  if (runPhase === RUN_PHASES.WAVE_ACTIVE) {
+    handleBulletEnemyCollisions();
+    if (isChoosingUpgrade || isGameOver) return;
+    Encounters.syncWaveRuntime(currentWave, waveRuntime, enemies);
+    if (waveRuntime.isComplete) { enterIntermission(); return; }
+  } else {
+    handleBulletBossCollisions();
+    if (player.hp <= 0) { takeDamage(0); return; }
+    completeBossEncounter();
   }
-
-  handleBulletBossCollisions();
 }
 
 function updateBullets(deltaTime) {
@@ -349,32 +509,9 @@ function updateBullets(deltaTime) {
   }
 }
 
-function updateEnemySpawning(deltaTime) {
-  spawnTimer += deltaTime;
-
-  while (spawnTimer >= spawnInterval) {
-    spawnTimer -= spawnInterval;
-
-    if (enemies.length < maxEnemies) {
-      spawnEnemy();
-    }
-  }
-}
-
-function spawnEnemy() {
-  const types = Object.keys(enemyStats);
-  const type = types[Math.floor(Math.random() * types.length)];
-  const stats = enemyStats[type];
-  const enemy = {
-    type,
-    x: 0,
-    y: 0,
-    width: stats.width,
-    height: stats.height,
-    speed: stats.speed,
-    hp: stats.hp,
-    maxHp: stats.maxHp
-  };
+function spawnEnemy(type = "normal", waveId = currentWave?.id) {
+  const stats = Encounters.getScaledEnemyStats(enemyStats[type], stageRuntime.definition.enemyScaling);
+  const enemy = { type, waveId, x: 0, y: 0, ...stats };
   const edge = Math.floor(Math.random() * 4);
 
   if (edge === 0) {
@@ -392,22 +529,8 @@ function spawnEnemy() {
   enemies.push(enemy);
 }
 
-function updateBossSpawning() {
-  if (level >= 5 && !hasBossSpawned && !isBossDefeated) {
-    spawnBoss();
-  }
-}
-
 function spawnBoss() {
-  boss = {
-    x: 0,
-    y: 0,
-    width: 100,
-    height: 100,
-    speed: 50,
-    hp: 50,
-    maxHp: 50
-  };
+  boss = { x: 0, y: 0, ...Encounters.BOSSES[stageRuntime.definition.boss].stats };
   const edge = Math.floor(Math.random() * 4);
 
   if (edge === 0) {
@@ -443,10 +566,14 @@ function handleBulletEnemyCollisions() {
 
       if (isOverlapping(bullet, enemy)) {
         enemy.hp -= bullet.damage;
+        observeTelemetry("recordBulletHit", () => ({ enemyType: enemy.type,
+          damage: Math.max(0, Math.min(bullet.damage, enemy.hp + bullet.damage)) }));
         bullets.splice(bulletIndex, 1);
 
         if (enemy.hp <= 0) {
           enemies.splice(enemyIndex, 1);
+          Encounters.syncWaveRuntime(currentWave, waveRuntime, enemies);
+          observeTelemetry("recordEnemyKill", () => ({ enemyType: enemy.type }));
           awardRunScore(SCORE_TYPES.ENEMY_KILL, 1);
           xp += 1;
           saveData.statistics.totalKills += 1;
@@ -476,6 +603,7 @@ function settleRun(endReason) {
 
   const settlementState = selectSettlementState(runSettlementState, endReason);
   if (!settlementState) {
+    observeRunEnd(endReason, null, null);
     return null;
   }
 
@@ -483,6 +611,7 @@ function settleRun(endReason) {
   saveData.progression.points += lastSettlement.points;
   saveGame();
   hasSettledRun = true;
+  observeRunEnd(endReason, lastSettlement, settlementState);
   return lastSettlement;
 }
 
@@ -496,12 +625,11 @@ function handleBulletBossCollisions() {
 
     if (isOverlapping(bullet, boss)) {
       boss.hp -= bullet.damage;
+      observeTelemetry("recordBulletHit", () => ({ enemyType: "boss-1",
+        damage: Math.max(0, Math.min(bullet.damage, boss.hp + bullet.damage)) }));
       bullets.splice(bulletIndex, 1);
 
       if (boss.hp <= 0) {
-        boss = null;
-        isBossDefeated = true;
-        recordBossOneDefeat();
         return;
       }
     }
@@ -515,7 +643,6 @@ function updateLevel() {
 
   xp -= xpToNextLevel;
   level += 1;
-  updateBossSpawning();
 
   const nextXpRequirement = previousXpRequirement + xpToNextLevel;
   previousXpRequirement = xpToNextLevel;
@@ -534,6 +661,9 @@ function chooseUpgrade(key) {
     return;
   }
 
+  observeTelemetry("recordUpgrade", () => ({ playerLevel: level,
+    upgradeId: { "1": "damage", "2": "bullet-speed", "3": "bullet-size" }[key],
+    upgradeName: { "1": "Damage +1", "2": "Bullet Speed +100", "3": "Bullet Size +2" }[key], weapon }));
   isChoosingUpgrade = false;
   updateLevel();
 }
@@ -543,15 +673,12 @@ function handlePlayerEnemyCollisions() {
     const enemy = enemies[enemyIndex];
 
     if (isOverlapping(player, enemy)) {
-      player.hp -= 1;
+      // This removal is guaranteed below; observe it before fatal damage can finish the report.
+      observeTelemetry("recordEnemyRemoval", () => ({ enemyType: enemy.type, reason: "contact" }));
+      takeDamage(enemy.damage ?? 1, enemy.type);
       enemies.splice(enemyIndex, 1);
-
-      if (player.hp <= 0) {
-        player.hp = 0;
-        isGameOver = true;
-        settleRun(RUN_END_REASONS.DEATH);
-        return;
-      }
+      if (waveRuntime) Encounters.syncWaveRuntime(currentWave, waveRuntime, enemies);
+      if (isGameOver) return;
     }
   }
 }
@@ -565,14 +692,8 @@ function handleBossPlayerCollision() {
     return;
   }
 
-  player.hp -= 1;
+  takeDamage(boss.damage ?? 1, "boss-1");
   bossDamageCooldown = bossDamageCooldownDuration;
-
-  if (player.hp <= 0) {
-    player.hp = 0;
-    isGameOver = true;
-    settleRun(RUN_END_REASONS.DEATH);
-  }
 }
 
 function updateBossDamageCooldown(deltaTime) {
@@ -725,6 +846,9 @@ function updateHud() {
   scoreValue.textContent = score;
   levelValue.textContent = level;
   xpValue.textContent = `${xp} / ${xpToNextLevel}`;
+  document.getElementById("stageValue").textContent = `STAGE ${stageIndex + 1}`;
+  document.getElementById("waveValue").textContent = runPhase === RUN_PHASES.BOSS_ACTIVE ? "BOSS 1" : `WAVE ${(stageRuntime?.waveIndex ?? 0) + 1} / 5`;
+  document.getElementById("abandonButton").hidden = isGameOver || isVictory || isAbandoned;
 }
 
 function drawUpgradeChoices() {
@@ -746,36 +870,93 @@ function drawUpgradeChoices() {
   ctx.restore();
 }
 
-function drawGameOver() {
-  if (!isGameOver) {
-    return;
+function drawPhasePresentation() {
+  let title = "", subtitle = "";
+  if (runPhase === RUN_PHASES.INTERMISSION) {
+    title = `WAVE ${stageRuntime.waveIndex + 1} CLEAR`;
+    subtitle = stageRuntime.waveIndex === 4 ? "BOSS INCOMING" : `NEXT: WAVE ${stageRuntime.waveIndex + 2}`;
+    subtitle += ` · ${Math.ceil(Math.max(0, Encounters.CONFIG.intermission - intermissionTimer))}`;
+  } else if (runPhase === RUN_PHASES.STAGE_CLEAR) title = "STAGE 1 CLEAR";
+  if (isGameOver || isVictory || isAbandoned) {
+    title = isAbandoned ? "ABANDONED" : isVictory ? "VICTORY" : "GAME OVER";
+    subtitle = lastSettlement ? `Score ${lastSettlement.finalScore} · Points ${lastSettlement.points}` : "No secured checkpoint · Points 0";
+    subtitle += " · Press R to Restart";
   }
-
-  ctx.save();
-  ctx.fillStyle = "#111827";
-  ctx.font = "48px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("GAME OVER", canvas.width / 2, canvas.height / 2);
-  ctx.font = "20px sans-serif";
-  ctx.fillText("Press R to Restart", canvas.width / 2, canvas.height / 2 + 40);
-  ctx.restore();
+  if (title) {
+    ctx.save(); ctx.fillStyle = "rgba(17, 24, 39, 0.88)"; ctx.fillRect(40, 230, 720, 140);
+    ctx.fillStyle = "#ffffff"; ctx.textAlign = "center";
+    ctx.font = "40px sans-serif"; ctx.fillText(title, 400, 290);
+    ctx.font = "20px sans-serif"; ctx.fillText(subtitle, 400, 335); ctx.restore();
+  }
+  if (runPhase === RUN_PHASES.BOSS_ACTIVE && boss && !isGameOver && !isAbandoned) {
+    ctx.save(); ctx.fillStyle = "#111827"; ctx.fillRect(180, 12, 440, 48);
+    ctx.fillStyle = "#ffffff"; ctx.font = "18px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("BOSS 1", 400, 33);
+    ctx.fillStyle = "#4b5563"; ctx.fillRect(200, 42, 400, 8);
+    ctx.fillStyle = "#a855f7"; ctx.fillRect(200, 42, 400 * Math.max(0, boss.hp / boss.maxHp), 8); ctx.restore();
+  }
 }
 
-function drawVictory() {
-  if (!isVictory) {
-    return;
-  }
-
-  ctx.save();
-  ctx.fillStyle = "#111827";
-  ctx.font = "48px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("YOU WIN", canvas.width / 2, canvas.height / 2);
-  ctx.font = "20px sans-serif";
-  ctx.fillText("Press R to Restart", canvas.width / 2, canvas.height / 2 + 40);
-  ctx.restore();
+// Optional observers never participate in gameplay decisions or consume generation RNG.
+function telemetryPlayer() {
+  return { playerHp: player.hp, playerMaxHp: player.maxHp, playerLevel: level, playerXp: xp,
+    weapon: { damage: weapon.damage, bulletSpeed: weapon.bulletSpeed, bulletSize: weapon.bulletSize } };
 }
-
+function initializePlaytestTelemetry() {
+  try {
+    if (typeof PlaytestTelemetry === "undefined") return null;
+    const enabled = PlaytestTelemetry.isEnabled(globalThis.location?.search || "");
+    if (!enabled) return null;
+    const telemetry = PlaytestTelemetry.createTelemetry({ enabled,
+      environment: { playtestMode: true, viewport: { width: globalThis.innerWidth || 0, height: globalThis.innerHeight || 0 },
+        devicePixelRatio: globalThis.devicePixelRatio || 1 },
+      configuration: { reference: "stage-1-initial", threatCurve: Encounters.STAGES[0].threatCurve,
+        maxActiveThreatCurve: Encounters.STAGES[0].maxActiveThreatCurve, enemies: Encounters.ENEMIES,
+        clearTimeWeights: Encounters.CONFIG.clearTime, baseHandlingTime: Encounters.CONFIG.baseHandlingTime,
+        bossExpectedClearTime: Encounters.BOSSES["boss-1"].analysis.expectedClearTime,
+        maxActiveEnemies: Encounters.CONFIG.maxActiveEnemies,
+        templates: Object.fromEntries(Object.entries(Encounters.TEMPLATES).map(([id, template]) => [id, { delays: template.delays }])) }
+    });
+    if (typeof PlaytestUI !== "undefined") {
+      try {
+        playtestView = PlaytestUI.create(telemetry);
+      } catch (error) {
+        console.warn("Playtest report UI initialization failed.", error);
+      }
+    }
+    return telemetry;
+  } catch (error) {
+    console.warn("Playtest telemetry initialization failed; gameplay continues.", error);
+    return null;
+  }
+}
+function observeTelemetry(method, details) {
+  if (!playtestTelemetry?.enabled) return;
+  try {
+    playtestTelemetry[method](details?.());
+    if (method === "startRun" || method === "finishRun") playtestView?.refresh();
+  } catch (error) {
+    console.warn(`Playtest telemetry ${method} failed; gameplay continues.`, error);
+  }
+}
+function observeCombatFrame(deltaTime) {
+  observeTelemetry("recordEncounterFrame", () => {
+    const living = runPhase === RUN_PHASES.WAVE_ACTIVE ? enemies.filter(enemy => enemy.waveId === currentWave.id && enemy.hp > 0) : [];
+    const enemiesByType = {};
+    living.forEach(enemy => { enemiesByType[enemy.type] = (enemiesByType[enemy.type] || 0) + 1; });
+    return { deltaTime, hp: player.hp, maxHp: player.maxHp, activeEnemyCount: living.length,
+      activeThreat: living.reduce((sum, enemy) => sum + Encounters.ENEMIES[enemy.type].threatCost, 0), enemiesByType,
+      nextSpawnGroupIndex: waveRuntime?.nextSpawnGroupIndex, groupDelayElapsed: waveRuntime?.groupDelayElapsed };
+  });
+}
+function observeRunEnd(endReason, result, sourceState) {
+  observeTelemetry("finishRun", () => ({ endReason, player: telemetryPlayer(), settlement: {
+    endReason, settlementSource: sourceState ? (endReason === RUN_END_REASONS.ABANDON ? "secured-checkpoint" : "current-run") : "none",
+    result, sourceState, securedCheckpoint: runSettlementState.securedCheckpoint
+  } }));
+}
+let playtestView = null;
+const playtestTelemetry = initializePlaytestTelemetry();
 let lastTime = null;
 
 function gameLoop(timestamp) {
@@ -790,8 +971,7 @@ function gameLoop(timestamp) {
   drawBullets();
   drawWeaponDamage();
   drawUpgradeChoices();
-  drawGameOver();
-  drawVictory();
+  drawPhasePresentation();
   updateHud();
 
   requestAnimationFrame(gameLoop);

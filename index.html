@@ -15,14 +15,20 @@
 
     <section id="gameInterface" class="game-screen" hidden>
       <header class="hud">
-        <span>HP: <strong id="hpValue"></strong></span>
-        <span>Score: <strong id="scoreValue"></strong></span>
-        <span>Level: <strong id="levelValue"></strong></span>
-        <span>XP: <strong id="xpValue"></strong></span>
+        <div class="hud-player"><span>HP: <strong id="hpValue"></strong></span>
+          <span>Level: <strong id="levelValue"></strong> · XP: <strong id="xpValue"></strong></span></div>
+        <div class="hud-stage"><strong id="stageValue">STAGE 1</strong><span id="waveValue">WAVE 1 / 5</span></div>
+        <div class="hud-score"><span>Score: <strong id="scoreValue"></strong></span>
+          <button id="abandonButton" type="button">Abandon</button></div>
       </header>
 
       <div class="main-game-layout">
         <div class="canvas-area">
+          <div id="abandonOverlay" class="abandon-overlay" role="dialog" aria-modal="true" aria-label="Abandon run" hidden>
+            <h2>Abandon this run?</h2><p>Only the last cleared encounter is secured.</p>
+            <button id="continueButton" type="button">CONTINUE</button>
+            <button id="confirmAbandonButton" type="button">ABANDON RUN</button>
+          </div>
           <canvas id="gameCanvas" width="800" height="600"></canvas>
         </div>
 
@@ -35,6 +41,9 @@
   </main>
 
   <script src="settlement.js"></script>
+  <script src="encounters.js"></script>
+  <script src="telemetry.js"></script>
+  <script src="telemetry-ui.js"></script>
   <script src="game.js"></script>
 </body>
 </html>
