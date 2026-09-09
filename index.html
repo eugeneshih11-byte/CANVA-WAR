@@ -29,12 +29,30 @@
             <button id="continueButton" type="button">CONTINUE</button>
             <button id="confirmAbandonButton" type="button">ABANDON RUN</button>
           </div>
+          <div id="upgradeOverlay" class="upgrade-overlay" role="dialog" aria-modal="true" aria-labelledby="upgradeTitle" aria-describedby="upgradeMessage" hidden>
+            <div class="upgrade-dialog">
+              <h2 id="upgradeTitle">LEVEL UP</h2>
+              <p id="upgradeMessage">Choose one upgrade. Press 1, 2, or 3.</p>
+              <div id="upgradeChoices" class="upgrade-choices"></div>
+            </div>
+          </div>
           <canvas id="gameCanvas" width="800" height="600"></canvas>
         </div>
 
-        <aside class="inventory-area">
-          <h2>Items / Inventory</h2>
-          <p>Items and equipment will appear here.</p>
+        <aside class="inventory-area build-panel" aria-labelledby="buildTitle">
+          <h2 id="buildTitle">BUILD</h2>
+          <dl class="build-stats">
+            <div class="build-weapon-row"><dt>Weapon</dt><dd id="buildWeaponName">Starter</dd></div>
+            <div><dt>Damage</dt><dd id="buildDamage">1</dd></div>
+            <div><dt>Fire rate</dt><dd id="buildFireRate">4.0/s</dd></div>
+            <div><dt>Projectiles</dt><dd id="buildProjectileCount">1</dd></div>
+            <div><dt>Move speed</dt><dd id="buildMoveSpeed">240</dd></div>
+            <div><dt>Max HP</dt><dd id="buildMaxHp">5</dd></div>
+          </dl>
+          <h3>Upgrades</h3>
+          <ul id="buildUpgradeList" class="build-upgrade-list">
+            <li class="build-empty">No upgrades yet.</li>
+          </ul>
         </aside>
       </div>
     </section>
@@ -42,6 +60,8 @@
 
   <script src="settlement.js"></script>
   <script src="encounters.js"></script>
+  <script src="weapons.js"></script>
+  <script src="build.js"></script>
   <script src="telemetry.js"></script>
   <script src="telemetry-ui.js"></script>
   <script src="game.js"></script>

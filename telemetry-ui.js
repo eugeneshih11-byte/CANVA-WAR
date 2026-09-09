@@ -51,7 +51,7 @@
         const wrapper = element("div", "", "playtest-table-scroll");
         const table = element("table");
         const head = element("tr");
-        ["Encounter", "Template", "Threat / budget", "Encounter time", "Clear ratio", "Damage", "Peak Threat", "Avg Threat", "Blocked (s)", "Outcome"]
+        ["Encounter", "Template", "Threat / budget", "Encounter time", "Clear ratio", "Attacks / projectiles", "Damage", "Peak Threat", "Avg Threat", "Blocked (s)", "Outcome"]
           .forEach(label => head.append(element("th", label)));
         const thead = element("thead"); thead.append(head); table.append(thead);
         const body = element("tbody");
@@ -60,6 +60,7 @@
           const values = [encounter.type === "boss" ? encounter.bossId : `Wave ${encounter.waveIndex + 1}`,
             encounter.templateId || "—", encounter.type === "boss" ? "—" : `${format(encounter.generatedThreat)} / ${format(encounter.threatBudget)}`,
             encounterTimeSummary(encounter), encounterClearRatio(encounter),
+            `${format(encounter.attackEvents)} / ${format(encounter.shotsFired)}`,
             format(encounter.damageTaken), format(encounter.peakActiveThreat), format(encounter.averageActiveThreat),
             format(encounter.pressureBlockedTime), encounter.outcome];
           values.forEach(value => row.append(element("td", String(value))));

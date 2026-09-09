@@ -12,16 +12,40 @@ const plain = value => JSON.parse(JSON.stringify(value));
 function loadGame(search = "", options = {}) {
   const listeners = {}, elements = {}, storage = new Map(), writes = [], warnings = [];
   let randomCalls = 0, randomState = 751;
-  const element = id => ({
-    textContent: "", hidden: id !== "startScreen", style: {},
-    classList: { add() {}, remove() {}, contains() { return false; } },
-    focus() {},
-    addEventListener(type, callback) { listeners[`${id}:${type}`] = callback; }
-  });
+  let document;
+  const element = id => {
+    let textContent = "";
+    const node = {
+      id, hidden: id !== "startScreen", style: {}, className: "", dataset: {},
+      attributes: {}, children: [], eventListeners: {},
+      classList: { add() {}, remove() {}, contains() { return false; } },
+      get textContent() { return textContent; },
+      set textContent(value) {
+        textContent = String(value ?? "");
+        if (textContent === "") node.children.length = 0;
+      },
+      focus() { document.activeElement = node; },
+      setAttribute(name, value) { node.attributes[name] = String(value); },
+      append(...children) { node.children.push(...children); },
+      appendChild(child) { node.children.push(child); return child; },
+      replaceChildren(...children) { node.children.splice(0, node.children.length, ...children); },
+      addEventListener(type, callback) {
+        node.eventListeners[type] = callback;
+        if (id) listeners[`${id}:${type}`] = callback;
+      }
+    };
+    return node;
+  };
   elements.gameCanvas = {
     ...element("canvas"), width: 800, height: 600,
     getContext() { return { clearRect() {}, fillRect() {}, fillText() {}, save() {}, restore() {} }; },
     getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; }
+  };
+  document = {
+    activeElement: null,
+    getElementById(id) { return elements[id] ||= element(id); },
+    createElement(tagName) { return element(""); },
+    addEventListener(type, callback) { listeners[type] = callback; }
   };
   const context = {
     Date, URLSearchParams,
@@ -36,39 +60,50 @@ function loadGame(search = "", options = {}) {
       getItem(key) { return storage.get(key) ?? null; },
       setItem(key, value) { storage.set(key, String(value)); writes.push([key, String(value)]); }
     },
-    document: {
-      getElementById(id) { return elements[id] ||= element(id); },
-      addEventListener(type, callback) { listeners[type] = callback; }
-    },
+    document,
+    addEventListener(type, callback) { listeners[`window:${type}`] = callback; },
     requestAnimationFrame() {}
   };
   context.globalThis = context;
   context.window = context;
   vm.createContext(context);
-  for (const file of ["settlement.js", "encounters.js", "telemetry.js"]) {
+  for (const file of ["settlement.js", "encounters.js", "weapons.js", "build.js", "telemetry.js"]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context, { filename: file });
   }
   options.beforeGame?.(context);
   vm.runInContext(fs.readFileSync(path.join(root, "game.js"), "utf8") + `
     globalThis.__testGame = {
-      player, enemies, bullets, weapon, keys,
+      player, enemies, bullets, keys,
       resetGame, update, startWave, startBossEncounter, completeBossEncounter,
       enterIntermission, openAbandon, closeAbandon, abandonRun,
       handleBulletEnemyCollisions, handlePlayerEnemyCollisions,
       handleBulletBossCollisions, handleBossPlayerCollision,
       chooseUpgrade, updateLevel, takeDamage, settleRun, observeTelemetry,
+      fireWeaponAttack, beginAttack, endAttack, updateWeaponRuntime,
       get telemetry() { return playtestTelemetry; },
+      get weapon() { return weapon; },
+      get build() { return buildState; },
+      get choices() { return currentUpgradeChoices; },
+      get weaponRuntime() { return weaponRuntime; },
       get state() {
         return { score, level, xp, isChoosingUpgrade, isGameOver, isVictory,
           isAbandoned, runPhase, stageIndex, stageRuntime, currentWave,
           waveRuntime, bossRuntime, boss, intermissionTimer, stageClearTimer,
-          runSettlementState, lastSettlement, saveData };
+          runSettlementState, lastSettlement, saveData, xpToNextLevel };
       },
       setState(values) {
         if ("xp" in values) xp = values.xp;
         if ("level" in values) level = values.level;
         if ("isChoosingUpgrade" in values) isChoosingUpgrade = values.isChoosingUpgrade;
         if ("boss" in values) boss = values.boss;
+      },
+      presentUpgradeChoices(ids) {
+        currentUpgradeChoices = ids.map(id => RunBuild.UPGRADES[id]);
+        isChoosingUpgrade = true;
+        renderUpgradeChoices();
+      },
+      setUpgradeRng(rng) {
+        upgradeRng = rng;
       }
     };
   `, context, { filename: "game.js" });
@@ -104,6 +139,13 @@ function finishByAbandon(game) {
   game.abandonRun();
 }
 
+function primaryAttack(game, clientX = 700, clientY = 300) {
+  game.listeners["canvas:pointerdown"]({
+    button: 0, clientX, clientY, preventDefault() {}
+  });
+  game.listeners.pointerup({ button: 0 });
+}
+
 function current(game) { return game.telemetry.getCurrentRun(); }
 function session(game) { return game.telemetry.getSessionReport(); }
 function lastRun(game) { return session(game).runs.at(-1); }
@@ -126,7 +168,7 @@ test("game telemetry is opt-in, does not initialize a Run on page load, and cons
   assert.equal(session(enabled).runs.length, 0);
 });
 
-test("Wave start snapshots exact definition, analysis, Player and existing weapon state", () => {
+test("Wave start snapshots exact definition, analysis, resolved Player and full Starter Weapon state", () => {
   const game = loadGame("?playtest=1"); game.start();
   const encounter = currentEncounter(game), wave = game.state.currentWave;
   assert.equal(encounter.type, "wave");
@@ -138,11 +180,49 @@ test("Wave start snapshots exact definition, analysis, Player and existing weapo
   assert.deepEqual(plain(encounter.analysis), plain(wave.analysis));
   assert.equal(encounter.startHp, 5);
   assert.equal(encounter.playerLevelStart, 1);
-  assert.deepEqual(plain(encounter.playerStart.weapon), { damage: 1, bulletSpeed: 480, bulletSize: 10 });
+  assert.deepEqual(plain(encounter.playerStart.weapon), {
+    id: "starter", name: "Starter", damage: 1, fireRate: 4,
+    bulletSpeed: 480, bulletSize: 10, projectileCount: 1,
+    spreadDegrees: 0, pierce: 0
+  });
   assert.equal(encounter.playerStart.playerXp, 0);
+  assert.equal(encounter.playerStart.playerSpeed, 240);
+  assert.equal(encounter.playerStart.playerMaxHp, 5);
+  assert.deepEqual(plain(encounter.playerStart.build), { upgradeStacks: {
+    "rapid-fire": 0, "heavy-shot": 0, "split-shot": 0, vitality: 0, "swift-feet": 0
+  } });
   assert.equal(encounter.spawnGroups.length, wave.spawnGroups.length);
   assert.equal(encounter.configuredSpawnFloor, wave.spawnGroups.reduce((sum, group) => sum + group.delay, 0));
   assert.equal(Object.isFrozen(wave), true);
+});
+
+test("telemetry configuration snapshots immutable Weapon, Upgrade and Player balance data as plain JSON", () => {
+  const game = loadGame("?playtest=1");
+  const configuration = session(game).configuration;
+
+  assert.deepEqual(plain(configuration.starterWeapon), {
+    id: "starter", name: "Starter", damage: 1, fireRate: 4,
+    bulletSpeed: 480, bulletSize: 10, projectileCount: 1,
+    spreadDegrees: 0, pierce: 0
+  });
+  assert.deepEqual(plain(configuration.playerBaseStats), { maxHp: 5, speed: 240 });
+  assert.equal(configuration.technicalFireRateCap, 12);
+  assert.deepEqual(Object.keys(configuration.upgrades).sort(),
+    ["heavy-shot", "rapid-fire", "split-shot", "swift-feet", "vitality"]);
+  assert.deepEqual(Object.fromEntries(Object.entries(configuration.upgrades)
+    .map(([id, upgrade]) => [id, upgrade.maxStacks])), {
+    "rapid-fire": 4, "heavy-shot": 4, "split-shot": 2, vitality: 3, "swift-feet": 4
+  });
+  assert.deepEqual(plain(configuration.upgrades["rapid-fire"].effects), { fireRateMultiplier: 1.2 });
+  assert.deepEqual(plain(configuration.upgrades["heavy-shot"].effects), {
+    damageAdd: 1, bulletSizeAdd: 1, fireRateMultiplier: 0.92
+  });
+  assert.deepEqual(plain(configuration.upgrades["split-shot"].effects), {
+    projectileCountAdd: 1, spreadDegrees: 12, damageMultipliers: [1, 0.75, 0.65]
+  });
+  assert.deepEqual(plain(configuration.upgrades.vitality.effects), { maxHpAdd: 1, healOnSelect: 1 });
+  assert.deepEqual(plain(configuration.upgrades["swift-feet"].effects), { speedMultiplier: 1.08 });
+  assert.equal(JSON.stringify(configuration).includes("function"), false);
 });
 
 test("identical RNG and input produce identical combat, generated Waves, checkpoints and save writes", () => {
@@ -155,7 +235,7 @@ test("identical RNG and input produce identical combat, generated Waves, checkpo
       game.update(0.05);
       game.listeners.keyup({ key: "d" });
       game.listeners["canvas:mousemove"]({ clientX: 10, clientY: 10 });
-      game.listeners["canvas:click"]();
+      primaryAttack(game, 10, 10);
       game.update(0.025);
       game.enemies.length = 0;
       game.bullets.length = 0;
@@ -246,7 +326,7 @@ test("real Spawn Group hooks distinguish configured delay from pressure and reco
 
 test("shot and successful hit hooks preserve collision results, kill credits and contact removals", () => {
   const game = loadGame("?playtest=1"); game.start();
-  game.listeners["canvas:click"]();
+  primaryAttack(game);
   assert.equal(game.bullets.length, 1);
   game.bullets.length = 0;
   game.enemies.push(enemy(game, { hp: 2 }));
@@ -258,6 +338,7 @@ test("shot and successful hit hooks preserve collision results, kill credits and
   game.enemies.push(enemy(game, { type: "fast", x: game.player.x, y: game.player.y }));
   game.handlePlayerEnemyCollisions();
   const encounter = currentEncounter(game);
+  assert.equal(encounter.attackEvents, 1);
   assert.equal(encounter.shotsFired, 1);
   assert.equal(encounter.bulletHits, 2);
   assert.equal(encounter.killsByEnemyType.normal, 1);
@@ -315,19 +396,80 @@ test("last kill that opens Level-Up retains the same encounter until the resumed
   assert.deepEqual(plain(currentEncounter(game)), finished);
 });
 
-test("each existing prototype Upgrade records its identifier and resulting stats", () => {
+test("formal Upgrade choices record the selected displayed ID and resolved Weapon, Player and Build snapshots", () => {
   const game = loadGame("?playtest=1"); game.start();
-  for (const key of ["1", "2", "3"]) {
-    game.setState({ xp: 100, isChoosingUpgrade: false });
+  const selectedIds = [];
+
+  for (let selection = 0; selection < 3; selection++) {
+    game.setState({ xp: game.state.xpToNextLevel, isChoosingUpgrade: false });
     game.updateLevel();
-    game.listeners.keydown({ key });
+    assert.equal(game.state.isChoosingUpgrade, true);
+    assert.equal(game.choices.length, 3);
+    assert.equal(new Set(game.choices.map(choice => choice.id)).size, 3);
+    assert.equal(game.elements.upgradeChoices.children.length, 3);
+
+    const index = selection % game.choices.length;
+    const selected = game.choices[index];
+    selectedIds.push(selected.id);
+    game.listeners.keydown({ key: String(index + 1), repeat: false });
+
+    const entry = current(game).upgradeHistory.at(-1);
+    assert.equal(entry.upgradeId, selected.id);
+    assert.equal(entry.upgradeName, selected.name);
+    assert.equal(entry.upgradeStack, game.build.upgradeStacks[selected.id]);
+    assert.deepEqual(plain(entry.weapon), plain(game.weapon));
+    assert.deepEqual(plain(entry.build), plain(game.build));
+    assert.deepEqual(plain(entry.player.weapon), plain(game.weapon));
+    assert.deepEqual(plain(entry.player.build), plain(game.build));
+    assert.equal(entry.player.playerSpeed, game.player.speed);
+    assert.equal(entry.player.playerMaxHp, game.player.maxHp);
   }
+
   const history = current(game).upgradeHistory;
   assert.equal(history.length, 3);
-  assert.equal(new Set(history.map(entry => entry.upgradeId)).size, 3);
-  assert.deepEqual(plain(history.at(-1).weapon), { damage: 2, bulletSpeed: 580, bulletSize: 12 });
+  assert.deepEqual(plain(history.map(entry => entry.upgradeId)), selectedIds);
+  assert.equal(history.every(entry => Object.hasOwn(game.context.RunBuild.UPGRADES, entry.upgradeId)), true);
   assert.equal(history.every(entry => entry.playerLevel >= 2), true);
-  assert.equal(history[0].weapon.bulletSpeed, 480);
+});
+
+test("Split Shot records one attack event per discharge and projectile-level shots at both stacks", () => {
+  const game = loadGame("?playtest=1"); game.start();
+
+  game.presentUpgradeChoices(["split-shot", "vitality", "rapid-fire"]);
+  assert.equal(game.elements.upgradeChoices.children.length, 3);
+  assert.equal(game.bullets.length, 0);
+  game.elements.upgradeChoices.children[0].eventListeners.click();
+  assert.equal(game.bullets.length, 0);
+  assert.equal(game.weapon.projectileCount, 2);
+  assert.equal(game.weapon.damage, 0.75);
+
+  primaryAttack(game);
+  let encounter = currentEncounter(game);
+  assert.equal(encounter.attackEvents, 1);
+  assert.equal(encounter.shotsFired, 2);
+  assert.equal(game.bullets.length, 2);
+  assert.equal(current(game).upgradeHistory[0].upgradeId, "split-shot");
+  assert.equal(current(game).upgradeHistory[0].build.upgradeStacks["split-shot"], 1);
+  assert.deepEqual(plain(current(game).upgradeHistory[0].player.weapon), plain(game.weapon));
+
+  game.bullets.length = 0;
+  game.updateWeaponRuntime(1);
+  game.presentUpgradeChoices(["split-shot", "heavy-shot", "swift-feet"]);
+  game.listeners.keydown({ key: "1", repeat: false });
+  assert.equal(game.weapon.projectileCount, 3);
+  assert.equal(game.weapon.damage, 0.65);
+
+  primaryAttack(game);
+  encounter = currentEncounter(game);
+  assert.equal(encounter.attackEvents, 2);
+  assert.equal(encounter.shotsFired, 5);
+  assert.equal(game.bullets.length, 3);
+  const secondUpgrade = current(game).upgradeHistory.at(-1);
+  assert.equal(secondUpgrade.upgradeId, "split-shot");
+  assert.equal(secondUpgrade.upgradeStack, 2);
+  assert.equal(secondUpgrade.build.upgradeStacks["split-shot"], 2);
+  assert.deepEqual(plain(secondUpgrade.weapon), plain(game.weapon));
+  assert.deepEqual(plain(secondUpgrade.player.weapon), plain(game.weapon));
 });
 
 test("Abandon records the partial current Wave while observing the exact secured-checkpoint Settlement", () => {
@@ -433,7 +575,9 @@ test("completed Run snapshots and exported JSON remain stable through New Runs",
   exported.finalPlayerHp = 999;
   exported.encounters[0].analysis.expectedClearTime = 999;
   game.listeners.keydown({ key: "r" });
-  game.weapon.damage = 20;
+  game.presentUpgradeChoices(["heavy-shot", "rapid-fire", "vitality"]);
+  game.chooseUpgrade("1");
+  assert.equal(game.weapon.damage, 2);
   game.update(0.1); finishByAbandon(game);
   assert.equal(session(game).runs.length, 2);
   assert.equal(current(game).completed, true);

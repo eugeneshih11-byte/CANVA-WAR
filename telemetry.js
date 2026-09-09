@@ -118,7 +118,8 @@
         minimumHpRatio: playerStart.playerMaxHp > 0 ? playerStart.playerHp / playerStart.playerMaxHp : 0,
         timeAtOrBelow30PercentHp: 0, playerLevelStart: playerStart.playerLevel, playerLevelEnd: playerStart.playerLevel,
         killsByEnemyType: {}, nonKillRemovalsByEnemyType: {}, nonKillRemovalsByReason: {},
-        shotsFired: 0, bulletHits: 0, bulletHitsByEnemyType: {}, bulletDamageByEnemyType: {}, enemySecondsByType: {},
+        attackEvents: 0, shotsFired: 0, bulletHits: 0,
+        bulletHitsByEnemyType: {}, bulletDamageByEnemyType: {}, enemySecondsByType: {},
         peakActiveEnemyCount: 0, peakActiveThreat: 0, configuredSpawnFloor: spawnGroups.reduce((sum, g) => sum + g.delay, 0),
         groupReleaseTimes: [], lastSpawnGroupReleaseTime: null, actualLastGroupReleaseTime: null,
         pressureBlockedTime: 0, pressureBlockedEvents: 0, threatBlockedTime: 0, enemyCountBlockedTime: 0, outcome: null };
@@ -182,12 +183,16 @@
       }
       observeHp(hp, maxHp);
     }
-    function recordUpgrade({ playerLevel, upgradeId, upgradeName, weapon }) {
+    function recordUpgrade(details = {}) {
       if (!run) return;
-      run.upgradeHistory.push(copy({ playerLevel, upgradeId, upgradeName, weapon,
+      const playerLevel = details.playerLevel;
+      run.upgradeHistory.push(copy({ ...details,
         encounterIndex: encounter ? run.encounters.length : null, activeCombatTime: run.totalActiveCombatTime }));
       run.finalPlayerLevel = playerLevel;
       if (encounter) encounter.data.playerLevelEnd = playerLevel;
+    }
+    function recordAttack() {
+      if (encounter) encounter.data.attackEvents++;
     }
     const report = runs => copy({ schemaVersion: 1, generatedAt: timestamp(), environment, configuration, runs });
     return Object.freeze({ enabled,
@@ -197,6 +202,8 @@
       recordIntermission: safe("record intermission", ({ deltaTime }) => {
         if (run) run.totalIntermissionTime += nonNegative(deltaTime);
       }),
+      recordAttack: safe("record attack", recordAttack),
+      recordAttackEvent: safe("record attack event", recordAttack),
       recordShot: safe("record shot", () => { if (encounter) encounter.data.shotsFired++; }),
       recordBulletHit: safe("record bullet hit", ({ enemyType, damage }) => {
         if (!encounter || nonNegative(damage) === 0) return;

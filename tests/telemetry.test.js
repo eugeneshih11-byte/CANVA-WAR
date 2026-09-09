@@ -7,8 +7,10 @@ require("../encounters.js");
 require("../telemetry.js");
 const E = globalThis.Encounters, T = globalThis.PlaytestTelemetry;
 const copy = value => JSON.parse(JSON.stringify(value));
-const player = { playerHp: 10, playerMaxHp: 10, playerLevel: 2, playerXp: 3,
-  weapon: { damage: 2, bulletSpeed: 410, bulletSize: 8 } };
+const player = { playerHp: 10, playerMaxHp: 10, playerSpeed: 240, playerLevel: 2, playerXp: 3,
+  weapon: { damage: 2, fireRate: 4, bulletSpeed: 410, bulletSize: 8,
+    projectileCount: 1, spreadDegrees: 0, pierce: 0 },
+  build: { upgrades: { "rapid-fire": 0, "split-shot": 0 } } };
 const configuration = { enemies: E.ENEMIES, maxActiveEnemies: E.CONFIG.maxActiveEnemies,
   threatCurve: E.STAGES[0].threatCurve, clearTime: E.CONFIG.clearTime };
 const wave = { id: "stage-1-wave-1", stageId: "stage-1", waveIndex: 0, templateId: "basic",
@@ -225,14 +227,16 @@ test("30-percent threshold uses pre-frame HP and excludes paused duration", () =
   assert.deepEqual(encounter.analysis, wave.analysis);
   assert.equal(telemetry.getCurrentRun().settlement, null);
 });
-test("shots, successful bullet hits, kills and contact removals remain distinct", () => {
+test("attack events, projectiles, successful bullet hits, kills and contact removals remain distinct", () => {
   const telemetry = start();
+  telemetry.recordAttack();
   for (let i = 0; i < 3; i++) telemetry.recordShot();
   telemetry.recordBulletHit({ enemyType: "normal", damage: 2 });
   telemetry.recordBulletHit({ enemyType: "tank", damage: 2 });
   telemetry.recordEnemyKill({ enemyType: "normal" });
   telemetry.recordEnemyRemoval({ enemyType: "tank", reason: "contact" });
   const encounter = currentEncounter(telemetry);
+  assert.equal(encounter.attackEvents, 1);
   assert.equal(encounter.shotsFired, 3);
   assert.equal(encounter.bulletHits, 2);
   assert.deepEqual(encounter.bulletHitsByEnemyType, { normal: 1, tank: 1 });
@@ -241,17 +245,33 @@ test("shots, successful bullet hits, kills and contact removals remain distinct"
   assert.deepEqual(encounter.nonKillRemovalsByEnemyType, { tank: 1 });
   assert.deepEqual(encounter.nonKillRemovalsByReason, { contact: 1 });
 });
-test("Player and upgrade snapshots preserve actual existing build values", () => {
+test("recordAttackEvent remains a compatible alias for one attack discharge", () => {
   const telemetry = start();
-  const weapon = { damage: 3, bulletSpeed: 410, bulletSize: 8 };
-  telemetry.recordUpgrade({ playerLevel: 3, upgradeId: "damage", upgradeName: "Damage +1", weapon });
+  telemetry.recordAttackEvent();
+  assert.equal(currentEncounter(telemetry).attackEvents, 1);
+  assert.equal(currentEncounter(telemetry).shotsFired, 0);
+});
+test("Player and upgrade snapshots preserve resolved stats and formal build values as plain data", () => {
+  const telemetry = start();
+  const weapon = { damage: 3, fireRate: 4.8, bulletSpeed: 410, bulletSize: 8,
+    projectileCount: 3, spreadDegrees: 12, pierce: 1 };
+  const upgradedPlayer = { playerHp: 9, playerMaxHp: 11, playerSpeed: 259.2, playerLevel: 3 };
+  const build = { upgrades: { "rapid-fire": 1, "split-shot": 2 }, resolver() { return weapon; } };
+  telemetry.recordUpgrade({ playerLevel: 3, upgradeId: "split-shot", upgradeName: "Split Shot",
+    upgradeStack: 2, weapon, player: upgradedPlayer, build });
   weapon.damage = 100;
+  upgradedPlayer.playerSpeed = 1;
+  build.upgrades["split-shot"] = 0;
   const run = telemetry.getCurrentRun(), encounter = run.encounters[0];
   assert.deepEqual(encounter.playerStart, player);
   assert.equal(encounter.playerLevelStart, 2);
   assert.equal(encounter.playerLevelEnd, 3);
-  assert.deepEqual(run.upgradeHistory[0], { playerLevel: 3, upgradeId: "damage", upgradeName: "Damage +1",
-    weapon: { damage: 3, bulletSpeed: 410, bulletSize: 8 }, encounterIndex: 0, activeCombatTime: 0 });
+  assert.deepEqual(run.upgradeHistory[0], { playerLevel: 3, upgradeId: "split-shot", upgradeName: "Split Shot",
+    upgradeStack: 2, weapon: { damage: 3, fireRate: 4.8, bulletSpeed: 410, bulletSize: 8,
+      projectileCount: 3, spreadDegrees: 12, pierce: 1 },
+    player: { playerHp: 9, playerMaxHp: 11, playerSpeed: 259.2, playerLevel: 3 },
+    build: { upgrades: { "rapid-fire": 1, "split-shot": 2 } }, encounterIndex: 0, activeCombatTime: 0 });
+  assert.equal(typeof run.upgradeHistory[0].build.resolver, "undefined");
 });
 test("Wave Clear finalizes exactly once and later hooks cannot change it", () => {
   const telemetry = start();
@@ -430,5 +450,6 @@ test("Run and session report envelopes are versioned, serializable plain data", 
   assert.equal(exported.runs[0].encounters[0].encounterElapsedTime, 2);
   assert.equal(exported.runs[0].encounters[0].actualClearTime, null);
   assert.equal(exported.runs[0].encounters[0].clearTimeRatio, null);
+  assert.equal(exported.runs[0].encounters[0].attackEvents, 0);
   assert.deepEqual(telemetry.getRunReport(), report);
 });

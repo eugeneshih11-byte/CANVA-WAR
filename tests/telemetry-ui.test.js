@@ -90,6 +90,8 @@ function encounter(overrides) {
     peakActiveThreat: 4,
     averageActiveThreat: 3,
     pressureBlockedTime: 0,
+    attackEvents: 4,
+    shotsFired: 6,
     outcome: "death",
     ...overrides
   };
@@ -105,6 +107,7 @@ test("report UI shows elapsed time but no clear time or ratio for incomplete enc
   assert.ok(cells.includes("Elapsed: 7.25s · Clear: — · Expected: 22.5s"));
   assert.equal(cells.filter(value => value === "—").length >= 2, true);
   assert.equal(cells.includes("0.55"), false);
+  assert.ok(cells.includes("4 / 6"));
 });
 
 test("report UI shows numeric clear time and ratio for a cleared encounter", () => {

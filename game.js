@@ -7,6 +7,10 @@ const hpValue = document.getElementById("hpValue");
 const scoreValue = document.getElementById("scoreValue");
 const levelValue = document.getElementById("levelValue");
 const xpValue = document.getElementById("xpValue");
+const upgradeOverlay = document.getElementById("upgradeOverlay");
+const upgradeTitle = document.getElementById("upgradeTitle");
+const upgradeMessage = document.getElementById("upgradeMessage");
+const upgradeChoices = document.getElementById("upgradeChoices");
 const { RUN_END_REASONS, SCORE_TYPES, createRunSettlementState, awardScore, selectSettlementState, calculateSettlement } = RunSettlement;
 
 const saveStorageKey = "canva-war-save";
@@ -99,9 +103,9 @@ const player = {
   y: 280,
   width: 40,
   height: 40,
-  speed: 240,
-  hp: 5,
-  maxHp: 5
+  speed: RunBuild.PLAYER_BASE_STATS.speed,
+  hp: RunBuild.PLAYER_BASE_STATS.maxHp,
+  maxHp: RunBuild.PLAYER_BASE_STATS.maxHp
 };
 
 const enemies = [];
@@ -111,11 +115,12 @@ let hasBossSpawned = false;
 let isBossDefeated = false;
 let bossDamageCooldown = 0;
 const bossDamageCooldownDuration = Encounters.BOSSES["boss-1"].contactCooldown;
-const weapon = {
-  damage: 1,
-  bulletSpeed: 480,
-  bulletSize: 10
-};
+let buildState = RunBuild.createBuildState();
+let weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
+let playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
+let upgradeRng = null;
+let currentUpgradeChoices = [];
+const weaponRuntime = { timeUntilNextShot: 0, attackHeld: false };
 const enemyStats = {
   normal: { width: 40, height: 40, speed: 120, hp: 3, maxHp: 3 },
   fast: { width: 30, height: 30, speed: 200, hp: 1, maxHp: 1 },
@@ -142,8 +147,24 @@ let isAbandonConfirmOpen = false;
 let isAbandoned = false;
 const abandonOverlay = document.getElementById("abandonOverlay");
 
-function clearInput() {
+function createUpgradeRng() {
+  let seed = 0x43414e56;
+  try {
+    if (typeof globalThis.crypto?.getRandomValues === "function") {
+      const values = new Uint32Array(1);
+      globalThis.crypto.getRandomValues(values);
+      seed = values[0];
+    }
+  } catch {
+    // A deterministic private stream is a safe fallback and never consumes Wave RNG.
+  }
+  return Weapons.createSeededRng(seed);
+}
+
+function clearInput({ weaponReady = false } = {}) {
   Object.keys(keys).forEach(key => { keys[key] = false; });
+  weaponRuntime.attackHeld = false;
+  if (weaponReady) weaponRuntime.timeUntilNextShot = 0;
 }
 function startWave(index) {
   currentWave = Encounters.generateWave(stageRuntime.definition, index, stageRuntime);
@@ -152,7 +173,7 @@ function startWave(index) {
   waveRuntime = Encounters.createWaveRuntime(currentWave);
   runSettlementState.progress.currentEncounter = { id: currentWave.id, type: "wave" };
   runPhase = RUN_PHASES.WAVE_ACTIVE;
-  clearInput();
+  clearInput({ weaponReady: true });
   observeTelemetry("startEncounter", () => ({ type: "wave", definition: currentWave, player: telemetryPlayer() }));
 }
 function enterStage() {
@@ -185,7 +206,7 @@ function startBossEncounter() {
   runSettlementState.progress.currentEncounter = { id: definition.id, type: "boss" };
   spawnBoss();
   runPhase = RUN_PHASES.BOSS_ACTIVE;
-  clearInput();
+  clearInput({ weaponReady: true });
   observeTelemetry("startEncounter", () => ({ type: "boss", definition,
     stageId: stageRuntime.definition.id, waveIndex: stageRuntime.waveIndex, player: telemetryPlayer() }));
 }
@@ -222,7 +243,7 @@ function takeDamage(amount, enemyType) {
   }
 }
 function openAbandon() {
-  if (!isGameStarted || isGameOver || isVictory || isAbandoned) return;
+  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandoned) return;
   isAbandonConfirmOpen = true;
   abandonOverlay.hidden = false;
   clearInput();
@@ -278,43 +299,97 @@ playButton.addEventListener("click", () => {
   updateHud();
 });
 
-canvas.addEventListener("mousemove", (event) => {
+function updateAim(event) {
   const rect = canvas.getBoundingClientRect();
 
   mouse.x = (event.clientX - rect.left) * canvas.width / rect.width;
   mouse.y = (event.clientY - rect.top) * canvas.height / rect.height;
-});
+}
+
+function canAttack() {
+  return isGameStarted && !isGameOver && !isVictory && !isChoosingUpgrade &&
+    !isAbandonConfirmOpen && !isAbandoned &&
+    [RUN_PHASES.WAVE_ACTIVE, RUN_PHASES.BOSS_ACTIVE].includes(runPhase);
+}
+
+function fireWeaponAttack() {
+  if (!canAttack() || weaponRuntime.timeUntilNextShot > 1e-9) return false;
+
+  const playerCenterX = player.x + player.width / 2;
+  const playerCenterY = player.y + player.height / 2;
+  const aimAngle = Math.atan2(mouse.y - playerCenterY, mouse.x - playerCenterX);
+  const directions = Weapons.getProjectileDirections(
+    aimAngle,
+    weapon.projectileCount,
+    weapon.spreadDegrees
+  );
+
+  observeTelemetry("recordAttack");
+  for (const direction of directions) {
+    bullets.push({
+      x: playerCenterX - weapon.bulletSize / 2,
+      y: playerCenterY - weapon.bulletSize / 2,
+      width: weapon.bulletSize,
+      height: weapon.bulletSize,
+      speed: weapon.bulletSpeed,
+      damage: weapon.damage,
+      directionX: direction.x,
+      directionY: direction.y,
+      pierceRemaining: weapon.pierce,
+      hitTargets: new Set()
+    });
+    observeTelemetry("recordShot");
+  }
+  weaponRuntime.timeUntilNextShot = 1 / weapon.fireRate;
+  return true;
+}
+
+function beginAttack(event) {
+  if ((event.button ?? 0) !== 0) return;
+  updateAim(event);
+  event.preventDefault?.();
+  if (!canAttack()) {
+    weaponRuntime.attackHeld = false;
+    return;
+  }
+  if (event.pointerId !== undefined) {
+    try { canvas.setPointerCapture?.(event.pointerId); } catch { /* Document release still clears input. */ }
+  }
+  weaponRuntime.attackHeld = true;
+  fireWeaponAttack();
+}
+
+function endAttack(event) {
+  if (event && (event.button ?? 0) !== 0) return;
+  weaponRuntime.attackHeld = false;
+}
+
+function updateWeaponRuntime(deltaTime) {
+  const attackInterval = 1 / weapon.fireRate;
+  const elapsed = Math.min(attackInterval, Number.isFinite(deltaTime) ? Math.max(0, deltaTime) : 0);
+  const remaining = weaponRuntime.timeUntilNextShot - elapsed;
+  weaponRuntime.timeUntilNextShot = remaining <= 1e-9 ? 0 : remaining;
+  if (weaponRuntime.attackHeld && fireWeaponAttack()) {
+    // Preserve ordinary sub-frame overshoot, but cap lag recovery to one interval.
+    weaponRuntime.timeUntilNextShot = Math.max(0, attackInterval + Math.max(-attackInterval, remaining));
+  }
+}
+
+canvas.addEventListener("pointermove", updateAim);
+canvas.addEventListener("mousemove", updateAim);
+canvas.addEventListener("pointerdown", beginAttack);
+canvas.addEventListener("mousedown", beginAttack);
+canvas.addEventListener("lostpointercapture", () => { weaponRuntime.attackHeld = false; });
+document.addEventListener("pointerup", endAttack);
+document.addEventListener("mouseup", endAttack);
+document.addEventListener("pointercancel", () => { weaponRuntime.attackHeld = false; });
+globalThis.addEventListener?.("blur", () => clearInput());
 
 canvas.addEventListener("click", () => {
+  // Click is intentionally not a firing trigger; cadence is owned by Weapon Runtime.
   if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandonConfirmOpen || isAbandoned) {
     return;
   }
-
-  if (![RUN_PHASES.WAVE_ACTIVE, RUN_PHASES.BOSS_ACTIVE].includes(runPhase)) return;
-  const playerCenterX = player.x + player.width / 2;
-  const playerCenterY = player.y + player.height / 2;
-  let directionX = mouse.x - playerCenterX;
-  let directionY = mouse.y - playerCenterY;
-  const directionLength = Math.hypot(directionX, directionY);
-
-  if (directionLength > 0) {
-    directionX /= directionLength;
-    directionY /= directionLength;
-  }
-
-  const bullet = {
-    x: playerCenterX - weapon.bulletSize / 2,
-    y: playerCenterY - weapon.bulletSize / 2,
-    width: weapon.bulletSize,
-    height: weapon.bulletSize,
-    speed: weapon.bulletSpeed,
-    damage: weapon.damage,
-    directionX,
-    directionY
-  };
-
-  bullets.push(bullet);
-  observeTelemetry("recordShot");
 });
 
 document.addEventListener("keydown", (event) => {
@@ -361,9 +436,14 @@ document.addEventListener("keyup", (event) => {
 });
 
 function resetGame() {
+  buildState = RunBuild.createBuildState();
+  weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
+  playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
   player.x = 380;
   player.y = 280;
-  player.hp = player.maxHp;
+  player.speed = playerStats.speed;
+  player.maxHp = playerStats.maxHp;
+  player.hp = playerStats.maxHp;
   enemies.length = 0;
   bullets.length = 0;
   boss = null;
@@ -383,6 +463,12 @@ function resetGame() {
   isGameOver = false;
   isVictory = false;
   isChoosingUpgrade = false;
+  currentUpgradeChoices = [];
+  upgradeOverlay.hidden = true;
+  upgradeChoices.textContent = "";
+  upgradeRng = createUpgradeRng();
+  weaponRuntime.timeUntilNextShot = 0;
+  weaponRuntime.attackHeld = false;
   score = 0;
   runSettlementState = createRunSettlementState();
   lastSettlement = null;
@@ -391,13 +477,11 @@ function resetGame() {
   xp = 0;
   previousXpRequirement = 3;
   xpToNextLevel = 5;
-  weapon.damage = 1;
-  weapon.bulletSpeed = 480;
-  weapon.bulletSize = 10;
   keys.w = false;
   keys.a = false;
   keys.s = false;
   keys.d = false;
+  renderBuildPanel();
   observeTelemetry("startRun", () => ({ player: telemetryPlayer() }));
   enterStage();
 }
@@ -477,6 +561,7 @@ function update(deltaTime) {
     handleBossPlayerCollision();
     if (isGameOver) return;
   } else return;
+  updateWeaponRuntime(deltaTime);
   updateBullets(deltaTime);
   if (runPhase === RUN_PHASES.WAVE_ACTIVE) {
     handleBulletEnemyCollisions();
@@ -557,18 +642,36 @@ function isOverlapping(rectangleA, rectangleB) {
   );
 }
 
+function prepareProjectileHitState(bullet) {
+  if (!(bullet.hitTargets instanceof Set)) bullet.hitTargets = new Set();
+  if (!Number.isFinite(bullet.pierceRemaining)) {
+    bullet.pierceRemaining = Math.max(0, Math.floor(bullet.pierce || 0));
+  }
+}
+
+function consumeProjectileHit(bullet, bulletIndex, target) {
+  bullet.hitTargets.add(target);
+  if (bullet.pierceRemaining > 0) {
+    bullet.pierceRemaining--;
+    return false;
+  }
+  bullets.splice(bulletIndex, 1);
+  return true;
+}
+
 function handleBulletEnemyCollisions() {
   for (let bulletIndex = bullets.length - 1; bulletIndex >= 0; bulletIndex--) {
     const bullet = bullets[bulletIndex];
+    prepareProjectileHitState(bullet);
 
     for (let enemyIndex = enemies.length - 1; enemyIndex >= 0; enemyIndex--) {
       const enemy = enemies[enemyIndex];
 
-      if (isOverlapping(bullet, enemy)) {
+      if (!bullet.hitTargets.has(enemy) && isOverlapping(bullet, enemy)) {
         enemy.hp -= bullet.damage;
         observeTelemetry("recordBulletHit", () => ({ enemyType: enemy.type,
           damage: Math.max(0, Math.min(bullet.damage, enemy.hp + bullet.damage)) }));
-        bullets.splice(bulletIndex, 1);
+        const projectileRemoved = consumeProjectileHit(bullet, bulletIndex, enemy);
 
         if (enemy.hp <= 0) {
           enemies.splice(enemyIndex, 1);
@@ -585,7 +688,7 @@ function handleBulletEnemyCollisions() {
           }
         }
 
-        break;
+        if (projectileRemoved) break;
       }
     }
   }
@@ -600,6 +703,8 @@ function settleRun(endReason) {
   if (hasSettledRun) {
     return lastSettlement;
   }
+
+  clearInput();
 
   const settlementState = selectSettlementState(runSettlementState, endReason);
   if (!settlementState) {
@@ -622,12 +727,13 @@ function handleBulletBossCollisions() {
 
   for (let bulletIndex = bullets.length - 1; bulletIndex >= 0; bulletIndex--) {
     const bullet = bullets[bulletIndex];
+    prepareProjectileHitState(bullet);
 
-    if (isOverlapping(bullet, boss)) {
+    if (!bullet.hitTargets.has(boss) && isOverlapping(bullet, boss)) {
       boss.hp -= bullet.damage;
       observeTelemetry("recordBulletHit", () => ({ enemyType: "boss-1",
         damage: Math.max(0, Math.min(bullet.damage, boss.hp + bullet.damage)) }));
-      bullets.splice(bulletIndex, 1);
+      consumeProjectileHit(bullet, bulletIndex, boss);
 
       if (boss.hp <= 0) {
         return;
@@ -637,34 +743,68 @@ function handleBulletBossCollisions() {
 }
 
 function updateLevel() {
-  if (isChoosingUpgrade || xp < xpToNextLevel) {
+  if (isChoosingUpgrade) return;
+
+  while (xp >= xpToNextLevel) {
+    xp -= xpToNextLevel;
+    level += 1;
+
+    const nextXpRequirement = previousXpRequirement + xpToNextLevel;
+    previousXpRequirement = xpToNextLevel;
+    xpToNextLevel = nextXpRequirement;
+    currentUpgradeChoices = RunBuild.generateUpgradeChoices(
+      buildState,
+      3,
+      upgradeRng || (upgradeRng = createUpgradeRng())
+    );
+
+    if (currentUpgradeChoices.length === 0) {
+      upgradeTitle.textContent = "BUILD MAXED";
+      upgradeMessage.textContent = "All upgrades are at maximum.";
+      renderBuildPanel();
+      continue;
+    }
+
+    isChoosingUpgrade = true;
+    clearInput();
+    renderUpgradeChoices();
     return;
   }
-
-  xp -= xpToNextLevel;
-  level += 1;
-
-  const nextXpRequirement = previousXpRequirement + xpToNextLevel;
-  previousXpRequirement = xpToNextLevel;
-  xpToNextLevel = nextXpRequirement;
-  isChoosingUpgrade = true;
 }
 
 function chooseUpgrade(key) {
-  if (key === "1") {
-    weapon.damage += 1;
-  } else if (key === "2") {
-    weapon.bulletSpeed += 100;
-  } else if (key === "3") {
-    weapon.bulletSize += 2;
-  } else {
-    return;
-  }
+  if (!isChoosingUpgrade) return;
+  const choiceIndex = Number(key) - 1;
+  const upgrade = Number.isInteger(choiceIndex) ? currentUpgradeChoices[choiceIndex] : null;
+  if (!upgrade) return;
 
-  observeTelemetry("recordUpgrade", () => ({ playerLevel: level,
-    upgradeId: { "1": "damage", "2": "bullet-speed", "3": "bullet-size" }[key],
-    upgradeName: { "1": "Damage +1", "2": "Bullet Speed +100", "3": "Bullet Size +2" }[key], weapon }));
+  const result = RunBuild.applyUpgrade(buildState, upgrade.id, {
+    playerHp: player.hp,
+    basePlayer: RunBuild.PLAYER_BASE_STATS
+  });
+  if (!result.applied) return;
+
+  buildState = result.buildState;
+  weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
+  playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
+  player.speed = playerStats.speed;
+  player.maxHp = playerStats.maxHp;
+  player.hp = Math.min(player.maxHp, result.playerHp ?? player.hp);
+  observeTelemetry("recordUpgrade", () => ({
+    playerLevel: level,
+    upgradeId: upgrade.id,
+    upgradeName: upgrade.name,
+    upgradeStack: RunBuild.getUpgradeStacks(buildState, upgrade.id),
+    weapon,
+    player: telemetryPlayer(),
+    build: buildState
+  }));
   isChoosingUpgrade = false;
+  currentUpgradeChoices = [];
+  upgradeOverlay.hidden = true;
+  upgradeChoices.textContent = "";
+  clearInput();
+  renderBuildPanel();
   updateLevel();
 }
 
@@ -837,8 +977,72 @@ function drawWeaponDamage() {
   ctx.fillStyle = "#111827";
   ctx.font = "20px sans-serif";
   ctx.textAlign = "right";
-  ctx.fillText(`Damage: ${weapon.damage}`, canvas.width - 15, 30);
+  ctx.fillText(`Damage: ${formatNumber(weapon.damage)}`, canvas.width - 15, 30);
   ctx.restore();
+}
+
+function formatNumber(value, precision = 2) {
+  return Number(value.toFixed(precision)).toString();
+}
+
+function clearElement(element) {
+  if (typeof element.replaceChildren === "function") element.replaceChildren();
+  else element.textContent = "";
+}
+
+function textElement(tagName, className, text) {
+  const element = document.createElement(tagName);
+  element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+function renderUpgradeChoices() {
+  clearElement(upgradeChoices);
+  upgradeTitle.textContent = "LEVEL UP";
+  upgradeMessage.textContent = "Choose one upgrade. Press 1, 2, or 3.";
+  currentUpgradeChoices.forEach((upgrade, index) => {
+    const currentStack = RunBuild.getUpgradeStacks(buildState, upgrade.id);
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "upgrade-card";
+    card.dataset.choiceIndex = String(index);
+    card.setAttribute?.("aria-label", `${index + 1}. ${upgrade.name}. ${upgrade.effectLines.join(". ")}. ${currentStack} of ${upgrade.maxStacks}`);
+    card.append(
+      textElement("span", "upgrade-card-name", `${index + 1} · ${upgrade.name.toUpperCase()}`),
+      textElement("span", "upgrade-card-effect", upgrade.effectLines.join(" · ")),
+      textElement("span", "upgrade-card-stack", `${currentStack} / ${upgrade.maxStacks}`)
+    );
+    card.addEventListener("click", () => chooseUpgrade(String(index + 1)));
+    upgradeChoices.append(card);
+  });
+  upgradeOverlay.hidden = false;
+  upgradeChoices.children?.[0]?.focus?.();
+}
+
+function renderBuildPanel() {
+  document.getElementById("buildWeaponName").textContent = weapon.name;
+  document.getElementById("buildDamage").textContent = formatNumber(weapon.damage);
+  document.getElementById("buildFireRate").textContent = `${weapon.fireRate.toFixed(1)}/s`;
+  document.getElementById("buildProjectileCount").textContent = weapon.projectileCount;
+  document.getElementById("buildMoveSpeed").textContent = Math.round(player.speed);
+  document.getElementById("buildMaxHp").textContent = player.maxHp;
+
+  const list = document.getElementById("buildUpgradeList");
+  clearElement(list);
+  const owned = RunBuild.UPGRADE_LIST.filter(upgrade =>
+    RunBuild.getUpgradeStacks(buildState, upgrade.id) > 0);
+  if (owned.length === 0) {
+    list.append(textElement("li", "build-empty", "No upgrades yet."));
+    return;
+  }
+  for (const upgrade of owned) {
+    const stacks = RunBuild.getUpgradeStacks(buildState, upgrade.id);
+    list.append(textElement("li", "", `${upgrade.name} · ${stacks} / ${upgrade.maxStacks}`));
+  }
+  if (RunBuild.UPGRADE_LIST.every(upgrade => !RunBuild.canSelectUpgrade(buildState, upgrade.id))) {
+    list.append(textElement("li", "build-maxed", "BUILD MAXED"));
+  }
 }
 
 function updateHud() {
@@ -848,26 +1052,7 @@ function updateHud() {
   xpValue.textContent = `${xp} / ${xpToNextLevel}`;
   document.getElementById("stageValue").textContent = `STAGE ${stageIndex + 1}`;
   document.getElementById("waveValue").textContent = runPhase === RUN_PHASES.BOSS_ACTIVE ? "BOSS 1" : `WAVE ${(stageRuntime?.waveIndex ?? 0) + 1} / 5`;
-  document.getElementById("abandonButton").hidden = isGameOver || isVictory || isAbandoned;
-}
-
-function drawUpgradeChoices() {
-  if (!isChoosingUpgrade || isVictory) {
-    return;
-  }
-
-  ctx.save();
-  ctx.fillStyle = "rgba(17, 24, 39, 0.8)";
-  ctx.fillRect(100, 160, 600, 280);
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "32px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("Choose an Upgrade", canvas.width / 2, 220);
-  ctx.font = "24px sans-serif";
-  ctx.fillText("1: Damage +1", canvas.width / 2, 280);
-  ctx.fillText("2: Bullet Speed +100", canvas.width / 2, 330);
-  ctx.fillText("3: Bullet Size +2", canvas.width / 2, 380);
-  ctx.restore();
+  document.getElementById("abandonButton").hidden = isGameOver || isVictory || isChoosingUpgrade || isAbandoned;
 }
 
 function drawPhasePresentation() {
@@ -900,7 +1085,9 @@ function drawPhasePresentation() {
 // Optional observers never participate in gameplay decisions or consume generation RNG.
 function telemetryPlayer() {
   return { playerHp: player.hp, playerMaxHp: player.maxHp, playerLevel: level, playerXp: xp,
-    weapon: { damage: weapon.damage, bulletSpeed: weapon.bulletSpeed, bulletSize: weapon.bulletSize } };
+    playerSpeed: player.speed, speed: player.speed, maxHp: player.maxHp,
+    weapon: { ...weapon },
+    build: { upgradeStacks: { ...buildState.upgradeStacks } } };
 }
 function initializePlaytestTelemetry() {
   try {
@@ -915,7 +1102,11 @@ function initializePlaytestTelemetry() {
         clearTimeWeights: Encounters.CONFIG.clearTime, baseHandlingTime: Encounters.CONFIG.baseHandlingTime,
         bossExpectedClearTime: Encounters.BOSSES["boss-1"].analysis.expectedClearTime,
         maxActiveEnemies: Encounters.CONFIG.maxActiveEnemies,
-        templates: Object.fromEntries(Object.entries(Encounters.TEMPLATES).map(([id, template]) => [id, { delays: template.delays }])) }
+        templates: Object.fromEntries(Object.entries(Encounters.TEMPLATES).map(([id, template]) => [id, { delays: template.delays }])),
+        playerBaseStats: RunBuild.PLAYER_BASE_STATS,
+        starterWeapon: Weapons.STARTER,
+        upgrades: Object.fromEntries(RunBuild.UPGRADE_LIST.map(upgrade => [upgrade.id, upgrade])),
+        technicalFireRateCap: Weapons.MAX_FIRE_RATE }
     });
     if (typeof PlaytestUI !== "undefined") {
       try {
@@ -970,7 +1161,6 @@ function gameLoop(timestamp) {
   drawBoss();
   drawBullets();
   drawWeaponDamage();
-  drawUpgradeChoices();
   drawPhasePresentation();
   updateHud();
 

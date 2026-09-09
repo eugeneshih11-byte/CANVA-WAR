@@ -6,6 +6,8 @@ const vm = require("node:vm");
 const gamePath = path.join(__dirname, "..", "game.js");
 const gameSource = fs.readFileSync(gamePath, "utf8");
 const settlementSource = fs.readFileSync(path.join(__dirname, "..", "settlement.js"), "utf8");
+const weaponsSource = fs.readFileSync(path.join(__dirname, "..", "weapons.js"), "utf8");
+const buildSource = fs.readFileSync(path.join(__dirname, "..", "build.js"), "utf8");
 const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
 
 const testHook = `
@@ -13,7 +15,11 @@ globalThis.__gameTest = {
   player,
   enemies,
   bullets,
-  weapon,
+  get weapon() { return weapon; },
+  get buildState() { return buildState; },
+  get currentUpgradeChoices() { return currentUpgradeChoices; },
+  get playerStats() { return playerStats; },
+  weaponRuntime,
   keys,
   listeners: globalThis.__listeners,
   elements: globalThis.__elements,
@@ -30,6 +36,30 @@ globalThis.__gameTest = {
   handleBulletBossCollisions,
   handleBossPlayerCollision,
   updateBossDamageCooldown,
+  fireWeaponAttack,
+  beginAttack,
+  endAttack,
+  updateWeaponRuntime,
+  chooseUpgrade,
+  renderUpgradeChoices,
+  renderBuildPanel,
+  clearInput,
+  setBuildState(value) {
+    buildState = RunBuild.createBuildState(value);
+    weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
+    playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
+    player.speed = playerStats.speed;
+    player.maxHp = playerStats.maxHp;
+    player.hp = Math.min(player.hp, player.maxHp);
+    renderBuildPanel();
+  },
+  setUpgradeChoices(ids) {
+    currentUpgradeChoices = ids.map(id => RunBuild.UPGRADES[id]);
+    isChoosingUpgrade = currentUpgradeChoices.length > 0;
+    if (isChoosingUpgrade) renderUpgradeChoices();
+  },
+  setUpgradeRng(rng) { upgradeRng = rng; },
+  getMouse() { return { ...mouse }; },
   getSaveData() {
     return saveData;
   },
@@ -58,6 +88,7 @@ globalThis.__gameTest = {
       score,
       level,
       xp,
+      isAbandonConfirmOpen,
       previousXpRequirement,
       xpToNextLevel,
       runPhase, stageIndex, stageRuntime, currentWave, waveRuntime, bossRuntime, intermissionTimer, stageClearTimer, isAbandoned
@@ -77,6 +108,8 @@ globalThis.__gameTest = {
     if ("xp" in values) xp = values.xp;
     if ("previousXpRequirement" in values) previousXpRequirement = values.previousXpRequirement;
     if ("xpToNextLevel" in values) xpToNextLevel = values.xpToNextLevel;
+    if ("runPhase" in values) runPhase = values.runPhase;
+    if ("intermissionTimer" in values) intermissionTimer = values.intermissionTimer;
   }
 };
 `;
@@ -84,20 +117,63 @@ globalThis.__gameTest = {
 function loadGame(initialStorage = {}) {
   const listeners = {};
   const storage = new Map(Object.entries(initialStorage));
-  const createElement = (id) => ({
-    textContent: "",
-    hidden: id === "gameInterface",
-    classList: {
-      values: new Set(),
-      add(name) { this.values.add(name); },
-      remove(name) { this.values.delete(name); },
-      contains(name) { return this.values.has(name); }
-    },
-    addEventListener(type, handler) {
-      listeners[`${id}:${type}`] = handler;
-    }
-  });
-  const canvas = {
+  let documentStub;
+  let anonymousElementIndex = 0;
+  const createElement = (id = `created-${++anonymousElementIndex}`) => {
+    const elementListeners = {};
+    const element = {
+      id,
+      tagName: "DIV",
+      _textContent: "",
+      hidden: id === "gameInterface",
+      children: [],
+      dataset: {},
+      attributes: {},
+      className: "",
+      parentNode: null,
+      classList: {
+        values: new Set(),
+        add(...names) { names.forEach(name => this.values.add(name)); },
+        remove(...names) { names.forEach(name => this.values.delete(name)); },
+        contains(name) { return this.values.has(name); }
+      },
+      addEventListener(type, handler) {
+        elementListeners[type] = handler;
+        listeners[`${id}:${type}`] = handler;
+      },
+      append(...nodes) {
+        for (const node of nodes) {
+          this.children.push(node);
+          if (node && typeof node === "object") node.parentNode = this;
+        }
+      },
+      appendChild(node) { this.append(node); return node; },
+      replaceChildren(...nodes) {
+        this.children.length = 0;
+        this._textContent = "";
+        this.append(...nodes);
+      },
+      setAttribute(name, value) { this.attributes[name] = String(value); },
+      getAttribute(name) { return this.attributes[name] ?? null; },
+      focus() { if (documentStub) documentStub.activeElement = this; },
+      click() { elementListeners.click?.({ button: 0, target: this, currentTarget: this, preventDefault() {} }); },
+      dispatch(type, event = {}) { elementListeners[type]?.({ target: this, currentTarget: this, ...event }); }
+    };
+    Object.defineProperty(element, "textContent", {
+      get() {
+        if (this.children.length > 0) {
+          return this._textContent + this.children.map(child => child?.textContent ?? String(child)).join("");
+        }
+        return this._textContent;
+      },
+      set(value) {
+        this._textContent = String(value);
+        this.children.length = 0;
+      }
+    });
+    return element;
+  };
+  const canvas = Object.assign(createElement("canvas"), {
     width: 800,
     height: 600,
     getContext() {
@@ -111,7 +187,7 @@ function loadGame(initialStorage = {}) {
     addEventListener(type, handler) {
       listeners[`canvas:${type}`] = handler;
     }
-  };
+  });
   const elements = {
     gameCanvas: canvas,
     startScreen: createElement("startScreen"),
@@ -120,8 +196,27 @@ function loadGame(initialStorage = {}) {
     hpValue: createElement("hpValue"),
     scoreValue: createElement("scoreValue"),
     levelValue: createElement("levelValue"),
-    xpValue: createElement("xpValue")
+    xpValue: createElement("xpValue"),
+    stageValue: createElement("stageValue"),
+    waveValue: createElement("waveValue"),
+    abandonButton: createElement("abandonButton"),
+    abandonOverlay: createElement("abandonOverlay"),
+    continueButton: createElement("continueButton"),
+    confirmAbandonButton: createElement("confirmAbandonButton"),
+    upgradeOverlay: createElement("upgradeOverlay"),
+    upgradeTitle: createElement("upgradeTitle"),
+    upgradeMessage: createElement("upgradeMessage"),
+    upgradeChoices: createElement("upgradeChoices"),
+    buildWeaponName: createElement("buildWeaponName"),
+    buildDamage: createElement("buildDamage"),
+    buildFireRate: createElement("buildFireRate"),
+    buildProjectileCount: createElement("buildProjectileCount"),
+    buildMoveSpeed: createElement("buildMoveSpeed"),
+    buildMaxHp: createElement("buildMaxHp"),
+    buildUpgradeList: createElement("buildUpgradeList")
   };
+  elements.abandonOverlay.hidden = true;
+  elements.upgradeOverlay.hidden = true;
   const context = {
     Math: Object.assign(Object.create(Math), { random: () => 0.25 }),
     console,
@@ -142,9 +237,23 @@ function loadGame(initialStorage = {}) {
         storage.clear();
       }
     },
-    document: {
+    addEventListener(type, handler) {
+      listeners[`global:${type}`] = handler;
+    },
+    crypto: {
+      getRandomValues(values) { values[0] = 0x12345678; return values; }
+    },
+    Uint32Array,
+    Set,
+    document: documentStub = {
+      activeElement: null,
       getElementById(id) {
         return elements[id] ||= createElement(id);
+      },
+      createElement(tagName) {
+        const element = createElement();
+        element.tagName = String(tagName).toUpperCase();
+        return element;
       },
       addEventListener(type, handler) {
         listeners[type] = handler;
@@ -156,6 +265,8 @@ function loadGame(initialStorage = {}) {
   vm.createContext(context);
   vm.runInContext(settlementSource, context, { filename: "settlement.js" });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "encounters.js"), "utf8"), context);
+  vm.runInContext(weaponsSource, context, { filename: "weapons.js" });
+  vm.runInContext(buildSource, context, { filename: "build.js" });
   vm.runInContext(gameSource + testHook, context, { filename: gamePath });
   return context.__gameTest;
 }
@@ -191,6 +302,18 @@ function makeBullet(overrides = {}) {
   };
 }
 
+function primaryPointer(clientX = 780, clientY = 300) {
+  return { button: 0, clientX, clientY, preventDefault() {} };
+}
+
+function pressPrimary(game, clientX = 780, clientY = 300) {
+  game.listeners["canvas:pointerdown"](primaryPointer(clientX, clientY));
+}
+
+function releasePrimary(game) {
+  game.listeners.pointerup(primaryPointer());
+}
+
 function assertResetState(game) {
   const state = game.getState();
   assert.deepEqual(
@@ -205,7 +328,25 @@ function assertResetState(game) {
     { level: state.level, xp: state.xp, previous: state.previousXpRequirement, next: state.xpToNextLevel },
     { level: 1, xp: 0, previous: 3, next: 5 }
   );
-  assert.deepEqual({ ...game.weapon }, { damage: 1, bulletSpeed: 480, bulletSize: 10 });
+  assert.deepEqual({ ...game.weapon }, {
+    id: "starter",
+    name: "Starter",
+    damage: 1,
+    fireRate: 4,
+    bulletSpeed: 480,
+    bulletSize: 10,
+    projectileCount: 1,
+    spreadDegrees: 0,
+    pierce: 0
+  });
+  assert.deepEqual({ ...game.buildState.upgradeStacks }, {
+    "rapid-fire": 0,
+    "heavy-shot": 0,
+    "split-shot": 0,
+    vitality: 0,
+    "swift-feet": 0
+  });
+  assert.deepEqual({ ...game.weaponRuntime }, { timeUntilNextShot: 0, attackHeld: false });
   assert.equal(state.boss, null);
   assert.equal(state.hasBossSpawned, false);
   assert.equal(state.isBossDefeated, false);
@@ -216,14 +357,20 @@ function assertResetState(game) {
   assert.equal(state.isChoosingUpgrade, false);
 }
 
+function selectUpgrade(game, upgradeId) {
+  game.setUpgradeChoices([upgradeId]);
+  game.chooseUpgrade("1");
+}
+
 function makeDirtyRun(game, endState) {
+  selectUpgrade(game, "heavy-shot");
+  selectUpgrade(game, "rapid-fire");
   game.player.x = 10;
   game.player.y = 20;
   game.player.hp = 1;
   game.enemies.push({});
   game.bullets.push({});
   Object.assign(game.keys, { w: true, a: true, s: true, d: true });
-  Object.assign(game.weapon, { damage: 9, bulletSpeed: 900, bulletSize: 20 });
   game.setState({
     boss: makeBoss(),
     hasBossSpawned: true,
@@ -367,8 +514,8 @@ function testStartScreenAndPlay() {
   assert.equal(game.elements.startScreen.hidden, true);
   assert.equal(game.elements.gameInterface.hidden, false);
   assert.equal(game.elements.hpValue.textContent, "5 / 5");
-  assert.equal(game.elements.scoreValue.textContent, 0);
-  assert.equal(game.elements.levelValue.textContent, 1);
+  assert.equal(game.elements.scoreValue.textContent, "0");
+  assert.equal(game.elements.levelValue.textContent, "1");
   assert.equal(game.elements.xpValue.textContent, "0 / 5");
   assert.equal(game.getSaveData().statistics.totalRuns, 1);
   assert.equal(
@@ -382,6 +529,10 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /href="style\.css\?v=2"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1>CANVA WAR<\/h1>/);
+  assert.match(indexSource, /id="upgradeOverlay"/);
+  assert.match(indexSource, /id="upgradeChoices"/);
+  assert.match(indexSource, /id="buildUpgradeList"/);
+  assert.match(indexSource, /<script src="weapons\.js"><\/script>\s*<script src="build\.js"><\/script>/);
 }
 
 function testSaveDefaultsAndRoundTrip() {
@@ -641,7 +792,8 @@ test("finite five-Wave flow, movement-only intermission, Boss and reward to Vict
     assert.equal(game.bullets.length, 0);
     const snapshot = game.getRunSettlementState().securedCheckpoint;
     assert.equal(snapshot.progress.completedWaves, index + 1);
-    game.listeners["canvas:click"](); assert.equal(game.bullets.length, 0);
+    pressPrimary(game); assert.equal(game.bullets.length, 0);
+    releasePrimary(game);
     game.player.x = 380; const x = game.player.x; game.keys.d = true;
     game.update(0.1); assert.ok(game.player.x > x);
     game.setState({ isChoosingUpgrade: true });
@@ -734,7 +886,8 @@ test("Abandon overlay pauses, cancels, and settles only the checkpoint", () => {
   const game = loadGame(); startGame(game);
   game.openAbandon(); game.update(100);
   assert.equal(game.getState().waveRuntime.elapsedTime, 0);
-  game.listeners["canvas:click"](); assert.equal(game.bullets.length, 0);
+  pressPrimary(game); assert.equal(game.bullets.length, 0);
+  releasePrimary(game);
   game.closeAbandon(); finishWave(game);
   game.settlement.awardScore(game.getRunSettlementState(), "enemyKill", 100);
   game.openAbandon(); game.update(100);
@@ -806,4 +959,332 @@ test("all invalid Points exponents retain the positive configured fallback", () 
     assert.equal(settlement.calculatePoints(0, config), 0);
     assert.equal(settlement.calculatePoints(-1, config), 0);
   }
+});
+
+test("primary press fires immediately, hold follows cadence, and release stops", () => {
+  const game = loadGame(); startGame(game);
+  pressPrimary(game);
+  assert.equal(game.bullets.length, 1);
+  assert.equal(game.weaponRuntime.attackHeld, true);
+  assert.equal(game.weaponRuntime.timeUntilNextShot, 0.25);
+
+  game.updateWeaponRuntime(0.249);
+  assert.equal(game.bullets.length, 1);
+  game.updateWeaponRuntime(0.001);
+  assert.equal(game.bullets.length, 2);
+
+  releasePrimary(game);
+  game.updateWeaponRuntime(10);
+  assert.equal(game.weaponRuntime.attackHeld, false);
+  assert.equal(game.bullets.length, 2);
+});
+
+test("rapid presses cannot bypass cooldown and non-primary press is ignored", () => {
+  const game = loadGame(); startGame(game);
+  game.listeners["canvas:pointerdown"](primaryPointer(780, 300));
+  game.listeners["canvas:mousedown"](primaryPointer(780, 300));
+  assert.equal(game.bullets.length, 1);
+  releasePrimary(game);
+  for (let index = 0; index < 20; index++) {
+    pressPrimary(game);
+    releasePrimary(game);
+  }
+  assert.equal(game.bullets.length, 1);
+
+  game.listeners["canvas:pointerdown"]({ ...primaryPointer(), button: 1 });
+  assert.equal(game.bullets.length, 1);
+  game.updateWeaponRuntime(0.25);
+  pressPrimary(game);
+  assert.equal(game.bullets.length, 2);
+});
+
+test("a large delta can emit at most one attack and never burst-catches up", () => {
+  const game = loadGame(); startGame(game);
+  pressPrimary(game);
+  assert.equal(game.bullets.length, 1);
+  game.updateWeaponRuntime(100);
+  assert.equal(game.bullets.length, 2);
+  assert.equal(game.weaponRuntime.timeUntilNextShot, 0.25);
+});
+
+test("Level choice and Abandon freeze Weapon cooldown and clear held attack", () => {
+  const levelGame = loadGame(); startGame(levelGame);
+  pressPrimary(levelGame);
+  const levelCooldown = levelGame.weaponRuntime.timeUntilNextShot;
+  levelGame.setState({ xp: 5 });
+  levelGame.updateLevel();
+  assert.equal(levelGame.getState().isChoosingUpgrade, true);
+  assert.equal(levelGame.weaponRuntime.attackHeld, false);
+  levelGame.update(100);
+  assert.equal(levelGame.weaponRuntime.timeUntilNextShot, levelCooldown);
+
+  const abandonGame = loadGame(); startGame(abandonGame);
+  pressPrimary(abandonGame);
+  const abandonCooldown = abandonGame.weaponRuntime.timeUntilNextShot;
+  abandonGame.openAbandon();
+  assert.equal(abandonGame.weaponRuntime.attackHeld, false);
+  abandonGame.update(100);
+  assert.equal(abandonGame.weaponRuntime.timeUntilNextShot, abandonCooldown);
+});
+
+test("Intermission blocks fire, drops held input, and the next Encounter starts ready", () => {
+  const game = loadGame(); startGame(game);
+  finishWave(game);
+  game.weaponRuntime.timeUntilNextShot = 0.2;
+  pressPrimary(game);
+  assert.equal(game.bullets.length, 0);
+  assert.equal(game.weaponRuntime.attackHeld, false);
+  game.update(0.1);
+  assert.equal(game.weaponRuntime.timeUntilNextShot, 0.2);
+  game.update(game.encounters.CONFIG.intermission - 0.1);
+  assert.equal(game.getState().runPhase, "WAVE_ACTIVE");
+  assert.equal(game.weaponRuntime.timeUntilNextShot, 0);
+  assert.equal(game.weaponRuntime.attackHeld, false);
+  pressPrimary(game);
+  assert.equal(game.bullets.length, 1);
+});
+
+test("blur and run-ending transitions clear held attack input", () => {
+  const game = loadGame(); startGame(game);
+  pressPrimary(game);
+  game.listeners["global:blur"]();
+  assert.equal(game.weaponRuntime.attackHeld, false);
+
+  game.weaponRuntime.timeUntilNextShot = 0;
+  pressPrimary(game);
+  game.player.hp = 1;
+  game.enemies.push({
+    x: game.player.x, y: game.player.y, width: 20, height: 20,
+    hp: 1, maxHp: 1, speed: 0, type: "normal"
+  });
+  game.update(0);
+  assert.equal(game.getState().runPhase, "RUN_DEAD");
+  assert.equal(game.weaponRuntime.attackHeld, false);
+});
+
+test("one, two, and three projectiles use centered deterministic directions", () => {
+  const game = loadGame(); startGame(game);
+
+  function fireAngles() {
+    game.bullets.length = 0;
+    game.weaponRuntime.timeUntilNextShot = 0;
+    pressPrimary(game, 780, 300);
+    releasePrimary(game);
+    return game.bullets.map(bullet =>
+      Math.round(Math.atan2(bullet.directionY, bullet.directionX) * 180 / Math.PI));
+  }
+
+  assert.deepEqual(Array.from(fireAngles()), [0]);
+  selectUpgrade(game, "split-shot");
+  assert.deepEqual(Array.from(fireAngles()), [-6, 6]);
+  selectUpgrade(game, "split-shot");
+  assert.deepEqual(Array.from(fireAngles()), [-12, 0, 12]);
+});
+
+test("projectiles snapshot resolved stats and later upgrades cannot rewrite them", () => {
+  const game = loadGame(); startGame(game);
+  pressPrimary(game); releasePrimary(game);
+  const originalProjectile = game.bullets[0];
+  assert.deepEqual(
+    { damage: originalProjectile.damage, size: originalProjectile.width, speed: originalProjectile.speed },
+    { damage: 1, size: 10, speed: 480 }
+  );
+
+  selectUpgrade(game, "heavy-shot");
+  assert.deepEqual(
+    { damage: originalProjectile.damage, size: originalProjectile.width, speed: originalProjectile.speed },
+    { damage: 1, size: 10, speed: 480 }
+  );
+  game.weaponRuntime.timeUntilNextShot = 0;
+  pressPrimary(game); releasePrimary(game);
+  const upgradedProjectile = game.bullets.at(-1);
+  assert.deepEqual(
+    { damage: upgradedProjectile.damage, size: upgradedProjectile.width, speed: upgradedProjectile.speed },
+    { damage: 2, size: 11, speed: 480 }
+  );
+});
+
+test("fractional Split Shot damage is applied without rounding", () => {
+  const game = loadGame(); startGame(game);
+  selectUpgrade(game, "split-shot");
+  game.weaponRuntime.timeUntilNextShot = 0;
+  pressPrimary(game); releasePrimary(game);
+  game.bullets.splice(1);
+  const bullet = game.bullets[0];
+  const enemy = {
+    x: bullet.x, y: bullet.y, width: 20, height: 20,
+    hp: 1, maxHp: 1, speed: 0, type: "normal"
+  };
+  game.enemies.push(enemy);
+  game.handleBulletEnemyCollisions();
+  assert.equal(enemy.hp, 0.25);
+  assert.equal(game.enemies.includes(enemy), true);
+});
+
+test("pierce zero stops at one target while pierce one hits two distinct targets", () => {
+  const noPierce = loadGame(); startGame(noPierce);
+  const noPierceTargets = [
+    { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0, type: "normal" },
+    { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0, type: "normal" }
+  ];
+  noPierce.enemies.push(...noPierceTargets);
+  noPierce.bullets.push(makeBullet({ pierceRemaining: 0 }));
+  noPierce.handleBulletEnemyCollisions();
+  assert.equal(noPierceTargets.reduce((sum, enemy) => sum + enemy.hp, 0), 9);
+  assert.equal(noPierce.bullets.length, 0);
+
+  const pierce = loadGame(); startGame(pierce);
+  const pierceTargets = [
+    { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0, type: "normal" },
+    { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0, type: "normal" }
+  ];
+  pierce.enemies.push(...pierceTargets);
+  pierce.bullets.push(makeBullet({ pierceRemaining: 1 }));
+  pierce.handleBulletEnemyCollisions();
+  assert.deepEqual(pierceTargets.map(enemy => enemy.hp), [4, 4]);
+  assert.equal(pierce.bullets.length, 0);
+});
+
+test("a piercing projectile cannot hit the same enemy twice across frames", () => {
+  const game = loadGame(); startGame(game);
+  const first = { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0, type: "normal" };
+  game.enemies.push(first);
+  game.bullets.push(makeBullet({ pierceRemaining: 1 }));
+  game.handleBulletEnemyCollisions();
+  assert.equal(first.hp, 4);
+  assert.equal(game.bullets.length, 1);
+  game.handleBulletEnemyCollisions();
+  assert.equal(first.hp, 4);
+
+  const second = { ...first, hp: 5 };
+  game.enemies.push(second);
+  game.handleBulletEnemyCollisions();
+  assert.equal(first.hp, 4);
+  assert.equal(second.hp, 4);
+  assert.equal(game.bullets.length, 0);
+});
+
+test("a piercing projectile cannot repeatedly damage the Boss", () => {
+  const game = loadGame(); startGame(game); game.startBossEncounter();
+  const sameBoss = makeBoss({ hp: 5 });
+  game.setState({ boss: sameBoss });
+  game.bullets.push(makeBullet({ pierceRemaining: 1 }));
+  game.handleBulletBossCollisions();
+  assert.equal(sameBoss.hp, 4);
+  assert.equal(game.bullets.length, 1);
+  game.handleBulletBossCollisions();
+  assert.equal(sameBoss.hp, 4);
+  assert.equal(game.bullets.length, 1);
+});
+
+test("Upgrade cards show three numbered choices and card clicks select without firing", () => {
+  const game = loadGame(); startGame(game);
+  game.setUpgradeChoices(["rapid-fire", "heavy-shot", "split-shot"]);
+  const cards = game.elements.upgradeChoices.children;
+  assert.equal(game.elements.upgradeOverlay.hidden, false);
+  assert.equal(cards.length, 3);
+  assert.match(cards[0].textContent, /1 · RAPID FIRE/);
+  assert.match(cards[0].textContent, /\+20% Fire Rate/);
+  assert.match(cards[0].textContent, /0 \/ 4/);
+  assert.match(cards[1].getAttribute("aria-label"), /^2\. Heavy Shot\./);
+  assert.equal(game.bullets.length, 0);
+  cards[1].click();
+  assert.equal(game.buildState.upgradeStacks["heavy-shot"], 1);
+  assert.equal(game.getState().isChoosingUpgrade, false);
+  assert.equal(game.elements.upgradeOverlay.hidden, true);
+  assert.equal(game.bullets.length, 0);
+  assert.equal(game.weaponRuntime.attackHeld, false);
+});
+
+test("keyboard 1, 2, and 3 select the matching displayed Upgrade", () => {
+  const ids = ["rapid-fire", "heavy-shot", "split-shot"];
+  ids.forEach((expectedId, index) => {
+    const game = loadGame(); startGame(game);
+    game.setUpgradeChoices(ids);
+    game.listeners.keydown({ key: String(index + 1), repeat: false });
+    assert.equal(game.buildState.upgradeStacks[expectedId], 1);
+    for (const otherId of ids.filter(id => id !== expectedId)) {
+      assert.equal(game.buildState.upgradeStacks[otherId], 0);
+    }
+  });
+});
+
+test("multi-level XP processes one mandatory choice at a time", () => {
+  const game = loadGame(); startGame(game);
+  game.setState({ xp: 13 });
+  game.updateLevel();
+  assert.equal(game.getState().level, 2);
+  assert.equal(game.getState().xp, 8);
+  assert.equal(game.getState().isChoosingUpgrade, true);
+
+  game.chooseUpgrade("1");
+  assert.equal(game.getState().level, 3);
+  assert.equal(game.getState().xp, 0);
+  assert.equal(game.getState().isChoosingUpgrade, true);
+  assert.equal(game.currentUpgradeChoices.length, 3);
+
+  game.chooseUpgrade("1");
+  assert.equal(game.getState().isChoosingUpgrade, false);
+  assert.equal(game.getState().level, 3);
+});
+
+test("Escape cannot dismiss a Level choice and exhausted Builds resume safely", () => {
+  const game = loadGame(); startGame(game);
+  game.setUpgradeChoices(["rapid-fire", "heavy-shot", "split-shot"]);
+  game.listeners.keydown({ key: "Escape", repeat: false });
+  assert.equal(game.getState().isChoosingUpgrade, true);
+  assert.equal(game.elements.upgradeOverlay.hidden, false);
+
+  game.setState({ isChoosingUpgrade: false, xp: 5 });
+  game.setBuildState({
+    "rapid-fire": 4,
+    "heavy-shot": 4,
+    "split-shot": 2,
+    vitality: 3,
+    "swift-feet": 4
+  });
+  game.updateLevel();
+  assert.equal(game.getState().level, 2);
+  assert.equal(game.getState().isChoosingUpgrade, false);
+  assert.match(game.elements.buildUpgradeList.textContent, /BUILD MAXED/);
+});
+
+test("Build panel lists owned Upgrades only and displays resolved combat stats", () => {
+  const game = loadGame(); startGame(game);
+  assert.equal(game.elements.buildUpgradeList.children.length, 1);
+  assert.equal(game.elements.buildUpgradeList.children[0].textContent, "No upgrades yet.");
+
+  game.player.hp = 3;
+  selectUpgrade(game, "heavy-shot");
+  selectUpgrade(game, "vitality");
+  selectUpgrade(game, "swift-feet");
+  assert.equal(game.player.hp, 4);
+  assert.equal(game.elements.buildWeaponName.textContent, "Starter");
+  assert.equal(game.elements.buildDamage.textContent, "2");
+  assert.equal(game.elements.buildFireRate.textContent, "3.7/s");
+  assert.equal(game.elements.buildProjectileCount.textContent, "1");
+  assert.equal(game.elements.buildMoveSpeed.textContent, "259");
+  assert.equal(game.elements.buildMaxHp.textContent, "6");
+  assert.equal(game.elements.buildUpgradeList.children.length, 3);
+  const ownedText = game.elements.buildUpgradeList.textContent;
+  assert.match(ownedText, /Heavy Shot · 1 \/ 4/);
+  assert.match(ownedText, /Vitality · 1 \/ 3/);
+  assert.match(ownedText, /Swift Feet · 1 \/ 4/);
+  assert.doesNotMatch(ownedText, /Rapid Fire|Split Shot/);
+});
+
+test("restart clears the Run Build and restores its panel", () => {
+  const game = loadGame(); startGame(game);
+  selectUpgrade(game, "rapid-fire");
+  selectUpgrade(game, "split-shot");
+  assert.equal(game.weapon.projectileCount, 2);
+  game.setState({ isGameOver: true });
+  game.listeners.keydown({ key: "r", repeat: false });
+  assertResetState(game);
+  assert.equal(game.elements.buildWeaponName.textContent, "Starter");
+  assert.equal(game.elements.buildDamage.textContent, "1");
+  assert.equal(game.elements.buildFireRate.textContent, "4.0/s");
+  assert.equal(game.elements.buildProjectileCount.textContent, "1");
+  assert.equal(game.elements.buildUpgradeList.children.length, 1);
+  assert.equal(game.elements.buildUpgradeList.children[0].textContent, "No upgrades yet.");
 });
