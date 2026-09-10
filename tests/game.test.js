@@ -52,6 +52,7 @@ globalThis.__gameTest = {
   handleDenierHazardDamage,
   beginEnemyIntroductions,
   showNextEnemyIntroduction,
+  dismissEnemyIntroduction,
   updateBoss,
   pushEnemy,
   hasOtherEnemyCollision,
@@ -108,7 +109,7 @@ globalThis.__gameTest = {
       previousXpRequirement,
       xpToNextLevel,
       runPhase, stageIndex, stageRuntime, currentWave, waveRuntime, bossRuntime, intermissionTimer, stageClearTimer,
-      isAbandoned, currentEnemyIntroduction, introductionTimer, pendingWaveIndex,
+      isAbandoned, currentEnemyIntroduction, pendingWaveIndex,
       introducedEnemyTypes: [...introducedEnemyTypes], denierHazardDamageRuntime
     };
   },
@@ -270,7 +271,9 @@ function loadGame(initialStorage = {}, options = {}) {
     enemyIntroductionIcon: createElement("enemyIntroductionIcon"),
     enemyIntroductionName: createElement("enemyIntroductionName"),
     enemyIntroductionRole: createElement("enemyIntroductionRole"),
-    enemyIntroductionDescription: createElement("enemyIntroductionDescription")
+    enemyIntroductionDescription: createElement("enemyIntroductionDescription"),
+    enemyIntroductionCounterplay: createElement("enemyIntroductionCounterplay"),
+    enemyIntroductionContinue: createElement("enemyIntroductionContinue")
   };
   elements.arenaRegion.clientWidth = options.arenaWidth ?? 1000;
   elements.arenaRegion.clientHeight = options.arenaHeight ?? 760;
@@ -650,7 +653,10 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="intermissionCountdown"/);
   assert.match(indexSource, /id="enemyIntroduction"/);
   assert.match(indexSource, /id="enemyIntroductionName"/);
-  const scriptVersion = "20260910-combat-variety-v1-1";
+  assert.match(indexSource, /id="enemyIntroductionCounterplay"/);
+  assert.match(indexSource, /id="enemyIntroductionContinue"/);
+  assert.match(indexSource, /aria-modal="true"/);
+  const scriptVersion = "20260910-enemy-introduction-ux";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
   assert.deepEqual(scriptSources, ["settlement.js", "encounters.js", "behaviors.js", "weapons.js", "build.js",

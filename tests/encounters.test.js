@@ -51,6 +51,32 @@ test("prototype selection is explicit and playtest telemetry alone is gameplay-n
   assert.deepEqual(E.STAGES[0].maxActiveThreatCurve, E.PROTOTYPE_STAGES[0].maxActiveThreatCurve);
 });
 
+test("prototype introduction content is centralized, complete, and teaches each counter", () => {
+  assert.deepEqual(copy(E.COMBAT_VARIETY_V1.introductions), {
+    interceptor: {
+      name: "INTERCEPTOR",
+      role: "Predictive Attacker",
+      description: "Predicts your movement and commits to a long charge.",
+      counterplay: "Change direction after it locks on.",
+      preview: { color: "#eab308", shape: "diamond" }
+    },
+    denier: {
+      name: "DENIER",
+      role: "Area Controller",
+      description: "Creates persistent danger zones along your predicted route.",
+      counterplay: "Leave marked areas before repeated damage builds up.",
+      preview: { color: "#be123c", shape: "zone" }
+    },
+    support: {
+      name: "SUPPORT",
+      role: "Enemy Enhancer",
+      description: "Links to a special enemy and accelerates its abilities.",
+      counterplay: "Destroy the Support to break the link.",
+      preview: { color: "#0f766e", shape: "link" }
+    }
+  });
+});
+
 test("prototype Waves require exact teaching compositions within every existing safety constraint", () => {
   const prototype = E.PROTOTYPE_STAGES[0];
   const expected = [{}, {}, { interceptor: 1 }, { denier: 1 }, { interceptor: 1, support: 1 }];

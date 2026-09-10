@@ -213,37 +213,86 @@ button:focus-visible {
 
 .enemy-introduction {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  width: min(76%, 560px);
-  display: grid;
-  grid-template-columns: auto 1fr;
+  inset: 0;
+  z-index: 4;
+  display: flex;
   align-items: center;
-  gap: 18px;
-  transform: translate(-50%, -50%);
+  justify-content: center;
+  padding: clamp(10px, 3vw, 24px);
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(3px);
+  pointer-events: auto;
+}
+
+.enemy-introduction[hidden] {
+  display: none;
+}
+
+.enemy-introduction-card {
+  width: min(92%, 650px);
+  max-height: 92%;
+  display: grid;
+  grid-template-columns: minmax(92px, 0.34fr) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(14px, 3vw, 28px);
+  overflow: auto;
   border: 2px solid rgba(165, 180, 252, 0.85);
-  border-radius: 16px;
-  padding: clamp(16px, 3vw, 26px);
+  border-radius: 18px;
+  padding: clamp(14px, 3vw, 28px);
   color: #f8fafc;
-  background: rgba(15, 23, 42, 0.92);
-  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(4px);
+  background: linear-gradient(145deg, rgba(30, 41, 59, 0.98), rgba(15, 23, 42, 0.98));
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.65), 0 0 36px rgba(129, 140, 248, 0.22);
+}
+
+.enemy-introduction-preview {
+  display: grid;
+  place-items: center;
+  gap: 14px;
+  color: #94a3b8;
+  font-size: clamp(8px, 1.2vw, 11px);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-align: center;
 }
 
 .enemy-introduction-icon {
-  width: clamp(42px, 8vw, 68px);
+  display: block;
+  width: clamp(58px, 10vw, 92px);
   aspect-ratio: 1;
   border: 3px solid rgba(255, 255, 255, 0.75);
-  box-shadow: 0 0 20px currentColor;
+  box-shadow: 0 0 30px currentColor;
 }
 
-.enemy-introduction strong,
+.enemy-introduction-icon[data-shape="diamond"] {
+  transform: rotate(45deg) scale(0.76);
+}
+
+.enemy-introduction-icon[data-shape="zone"] {
+  border-radius: 50%;
+  background: transparent !important;
+  box-shadow: inset 0 0 24px currentColor, 0 0 30px currentColor;
+}
+
+.enemy-introduction-icon[data-shape="link"] {
+  clip-path: polygon(50% 0, 95% 25%, 95% 75%, 50% 100%, 5% 75%, 5% 25%);
+}
+
+.enemy-introduction-copy strong,
 .enemy-introduction-role {
   display: block;
 }
 
-.enemy-introduction strong {
-  font-size: clamp(22px, 4vw, 38px);
+.enemy-introduction-kicker {
+  display: block;
+  margin-bottom: 4px;
+  color: #a5b4fc;
+  font-size: clamp(9px, 1.3vw, 12px);
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.enemy-introduction-copy strong {
+  font-size: clamp(25px, 4vw, 42px);
   letter-spacing: 0.1em;
 }
 
@@ -253,11 +302,52 @@ button:focus-visible {
   font-size: clamp(13px, 2vw, 18px);
 }
 
-.enemy-introduction p {
+.enemy-introduction-copy p {
   margin: 10px 0 0;
   color: #dbeafe;
   font-size: clamp(12px, 1.8vw, 16px);
   line-height: 1.45;
+}
+
+.enemy-introduction-copy .enemy-introduction-counterplay {
+  color: #fde68a;
+  font-weight: 700;
+}
+
+.enemy-introduction-counterplay::before {
+  content: "COUNTER · ";
+  color: #f8fafc;
+  font-size: 0.82em;
+  letter-spacing: 0.06em;
+}
+
+.enemy-introduction-continue {
+  min-width: min(100%, 230px);
+  margin-top: clamp(12px, 2vw, 20px);
+  padding: 10px 16px;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  color: #0f172a;
+  background: #e0e7ff;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.enemy-introduction-continue:hover,
+.enemy-introduction-continue:focus-visible {
+  outline: 3px solid rgba(253, 230, 138, 0.9);
+  outline-offset: 3px;
+  background: #fef3c7;
+}
+
+.enemy-introduction-continue span {
+  display: block;
+  margin-top: 2px;
+  color: #475569;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 .abandon-overlay,

@@ -32,12 +32,23 @@
                 <span id="intermissionDetail"></span>
                 <span id="intermissionCountdown" class="intermission-countdown"></span>
               </div>
-              <section id="enemyIntroduction" class="enemy-introduction" aria-live="polite" hidden>
-                <span id="enemyIntroductionIcon" class="enemy-introduction-icon" aria-hidden="true"></span>
-                <div>
-                  <strong id="enemyIntroductionName"></strong>
-                  <span id="enemyIntroductionRole" class="enemy-introduction-role"></span>
-                  <p id="enemyIntroductionDescription"></p>
+              <section id="enemyIntroduction" class="enemy-introduction" role="dialog" aria-modal="true"
+                aria-labelledby="enemyIntroductionName" aria-describedby="enemyIntroductionDescription enemyIntroductionCounterplay" hidden>
+                <div class="enemy-introduction-card">
+                  <div class="enemy-introduction-preview" aria-hidden="true">
+                    <span>THREAT PREVIEW</span>
+                    <i id="enemyIntroductionIcon" class="enemy-introduction-icon"></i>
+                  </div>
+                  <div class="enemy-introduction-copy">
+                    <span class="enemy-introduction-kicker">NEW ENEMY · GAME PAUSED</span>
+                    <strong id="enemyIntroductionName"></strong>
+                    <span id="enemyIntroductionRole" class="enemy-introduction-role"></span>
+                    <p id="enemyIntroductionDescription"></p>
+                    <p id="enemyIntroductionCounterplay" class="enemy-introduction-counterplay"></p>
+                    <button id="enemyIntroductionContinue" class="enemy-introduction-continue" type="button">
+                      CONTINUE <span>Enter / Space</span>
+                    </button>
+                  </div>
                 </div>
               </section>
             </div>
@@ -75,14 +86,14 @@
     </section>
   </main>
 
-  <script src="settlement.js?v=20260910-combat-variety-v1-1"></script>
-  <script src="encounters.js?v=20260910-combat-variety-v1-1"></script>
-  <script src="behaviors.js?v=20260910-combat-variety-v1-1"></script>
-  <script src="weapons.js?v=20260910-combat-variety-v1-1"></script>
-  <script src="build.js?v=20260910-combat-variety-v1-1"></script>
-  <script src="layout.js?v=20260910-combat-variety-v1-1"></script>
-  <script src="telemetry.js?v=20260910-combat-variety-v1-1"></script>
-  <script src="telemetry-ui.js?v=20260910-combat-variety-v1-1"></script>
-  <script src="game.js?v=20260910-combat-variety-v1-1"></script>
+  <script src="settlement.js?v=20260910-enemy-introduction-ux"></script>
+  <script src="encounters.js?v=20260910-enemy-introduction-ux"></script>
+  <script src="behaviors.js?v=20260910-enemy-introduction-ux"></script>
+  <script src="weapons.js?v=20260910-enemy-introduction-ux"></script>
+  <script src="build.js?v=20260910-enemy-introduction-ux"></script>
+  <script src="layout.js?v=20260910-enemy-introduction-ux"></script>
+  <script src="telemetry.js?v=20260910-enemy-introduction-ux"></script>
+  <script src="telemetry-ui.js?v=20260910-enemy-introduction-ux"></script>
+  <script src="game.js?v=20260910-enemy-introduction-ux"></script>
 </body>
 </html>

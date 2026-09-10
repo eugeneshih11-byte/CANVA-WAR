@@ -17,14 +17,19 @@
   // together so the protected Calibration A values remain easy to audit.
   const COMBAT_VARIETY_V1 = freeze({
     id: "combat-variety-v1",
-    introductionDuration: 4,
     introductions: {
       interceptor: { name: "INTERCEPTOR", role: "Predictive Attacker",
-        description: "Predicts your movement and commits to a long charge lane. Change direction to make it miss." },
+        description: "Predicts your movement and commits to a long charge.",
+        counterplay: "Change direction after it locks on.",
+        preview: { color: "#eab308", shape: "diamond" } },
       denier: { name: "DENIER", role: "Area Controller",
-        description: "Predicts your route and creates a persistent danger zone. Leave marked areas before repeated damage builds up." },
+        description: "Creates persistent danger zones along your predicted route.",
+        counterplay: "Leave marked areas before repeated damage builds up.",
+        preview: { color: "#be123c", shape: "zone" } },
       support: { name: "SUPPORT", role: "Enemy Enhancer",
-        description: "Links to a special enemy and accelerates its abilities. Destroy the Support to break the link." }
+        description: "Links to a special enemy and accelerates its abilities.",
+        counterplay: "Destroy the Support to break the link.",
+        preview: { color: "#0f766e", shape: "link" } }
     },
     enemies: {
       interceptor: {

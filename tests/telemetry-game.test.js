@@ -47,7 +47,8 @@ function loadGame(search = "", options = {}) {
   };
   for (const id of ["arenaRegion", "canvasStage", "intermissionBanner",
     "intermissionTitle", "intermissionDetail", "intermissionCountdown", "enemyIntroduction",
-    "enemyIntroductionIcon", "enemyIntroductionName", "enemyIntroductionRole", "enemyIntroductionDescription"]) {
+    "enemyIntroductionIcon", "enemyIntroductionName", "enemyIntroductionRole", "enemyIntroductionDescription",
+    "enemyIntroductionCounterplay", "enemyIntroductionContinue"]) {
     elements[id] = element(id);
   }
   elements.arenaRegion.clientWidth = 1000;
@@ -94,7 +95,7 @@ function loadGame(search = "", options = {}) {
       player, enemies, bullets, hazards, keys,
       resetGame, update, startWave, startBossEncounter, completeBossEncounter,
       spawnEnemy, updateEnemies, handleDenierHazardDamage,
-      beginEnemyIntroductions, showNextEnemyIntroduction, updateArenaPresentation,
+      beginEnemyIntroductions, showNextEnemyIntroduction, dismissEnemyIntroduction, updateArenaPresentation,
       enterIntermission, openAbandon, closeAbandon, abandonRun,
       handleBulletEnemyCollisions, handlePlayerEnemyCollisions,
       handleBulletBossCollisions, handleBossPlayerCollision,
@@ -107,9 +108,9 @@ function loadGame(search = "", options = {}) {
       get weaponRuntime() { return weaponRuntime; },
       get state() {
         return { score, level, xp, isChoosingUpgrade, isGameOver, isVictory,
-          isAbandoned, runPhase, stageIndex, stageRuntime, currentWave,
+          isAbandoned, isAbandonConfirmOpen, runPhase, stageIndex, stageRuntime, currentWave,
           waveRuntime, bossRuntime, boss, intermissionTimer, stageClearTimer,
-          currentEnemyIntroduction, introductionTimer, pendingWaveIndex,
+          currentEnemyIntroduction, pendingWaveIndex,
           introducedEnemyTypes: [...introducedEnemyTypes], denierHazardDamageRuntime,
           runSettlementState, lastSettlement, saveData, xpToNextLevel };
       },
@@ -220,37 +221,105 @@ test("production behavior hooks pause with gameplay and feed exact encounter tel
     missedCharges: 0, interruptedTelegraphs: 0 });
 });
 
-test("prototype enemy introductions appear once per Run and freeze combat state", () => {
+test("prototype introductions pause before their Wave until explicit edge-triggered confirmation", () => {
   const game = loadGame("?playtest=1&prototype=combat-variety-v1");
   const intermission = game.context.Encounters.CONFIG.intermission;
-  const introduction = game.context.Encounters.COMBAT_VARIETY_V1.introductionDuration;
   game.start();
 
   finishWave(game);
   game.update(intermission);
   assert.equal(game.state.currentWave.waveIndex, 1);
   finishWave(game);
-  const frozenElapsed = game.state.waveRuntime.elapsedTime;
+  const frozenRuntime = plain(game.state.waveRuntime);
+  const frozenPlayer = plain(game.player);
+  const activeTime = current(game).totalActiveTime;
+  const intermissionTime = current(game).intermissionTime;
+  game.weaponRuntime.attackHeld = true;
+  game.weaponRuntime.timeUntilNextShot = 0.2;
   game.update(intermission);
-  assert.equal(game.state.runPhase, "ENEMY_INTRODUCTION");
+  assert.equal(game.state.runPhase, "INTRODUCTION_PENDING");
+  assert.equal(game.state.currentWave.waveIndex, 1);
+  assert.equal(game.state.currentEnemyIntroduction, null);
+  assert.equal(game.weaponRuntime.attackHeld, false);
+  assert.equal(game.weaponRuntime.timeUntilNextShot, 0.2);
+  game.update(0);
+  assert.equal(game.state.runPhase, "INTRODUCTION_ACTIVE");
   assert.equal(game.state.currentEnemyIntroduction.type, "interceptor");
   game.updateArenaPresentation();
   assert.equal(game.elements.enemyIntroduction.hidden, false);
   assert.equal(game.elements.enemyIntroductionName.textContent, "INTERCEPTOR");
-  game.update(introduction / 2);
-  assert.equal(game.state.waveRuntime.elapsedTime, frozenElapsed);
-  game.update(introduction / 2);
+  assert.equal(game.elements.enemyIntroductionRole.textContent, "Predictive Attacker");
+  assert.match(game.elements.enemyIntroductionDescription.textContent, /commits to a long charge/);
+  assert.match(game.elements.enemyIntroductionCounterplay.textContent, /Change direction/);
+  assert.equal(game.context.document.activeElement, game.elements.enemyIntroductionContinue);
+  assert.equal(game.state.isChoosingUpgrade, false);
+  assert.equal(game.elements.upgradeOverlay.hidden, true);
+  assert.equal(game.elements.abandonOverlay.hidden, true);
+
+  game.spawnEnemy("interceptor");
+  const frozenEnemy = plain(game.enemies[0]);
+  game.bullets.push(bullet({ directionX: 1, speed: 100 }));
+  game.hazards.push({ phase: "ACTIVE", x: 100, y: 100, radius: 10, remaining: 5 });
+  game.listeners.keydown({ key: "d", repeat: false, preventDefault() {} });
+  primaryAttack(game);
+  game.update(999);
+  assert.equal(game.state.runPhase, "INTRODUCTION_ACTIVE");
+  assert.deepEqual(plain(game.state.waveRuntime), frozenRuntime);
+  assert.deepEqual(plain(game.player), frozenPlayer);
+  assert.deepEqual(plain(game.enemies[0]), frozenEnemy);
+  assert.equal(game.bullets[0].x, 100);
+  assert.equal(game.hazards[0].remaining, 5);
+  assert.equal(game.keys.d, false);
+  assert.equal(game.weaponRuntime.attackHeld, false);
+  assert.equal(game.weaponRuntime.timeUntilNextShot, 0.2);
+  assert.equal(current(game).totalActiveTime, activeTime);
+  assert.equal(current(game).intermissionTime, intermissionTime);
+  assert.equal(game.openAbandon(), undefined);
+  assert.equal(game.state.isAbandonConfirmOpen, false);
+
+  game.listeners.keydown({ key: "Enter", repeat: true, preventDefault() {} });
+  assert.equal(game.state.runPhase, "INTRODUCTION_ACTIVE");
+  game.enemies.length = 0;
+  game.bullets.length = 0;
+  game.hazards.length = 0;
+  game.listeners.keydown({ key: "Enter", repeat: false, preventDefault() {} });
   assert.equal(game.state.runPhase, "WAVE_ACTIVE");
+  assert.equal(game.state.currentWave.waveIndex, 2);
+  assert.equal(game.state.waveRuntime.elapsedTime, 0);
+  assert.equal(game.state.waveRuntime.nextSpawnGroupIndex, 0);
+  assert.equal(game.weaponRuntime.attackHeld, false);
+  game.update(0);
+  assert.equal(game.bullets.length, 0);
+});
+
+test("all three prototype introductions appear once per Run and reset cleanly", () => {
+  const game = loadGame("?playtest=1&prototype=combat-variety-v1");
+  const intermission = game.context.Encounters.CONFIG.intermission;
+  game.start();
+  finishWave(game);
+  game.update(intermission);
+  finishWave(game);
+  game.update(intermission);
+  assert.equal(game.state.runPhase, "INTRODUCTION_PENDING");
+  game.update(0);
+  assert.equal(game.state.currentEnemyIntroduction.type, "interceptor");
+  game.elements.enemyIntroductionContinue.eventListeners.click();
   assert.equal(game.state.currentWave.waveIndex, 2);
 
   finishWave(game);
   game.update(intermission);
+  assert.equal(game.state.runPhase, "INTRODUCTION_PENDING");
+  game.update(0);
   assert.equal(game.state.currentEnemyIntroduction.type, "denier");
-  game.update(introduction);
+  game.listeners.keydown({ key: " ", repeat: false, preventDefault() {} });
+  assert.equal(game.state.currentWave.waveIndex, 3);
   finishWave(game);
   game.update(intermission);
+  assert.equal(game.state.runPhase, "INTRODUCTION_PENDING");
+  game.update(0);
   assert.equal(game.state.currentEnemyIntroduction.type, "support");
-  game.update(introduction);
+  game.dismissEnemyIntroduction();
+  assert.equal(game.state.currentWave.waveIndex, 4);
   assert.deepEqual(plain(game.state.introducedEnemyTypes), ["interceptor", "denier", "support"]);
   assert.deepEqual(plain(game.telemetry.getCurrentRun().enemyIntroductionsShown),
     ["interceptor", "denier", "support"]);
@@ -292,15 +361,33 @@ test("death clears Denier and introduction transients; restart begins clean", ()
   game.hazards.push({ id: 1, phase: "ACTIVE", x: 120, y: 120, radius: 55,
     damage: 1, damageInterval: 1, remaining: 3 });
   game.beginEnemyIntroductions(2);
-  assert.equal(game.state.runPhase, "ENEMY_INTRODUCTION");
+  assert.equal(game.state.runPhase, "INTRODUCTION_PENDING");
+  game.update(0);
+  assert.equal(game.state.runPhase, "INTRODUCTION_ACTIVE");
   game.takeDamage(game.player.hp, "denier-hazard");
   assert.equal(game.state.runPhase, "RUN_DEAD");
   assert.equal(game.hazards.length, 0);
   assert.equal(game.state.currentEnemyIntroduction, null);
+  assert.equal(game.elements.enemyIntroduction.hidden, true);
   game.resetGame();
   assert.equal(game.state.runPhase, "WAVE_ACTIVE");
   assert.deepEqual(plain(game.state.introducedEnemyTypes), []);
   assert.deepEqual(plain(game.state.denierHazardDamageRuntime), { cooldown: 0, inside: false, entrySequence: 0 });
+});
+
+test("Victory cleanup cannot leave an active introduction overlay behind", () => {
+  const game = loadGame("?prototype=combat-variety-v1");
+  game.start();
+  game.beginEnemyIntroductions(2);
+  game.update(0);
+  game.updateArenaPresentation();
+  assert.equal(game.elements.enemyIntroduction.hidden, false);
+  game.setState({ runPhase: "STAGE_REWARD" });
+  game.update(0);
+  assert.equal(game.state.runPhase, "RUN_VICTORY");
+  assert.equal(game.state.isVictory, true);
+  assert.equal(game.state.currentEnemyIntroduction, null);
+  assert.equal(game.elements.enemyIntroduction.hidden, true);
 });
 
 test("game telemetry is opt-in, does not initialize a Run on page load, and consumes no RNG", () => {

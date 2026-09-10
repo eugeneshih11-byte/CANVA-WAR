@@ -26,13 +26,13 @@ Regular Enemy definitions now pair immutable stats and Roles with a behavior pro
 - **Denier:** takes its first cast after about 0.9 seconds, predicts once, telegraphs for 0.75 seconds, then leaves a fixed danger zone active for 3 seconds. Remaining inside can deal damage every second; all overlapping Denier zones share one Player-side cooldown so they cannot burst simultaneously.
 - **Support:** establishes one persistent, distance-independent Link to an eligible Interceptor or Denier. The linked special recovers ability cooldown at x1.75. Removing the Support breaks the effect immediately; removing its target allows a new eligible target to be linked. Normal, Fast, Tank, Support and Boss targets are ineligible.
 
-Each special receives a compact Enemy Introduction once per Run immediately before its first Wave. This is a noncombat phase after Intermission: movement, attacks, spawning, AI, hazards and combat timers remain frozen. Introduction state resets on a new Run. All provisional prototype stats and timings are centralized in `COMBAT_VARIETY_V1`. Behavior and hazard timers advance only from active Wave combat updates. Pending/active hazards and Support Links clear at Wave end, Boss entry, death, Abandon, Victory and restart. Charge movement uses the existing bounded Enemy collision and overlap-recovery policy.
+Each special receives a prominent Enemy Introduction once per Run immediately before its first Wave. After Intermission it enters an explicit pending state, opens a fully dimmed modal with the Enemy's Role, behavior, counterplay and representative visual, then waits for the player to click Continue or press Enter/Space. It never auto-dismisses. Movement, attacks, spawning, AI, hazards, Weapon cooldown, Wave timing and telemetry timing remain frozen, and the next Wave does not start until confirmation. Held input is cleared so confirmation cannot leak into combat. Introduction state resets on a new Run. All provisional prototype stats and introduction content are centralized in `COMBAT_VARIETY_V1`. Behavior and hazard timers advance only from active Wave combat updates. Pending/active hazards and Support Links clear at Wave end, Boss entry, death, Abandon, Victory and restart. Charge movement uses the existing bounded Enemy collision and overlap-recovery policy.
 
 Run phases sit underneath the existing menu, result and upgrade-pause state:
 
 ```text
 New Run -> STAGE_ENTER -> WAVE_ACTIVE
-Wave Clear -> INTERMISSION -> optional ENEMY_INTRODUCTION -> next WAVE_ACTIVE
+Wave Clear -> INTERMISSION -> optional INTRODUCTION_PENDING -> INTRODUCTION_ACTIVE -> explicit Continue -> next WAVE_ACTIVE
 Wave 5 Clear -> INTERMISSION -> BOSS_ACTIVE
 Successful Boss Clear -> STAGE_CLEAR -> STAGE_REWARD -> RUN_VICTORY
 Lethal damage -> RUN_DEAD

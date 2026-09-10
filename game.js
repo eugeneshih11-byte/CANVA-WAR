@@ -11,6 +11,8 @@ const enemyIntroductionIcon = document.getElementById("enemyIntroductionIcon");
 const enemyIntroductionName = document.getElementById("enemyIntroductionName");
 const enemyIntroductionRole = document.getElementById("enemyIntroductionRole");
 const enemyIntroductionDescription = document.getElementById("enemyIntroductionDescription");
+const enemyIntroductionCounterplay = document.getElementById("enemyIntroductionCounterplay");
+const enemyIntroductionContinue = document.getElementById("enemyIntroductionContinue");
 const startScreen = document.getElementById("startScreen");
 const gameInterface = document.getElementById("gameInterface");
 const playButton = document.getElementById("playButton");
@@ -150,7 +152,8 @@ const enemyColors = {
 const SPAWN_PLACEMENT_ATTEMPTS = 16;
 const COLLISION_EPSILON = 1e-7;
 const RUN_PHASES = Object.freeze(Object.fromEntries([
-  "STAGE_ENTER", "WAVE_ACTIVE", "INTERMISSION", "ENEMY_INTRODUCTION", "BOSS_ACTIVE", "STAGE_CLEAR",
+  "STAGE_ENTER", "WAVE_ACTIVE", "INTERMISSION", "INTRODUCTION_PENDING", "INTRODUCTION_ACTIVE",
+  "BOSS_ACTIVE", "STAGE_CLEAR",
   "STAGE_REWARD", "RUN_VICTORY", "RUN_DEAD"
 ].map(phase => [phase, phase])));
 const BOSS_PHASES = Object.freeze({
@@ -170,7 +173,6 @@ let stageClearTimer = 0;
 const introducedEnemyTypes = new Set();
 let introductionQueue = [];
 let currentEnemyIntroduction = null;
-let introductionTimer = 0;
 let pendingWaveIndex = null;
 let isAbandonConfirmOpen = false;
 let isAbandoned = false;
@@ -203,7 +205,6 @@ function resetHazardDamageRuntime() {
 function clearIntroductionTransient() {
   introductionQueue = [];
   currentEnemyIntroduction = null;
-  introductionTimer = 0;
   pendingWaveIndex = null;
   enemyIntroduction.hidden = true;
 }
@@ -213,10 +214,11 @@ function showNextEnemyIntroduction() {
   if (!definition) return false;
   introducedEnemyTypes.add(type);
   currentEnemyIntroduction = { type, ...definition };
-  introductionTimer = 0;
-  runPhase = RUN_PHASES.ENEMY_INTRODUCTION;
+  runPhase = RUN_PHASES.INTRODUCTION_ACTIVE;
   clearInput();
   observeTelemetry("recordEnemyIntroduction", () => ({ enemyType: type }));
+  updateArenaPresentation();
+  enemyIntroductionContinue.focus?.();
   return true;
 }
 function beginEnemyIntroductions(waveIndex) {
@@ -224,7 +226,23 @@ function beginEnemyIntroductions(waveIndex) {
   introductionQueue = planned.filter(type => !introducedEnemyTypes.has(type));
   if (!introductionQueue.length) return false;
   pendingWaveIndex = waveIndex;
-  return showNextEnemyIntroduction();
+  currentEnemyIntroduction = null;
+  runPhase = RUN_PHASES.INTRODUCTION_PENDING;
+  clearInput();
+  return true;
+}
+function dismissEnemyIntroduction() {
+  if (runPhase !== RUN_PHASES.INTRODUCTION_ACTIVE) return false;
+  clearInput();
+  if (introductionQueue.length) {
+    currentEnemyIntroduction = null;
+    runPhase = RUN_PHASES.INTRODUCTION_PENDING;
+    return true;
+  }
+  const waveIndex = pendingWaveIndex;
+  clearIntroductionTransient();
+  startWave(waveIndex);
+  return true;
 }
 function startWave(index) {
   currentEnemyIntroduction = null;
@@ -318,7 +336,8 @@ function takeDamage(amount, enemyType) {
   }
 }
 function openAbandon() {
-  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandoned) return;
+  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandoned ||
+      [RUN_PHASES.INTRODUCTION_PENDING, RUN_PHASES.INTRODUCTION_ACTIVE].includes(runPhase)) return;
   isAbandonConfirmOpen = true;
   abandonOverlay.hidden = false;
   clearInput();
@@ -342,6 +361,7 @@ function abandonRun() {
 document.getElementById("abandonButton").addEventListener("click", openAbandon);
 document.getElementById("continueButton").addEventListener("click", closeAbandon);
 document.getElementById("confirmAbandonButton").addEventListener("click", abandonRun);
+enemyIntroductionContinue.addEventListener("click", dismissEnemyIntroduction);
 let isGameStarted = false;
 let isGameOver = false;
 let isVictory = false;
@@ -524,6 +544,15 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
+  if ([RUN_PHASES.INTRODUCTION_PENDING, RUN_PHASES.INTRODUCTION_ACTIVE].includes(runPhase)) {
+    if (runPhase === RUN_PHASES.INTRODUCTION_ACTIVE && !event.repeat &&
+        ["enter", " ", "spacebar"].includes(key)) {
+      event.preventDefault?.();
+      dismissEnemyIntroduction();
+    }
+    return;
+  }
+
   if (isChoosingUpgrade) {
     if (!event.repeat) {
       chooseUpgrade(key);
@@ -615,18 +644,23 @@ function update(deltaTime) {
   if (runPhase === RUN_PHASES.STAGE_REWARD) {
     handleStageReward(stageRuntime);
     if (stageIndex + 1 < activeStages.length) { stageIndex++; enterStage(); }
-    else { runPhase = RUN_PHASES.RUN_VICTORY; isVictory = true; settleRun(RUN_END_REASONS.VICTORY); }
+    else {
+      clearIntroductionTransient();
+      runPhase = RUN_PHASES.RUN_VICTORY;
+      isVictory = true;
+      settleRun(RUN_END_REASONS.VICTORY);
+    }
     return;
   }
-  if (runPhase === RUN_PHASES.ENEMY_INTRODUCTION) {
-    introductionTimer += deltaTime;
-    if (introductionTimer >= Encounters.COMBAT_VARIETY_V1.introductionDuration) {
-      if (!showNextEnemyIntroduction()) {
-        const waveIndex = pendingWaveIndex;
-        clearIntroductionTransient();
-        startWave(waveIndex);
-      }
+  if (runPhase === RUN_PHASES.INTRODUCTION_PENDING) {
+    if (!showNextEnemyIntroduction()) {
+      const waveIndex = pendingWaveIndex;
+      clearIntroductionTransient();
+      startWave(waveIndex);
     }
+    return;
+  }
+  if (runPhase === RUN_PHASES.INTRODUCTION_ACTIVE) {
     return;
   }
   let directionX = 0;
@@ -1422,19 +1456,23 @@ function updateHud() {
   xpValue.textContent = `${xp} / ${xpToNextLevel}`;
   document.getElementById("stageValue").textContent = `STAGE ${stageIndex + 1}`;
   document.getElementById("waveValue").textContent = runPhase === RUN_PHASES.BOSS_ACTIVE ? "BOSS 1" : `WAVE ${(stageRuntime?.waveIndex ?? 0) + 1} / 5`;
-  document.getElementById("abandonButton").hidden = isGameOver || isVictory || isChoosingUpgrade || isAbandoned;
+  document.getElementById("abandonButton").hidden = isGameOver || isVictory || isChoosingUpgrade || isAbandoned ||
+    [RUN_PHASES.INTRODUCTION_PENDING, RUN_PHASES.INTRODUCTION_ACTIVE].includes(runPhase);
 }
 
 function updateArenaPresentation() {
-  const showIntroduction = runPhase === RUN_PHASES.ENEMY_INTRODUCTION && currentEnemyIntroduction &&
+  const showIntroduction = runPhase === RUN_PHASES.INTRODUCTION_ACTIVE && currentEnemyIntroduction &&
     !isGameOver && !isVictory && !isAbandoned;
   enemyIntroduction.hidden = !showIntroduction;
   if (showIntroduction) {
     enemyIntroductionName.textContent = currentEnemyIntroduction.name;
     enemyIntroductionRole.textContent = currentEnemyIntroduction.role;
     enemyIntroductionDescription.textContent = currentEnemyIntroduction.description;
-    enemyIntroductionIcon.style.background = enemyColors[currentEnemyIntroduction.type];
-    enemyIntroductionIcon.style.color = enemyColors[currentEnemyIntroduction.type];
+    enemyIntroductionCounterplay.textContent = currentEnemyIntroduction.counterplay;
+    const previewColor = currentEnemyIntroduction.preview?.color || enemyColors[currentEnemyIntroduction.type];
+    enemyIntroductionIcon.style.background = previewColor;
+    enemyIntroductionIcon.style.color = previewColor;
+    enemyIntroductionIcon.dataset.shape = currentEnemyIntroduction.preview?.shape || "square";
   }
   const showIntermission = runPhase === RUN_PHASES.INTERMISSION &&
     !isGameOver && !isVictory && !isAbandoned;
