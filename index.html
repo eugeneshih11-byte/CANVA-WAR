@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CANVA WAR</title>
-  <link rel="stylesheet" href="style.css?v=2">
+  <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
   <main class="app">
@@ -14,32 +14,41 @@
     </section>
 
     <section id="gameInterface" class="game-screen" hidden>
-      <header class="hud">
-        <div class="hud-player"><span>HP: <strong id="hpValue"></strong></span>
-          <span>Level: <strong id="levelValue"></strong> · XP: <strong id="xpValue"></strong></span></div>
-        <div class="hud-stage"><strong id="stageValue">STAGE 1</strong><span id="waveValue">WAVE 1 / 5</span></div>
-        <div class="hud-score"><span>Score: <strong id="scoreValue"></strong></span>
+      <header class="hud" aria-label="Combat status">
+        <div class="hud-player"><span>HP <strong id="hpValue"></strong></span>
+          <span>LV <strong id="levelValue"></strong></span><span>XP <strong id="xpValue"></strong></span></div>
+        <div class="hud-stage"><strong id="stageValue">STAGE 1</strong><span aria-hidden="true">·</span><span id="waveValue">WAVE 1 / 5</span></div>
+        <div class="hud-score"><span>SCORE <strong id="scoreValue"></strong></span>
           <button id="abandonButton" type="button">Abandon</button></div>
       </header>
 
       <div class="main-game-layout">
-        <div class="canvas-area">
-          <div id="abandonOverlay" class="abandon-overlay" role="dialog" aria-modal="true" aria-label="Abandon run" hidden>
-            <h2>Abandon this run?</h2><p>Only the last cleared encounter is secured.</p>
-            <button id="continueButton" type="button">CONTINUE</button>
-            <button id="confirmAbandonButton" type="button">ABANDON RUN</button>
-          </div>
-          <div id="upgradeOverlay" class="upgrade-overlay" role="dialog" aria-modal="true" aria-labelledby="upgradeTitle" aria-describedby="upgradeMessage" hidden>
-            <div class="upgrade-dialog">
-              <h2 id="upgradeTitle">LEVEL UP</h2>
-              <p id="upgradeMessage">Choose one upgrade. Press 1, 2, or 3.</p>
-              <div id="upgradeChoices" class="upgrade-choices"></div>
+        <section id="arenaRegion" class="arena-region" aria-label="Game arena">
+          <div id="canvasStage" class="canvas-area canvas-stage">
+            <canvas id="gameCanvas" width="800" height="600"></canvas>
+            <div class="arena-overlay" aria-live="polite">
+              <div id="intermissionBanner" class="intermission-banner" hidden>
+                <strong id="intermissionTitle"></strong>
+                <span id="intermissionDetail"></span>
+                <span id="intermissionCountdown" class="intermission-countdown"></span>
+              </div>
+            </div>
+            <div id="abandonOverlay" class="abandon-overlay" role="dialog" aria-modal="true" aria-label="Abandon run" hidden>
+              <h2>Abandon this run?</h2><p>Only the last cleared encounter is secured.</p>
+              <button id="continueButton" type="button">CONTINUE</button>
+              <button id="confirmAbandonButton" type="button">ABANDON RUN</button>
+            </div>
+            <div id="upgradeOverlay" class="upgrade-overlay" role="dialog" aria-modal="true" aria-labelledby="upgradeTitle" aria-describedby="upgradeMessage" hidden>
+              <div class="upgrade-dialog">
+                <h2 id="upgradeTitle">LEVEL UP</h2>
+                <p id="upgradeMessage">Choose one upgrade. Press 1, 2, or 3.</p>
+                <div id="upgradeChoices" class="upgrade-choices"></div>
+              </div>
             </div>
           </div>
-          <canvas id="gameCanvas" width="800" height="600"></canvas>
-        </div>
+        </section>
 
-        <aside class="inventory-area build-panel" aria-labelledby="buildTitle">
+        <aside class="build-panel" aria-labelledby="buildTitle">
           <h2 id="buildTitle">BUILD</h2>
           <dl class="build-stats">
             <div class="build-weapon-row"><dt>Weapon</dt><dd id="buildWeaponName">Starter</dd></div>
@@ -49,7 +58,7 @@
             <div><dt>Move speed</dt><dd id="buildMoveSpeed">240</dd></div>
             <div><dt>Max HP</dt><dd id="buildMaxHp">5</dd></div>
           </dl>
-          <h3>Upgrades</h3>
+          <h3 class="build-upgrades-title">Upgrades</h3>
           <ul id="buildUpgradeList" class="build-upgrade-list">
             <li class="build-empty">No upgrades yet.</li>
           </ul>
@@ -62,6 +71,7 @@
   <script src="encounters.js"></script>
   <script src="weapons.js"></script>
   <script src="build.js"></script>
+  <script src="layout.js"></script>
   <script src="telemetry.js"></script>
   <script src="telemetry-ui.js"></script>
   <script src="game.js"></script>

@@ -27,6 +27,12 @@ function descendants(node) {
   return [node, ...node.children.flatMap(descendants)];
 }
 
+function reportContent(panel) {
+  return descendants(panel)
+    .filter(node => ["H3", "P", "TH", "TD"].includes(node.tagName))
+    .map(node => [node.tagName, node.textContent]);
+}
+
 function loadUi(encounters) {
   const body = new Element("body");
   const canvasArea = new Element("div");
@@ -71,7 +77,13 @@ function loadUi(encounters) {
   const viewButton = descendants(body).find(node => node.tagName === "BUTTON" && node.textContent === "VIEW REPORT");
   assert.ok(viewButton);
   viewButton.click();
-  return descendants(body);
+  const panel = descendants(body).find(node => node.className === "playtest-panel");
+  const closeButton = descendants(body)
+    .find(node => node.tagName === "BUTTON" && node.textContent === "CLOSE REPORT");
+  assert.ok(panel);
+  assert.ok(closeButton);
+  return { body, gameInterface, run, telemetry, viewButton, panel, closeButton,
+    nodes() { return descendants(body); } };
 }
 
 function encounter(overrides) {
@@ -98,10 +110,11 @@ function encounter(overrides) {
 }
 
 test("report UI shows elapsed time but no clear time or ratio for incomplete encounters", () => {
-  const nodes = loadUi([
+  const fixture = loadUi([
     encounter({ outcome: "death", actualClearTime: 12.4, clearTimeRatio: 0.55 }),
     encounter({ waveIndex: 1, outcome: "abandon", encounterElapsedTime: 7.25, activeCombatTime: 7.25 })
   ]);
+  const nodes = fixture.nodes();
   const cells = nodes.filter(node => node.tagName === "TD").map(node => node.textContent);
   assert.ok(cells.includes("Elapsed: 12.4s · Clear: — · Expected: 22.5s"));
   assert.ok(cells.includes("Elapsed: 7.25s · Clear: — · Expected: 22.5s"));
@@ -111,14 +124,37 @@ test("report UI shows elapsed time but no clear time or ratio for incomplete enc
 });
 
 test("report UI shows numeric clear time and ratio for a cleared encounter", () => {
-  const nodes = loadUi([encounter({
+  const fixture = loadUi([encounter({
     outcome: "clear",
     encounterElapsedTime: 10,
     activeCombatTime: 10,
     actualClearTime: 10,
     clearTimeRatio: 10 / 22.5
   })]);
+  const nodes = fixture.nodes();
   const cells = nodes.filter(node => node.tagName === "TD").map(node => node.textContent);
   assert.ok(cells.includes("Elapsed: 10s · Clear: 10s · Expected: 22.5s"));
   assert.ok(cells.includes("0.44"));
+});
+
+test("fixed report closes and reopens without either control changing report content", () => {
+  const fixture = loadUi([encounter({ outcome: "clear", actualClearTime: 12.4, clearTimeRatio: 12.4 / 22.5 })]);
+  const reportBefore = JSON.stringify(fixture.telemetry.getSessionReport());
+  const contentBefore = reportContent(fixture.panel);
+
+  assert.equal(fixture.panel.hidden, false);
+  assert.equal(fixture.gameInterface.children.includes(fixture.panel), true);
+  fixture.closeButton.click();
+  assert.equal(fixture.panel.hidden, true);
+  assert.deepEqual(reportContent(fixture.panel), contentBefore);
+  assert.equal(JSON.stringify(fixture.telemetry.getSessionReport()), reportBefore);
+
+  fixture.viewButton.click();
+  assert.equal(fixture.panel.hidden, false);
+  assert.deepEqual(reportContent(fixture.panel), contentBefore);
+  assert.equal(JSON.stringify(fixture.telemetry.getSessionReport()), reportBefore);
+
+  fixture.viewButton.click();
+  assert.equal(fixture.panel.hidden, true);
+  assert.deepEqual(reportContent(fixture.panel), contentBefore);
 });

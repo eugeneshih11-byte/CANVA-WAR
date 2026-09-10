@@ -18,6 +18,7 @@ function loadGame(search = "", options = {}) {
     const node = {
       id, hidden: id !== "startScreen", style: {}, className: "", dataset: {},
       attributes: {}, children: [], eventListeners: {},
+      clientWidth: 0, clientHeight: 0,
       classList: { add() {}, remove() {}, contains() { return false; } },
       get textContent() { return textContent; },
       set textContent(value) {
@@ -29,6 +30,9 @@ function loadGame(search = "", options = {}) {
       append(...children) { node.children.push(...children); },
       appendChild(child) { node.children.push(child); return child; },
       replaceChildren(...children) { node.children.splice(0, node.children.length, ...children); },
+      getBoundingClientRect() {
+        return { left: 0, top: 0, width: node.clientWidth, height: node.clientHeight };
+      },
       addEventListener(type, callback) {
         node.eventListeners[type] = callback;
         if (id) listeners[`${id}:${type}`] = callback;
@@ -41,6 +45,14 @@ function loadGame(search = "", options = {}) {
     getContext() { return { clearRect() {}, fillRect() {}, fillText() {}, save() {}, restore() {} }; },
     getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; }
   };
+  for (const id of ["arenaRegion", "canvasStage", "intermissionBanner",
+    "intermissionTitle", "intermissionDetail", "intermissionCountdown"]) {
+    elements[id] = element(id);
+  }
+  elements.arenaRegion.clientWidth = 1000;
+  elements.arenaRegion.clientHeight = 760;
+  elements.canvasStage.clientWidth = 800;
+  elements.canvasStage.clientHeight = 600;
   document = {
     activeElement: null,
     getElementById(id) { return elements[id] ||= element(id); },
@@ -62,12 +74,17 @@ function loadGame(search = "", options = {}) {
     },
     document,
     addEventListener(type, callback) { listeners[`window:${type}`] = callback; },
+    ResizeObserver: class ResizeObserver {
+      constructor(callback) { this.callback = callback; }
+      observe(target) { this.target = target; }
+      disconnect() { this.target = null; }
+    },
     requestAnimationFrame() {}
   };
   context.globalThis = context;
   context.window = context;
   vm.createContext(context);
-  for (const file of ["settlement.js", "encounters.js", "weapons.js", "build.js", "telemetry.js"]) {
+  for (const file of ["settlement.js", "encounters.js", "weapons.js", "build.js", "layout.js", "telemetry.js"]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context, { filename: file });
   }
   options.beforeGame?.(context);

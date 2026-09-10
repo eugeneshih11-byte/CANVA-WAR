@@ -1,5 +1,11 @@
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
+const arenaRegion = document.getElementById("arenaRegion");
+const canvasStage = document.getElementById("canvasStage");
+const intermissionBanner = document.getElementById("intermissionBanner");
+const intermissionTitle = document.getElementById("intermissionTitle");
+const intermissionDetail = document.getElementById("intermissionDetail");
+const intermissionCountdown = document.getElementById("intermissionCountdown");
 const startScreen = document.getElementById("startScreen");
 const gameInterface = document.getElementById("gameInterface");
 const playButton = document.getElementById("playButton");
@@ -131,6 +137,8 @@ const enemyColors = {
   fast: "#f97316",
   tank: "#7c3aed"
 };
+const SPAWN_PLACEMENT_ATTEMPTS = 16;
+const COLLISION_EPSILON = 1e-7;
 const RUN_PHASES = Object.freeze(Object.fromEntries([
   "STAGE_ENTER", "WAVE_ACTIVE", "INTERMISSION", "BOSS_ACTIVE", "STAGE_CLEAR",
   "STAGE_REWARD", "RUN_VICTORY", "RUN_DEAD"
@@ -296,14 +304,40 @@ playButton.addEventListener("click", () => {
   isGameStarted = true;
   startScreen.hidden = true;
   gameInterface.hidden = false;
+  resizeCanvasDisplay();
   updateHud();
 });
 
+function resizeCanvasDisplay() {
+  const bounds = arenaRegion?.getBoundingClientRect?.();
+  const availableWidth = arenaRegion?.clientWidth || bounds?.width || 0;
+  const availableHeight = arenaRegion?.clientHeight || bounds?.height || 0;
+  const size = GameLayout.calculateCanvasDisplaySize(
+    canvas.width,
+    canvas.height,
+    availableWidth,
+    availableHeight
+  );
+
+  if (size.width > 0 && size.height > 0 && canvasStage?.style) {
+    canvasStage.style.width = `${size.width}px`;
+    canvasStage.style.height = `${size.height}px`;
+  }
+  return size;
+}
+
 function updateAim(event) {
   const rect = canvas.getBoundingClientRect();
-
-  mouse.x = (event.clientX - rect.left) * canvas.width / rect.width;
-  mouse.y = (event.clientY - rect.top) * canvas.height / rect.height;
+  const point = GameLayout.clientToCanvasPoint(
+    event.clientX,
+    event.clientY,
+    rect,
+    canvas.width,
+    canvas.height
+  );
+  if (!point) return;
+  mouse.x = point.x;
+  mouse.y = point.y;
 }
 
 function canAttack() {
@@ -384,6 +418,11 @@ document.addEventListener("pointerup", endAttack);
 document.addEventListener("mouseup", endAttack);
 document.addEventListener("pointercancel", () => { weaponRuntime.attackHeld = false; });
 globalThis.addEventListener?.("blur", () => clearInput());
+globalThis.addEventListener?.("resize", resizeCanvasDisplay);
+if (typeof ResizeObserver === "function" && arenaRegion) {
+  const arenaResizeObserver = new ResizeObserver(resizeCanvasDisplay);
+  arenaResizeObserver.observe(arenaRegion);
+}
 
 canvas.addEventListener("click", () => {
   // Click is intentionally not a firing trigger; cadence is owned by Weapon Runtime.
@@ -598,20 +637,45 @@ function spawnEnemy(type = "normal", waveId = currentWave?.id) {
   const stats = Encounters.getScaledEnemyStats(enemyStats[type], stageRuntime.definition.enemyScaling);
   const enemy = { type, waveId, x: 0, y: 0, ...stats };
   const edge = Math.floor(Math.random() * 4);
-
-  if (edge === 0) {
-    enemy.x = Math.random() * (canvas.width - enemy.width);
-  } else if (edge === 1) {
-    enemy.x = canvas.width - enemy.width;
-    enemy.y = Math.random() * (canvas.height - enemy.height);
-  } else if (edge === 2) {
-    enemy.x = Math.random() * (canvas.width - enemy.width);
-    enemy.y = canvas.height - enemy.height;
-  } else {
-    enemy.y = Math.random() * (canvas.height - enemy.height);
-  }
+  const edgeOffset = Math.random();
+  positionEnemyForSpawn(enemy, edge, edgeOffset);
 
   enemies.push(enemy);
+}
+
+function setEntityOnCanvasEdge(entity, edge, offsetRatio) {
+  const offset = ((offsetRatio % 1) + 1) % 1;
+  entity.x = 0;
+  entity.y = 0;
+  if (edge === 0) {
+    entity.x = offset * (canvas.width - entity.width);
+  } else if (edge === 1) {
+    entity.x = canvas.width - entity.width;
+    entity.y = offset * (canvas.height - entity.height);
+  } else if (edge === 2) {
+    entity.x = offset * (canvas.width - entity.width);
+    entity.y = canvas.height - entity.height;
+  } else {
+    entity.y = offset * (canvas.height - entity.height);
+  }
+}
+
+function positionEnemyForSpawn(enemy, initialEdge, initialOffset) {
+  const offsetSteps = [0, 0.5, 0.25, 0.75];
+  let originalPosition = null;
+  for (let attempt = 0; attempt < SPAWN_PLACEMENT_ATTEMPTS; attempt++) {
+    const edge = (initialEdge + attempt) % 4;
+    const offsetStep = offsetSteps[Math.floor(attempt / 4)];
+    setEntityOnCanvasEdge(enemy, edge, initialOffset + offsetStep);
+    if (attempt === 0) originalPosition = { x: enemy.x, y: enemy.y };
+    if (!hasOtherEnemyCollision(enemy)) return true;
+  }
+
+  // Dense or malformed runtime state can exhaust the bounded search. Movement
+  // recovery below can still depenetrate this deterministic fallback safely.
+  enemy.x = originalPosition.x;
+  enemy.y = originalPosition.y;
+  return false;
 }
 
 function spawnBoss() {
@@ -642,6 +706,16 @@ function isOverlapping(rectangleA, rectangleB) {
   );
 }
 
+function isCurrentEncounterEnemy(enemy) {
+  return Boolean(
+    runPhase === RUN_PHASES.WAVE_ACTIVE &&
+    currentWave &&
+    enemy?.waveId === currentWave.id &&
+    Number.isFinite(enemy.hp) &&
+    enemy.hp > 0
+  );
+}
+
 function prepareProjectileHitState(bullet) {
   if (!(bullet.hitTargets instanceof Set)) bullet.hitTargets = new Set();
   if (!Number.isFinite(bullet.pierceRemaining)) {
@@ -666,6 +740,7 @@ function handleBulletEnemyCollisions() {
 
     for (let enemyIndex = enemies.length - 1; enemyIndex >= 0; enemyIndex--) {
       const enemy = enemies[enemyIndex];
+      if (!isCurrentEncounterEnemy(enemy)) continue;
 
       if (!bullet.hitTargets.has(enemy) && isOverlapping(bullet, enemy)) {
         enemy.hp -= bullet.damage;
@@ -812,7 +887,7 @@ function handlePlayerEnemyCollisions() {
   for (let enemyIndex = enemies.length - 1; enemyIndex >= 0; enemyIndex--) {
     const enemy = enemies[enemyIndex];
 
-    if (isOverlapping(player, enemy)) {
+    if (isCurrentEncounterEnemy(enemy) && isOverlapping(player, enemy)) {
       // This removal is guaranteed below; observe it before fatal damage can finish the report.
       observeTelemetry("recordEnemyRemoval", () => ({ enemyType: enemy.type, reason: "contact" }));
       takeDamage(enemy.damage ?? 1, enemy.type);
@@ -842,7 +917,7 @@ function updateBossDamageCooldown(deltaTime) {
 
 function getPlayerCollision() {
   for (const enemy of enemies) {
-    if (isOverlapping(player, enemy)) {
+    if (isCurrentEncounterEnemy(enemy) && isOverlapping(player, enemy)) {
       return enemy;
     }
   }
@@ -860,21 +935,12 @@ function isInsideCanvas(rectangle) {
 }
 
 function pushEnemy(enemy, movementX, movementY) {
-  enemy.x += movementX;
-  enemy.y += movementY;
-
-  if (!isInsideCanvas(enemy) || hasOtherEnemyCollision(enemy)) {
-    enemy.x -= movementX;
-    enemy.y -= movementY;
-    return false;
-  }
-
-  return true;
+  return tryMoveEnemy(enemy, movementX, movementY);
 }
 
 function hasOtherEnemyCollision(enemy) {
   for (const otherEnemy of enemies) {
-    if (otherEnemy !== enemy && isOverlapping(enemy, otherEnemy)) {
+    if (otherEnemy !== enemy && isCurrentEncounterEnemy(otherEnemy) && isOverlapping(enemy, otherEnemy)) {
       return true;
     }
   }
@@ -882,8 +948,85 @@ function hasOtherEnemyCollision(enemy) {
   return false;
 }
 
+function getOverlapPenetration(rectangleA, rectangleB) {
+  const penetrationX = Math.min(
+    rectangleA.x + rectangleA.width - rectangleB.x,
+    rectangleB.x + rectangleB.width - rectangleA.x
+  );
+  const penetrationY = Math.min(
+    rectangleA.y + rectangleA.height - rectangleB.y,
+    rectangleB.y + rectangleB.height - rectangleA.y
+  );
+  return penetrationX > 0 && penetrationY > 0 ? penetrationX + penetrationY : 0;
+}
+
+function getEnemyCollisionState(enemy, x = enemy.x, y = enemy.y) {
+  const candidate = { x, y, width: enemy.width, height: enemy.height };
+  const colliders = new Set();
+  let totalPenetration = 0;
+  for (const otherEnemy of enemies) {
+    if (otherEnemy === enemy || !isCurrentEncounterEnemy(otherEnemy)) continue;
+    const penetration = getOverlapPenetration(candidate, otherEnemy);
+    if (penetration > 0) {
+      colliders.add(otherEnemy);
+      totalPenetration += penetration;
+    }
+  }
+  return { colliders, totalPenetration };
+}
+
+function isCollisionRecoveryMove(before, after) {
+  if (before.colliders.size === 0) return after.colliders.size === 0;
+  for (const collider of after.colliders) {
+    if (!before.colliders.has(collider)) return false;
+  }
+  return after.totalPenetration < before.totalPenetration - COLLISION_EPSILON;
+}
+
+function tryMoveEnemy(enemy, movementX, movementY) {
+  if (!isCurrentEncounterEnemy(enemy)) return false;
+  const nextX = enemy.x + movementX;
+  const nextY = enemy.y + movementY;
+  const candidate = { x: nextX, y: nextY, width: enemy.width, height: enemy.height };
+  if (!isInsideCanvas(candidate)) return false;
+
+  const before = getEnemyCollisionState(enemy);
+  const after = getEnemyCollisionState(enemy, nextX, nextY);
+  if (!isCollisionRecoveryMove(before, after)) return false;
+  enemy.x = nextX;
+  enemy.y = nextY;
+  return true;
+}
+
+function recoverEnemyOverlap(enemy, distance) {
+  const step = Number.isFinite(distance) ? Math.max(0, distance) : 0;
+  const before = getEnemyCollisionState(enemy);
+  if (step <= 0 || before.colliders.size === 0) return false;
+
+  const directions = [[-step, 0], [step, 0], [0, -step], [0, step]];
+  const startIndex = Math.max(0, enemies.indexOf(enemy)) % directions.length;
+  let best = null;
+  for (let offset = 0; offset < directions.length; offset++) {
+    const [movementX, movementY] = directions[(startIndex + offset) % directions.length];
+    const nextX = enemy.x + movementX;
+    const nextY = enemy.y + movementY;
+    const candidate = { x: nextX, y: nextY, width: enemy.width, height: enemy.height };
+    if (!isInsideCanvas(candidate)) continue;
+    const after = getEnemyCollisionState(enemy, nextX, nextY);
+    if (!isCollisionRecoveryMove(before, after)) continue;
+    if (!best || after.totalPenetration < best.totalPenetration - COLLISION_EPSILON) {
+      best = { x: nextX, y: nextY, totalPenetration: after.totalPenetration };
+    }
+  }
+  if (!best) return false;
+  enemy.x = best.x;
+  enemy.y = best.y;
+  return true;
+}
+
 function updateEnemies(deltaTime) {
   for (const enemy of enemies) {
+    if (!isCurrentEncounterEnemy(enemy)) continue;
     let directionX = player.x - enemy.x;
     let directionY = player.y - enemy.y;
     const directionLength = Math.hypot(directionX, directionY);
@@ -891,17 +1034,11 @@ function updateEnemies(deltaTime) {
     if (directionLength > 0) {
       directionX /= directionLength;
       directionY /= directionLength;
-      enemy.x += directionX * enemy.speed * deltaTime;
-
-      if (hasOtherEnemyCollision(enemy)) {
-        enemy.x -= directionX * enemy.speed * deltaTime;
-      }
-
-      enemy.y += directionY * enemy.speed * deltaTime;
-
-      if (hasOtherEnemyCollision(enemy)) {
-        enemy.y -= directionY * enemy.speed * deltaTime;
-      }
+      const movementX = directionX * enemy.speed * deltaTime;
+      const movementY = directionY * enemy.speed * deltaTime;
+      const movedX = tryMoveEnemy(enemy, movementX, 0);
+      const movedY = tryMoveEnemy(enemy, 0, movementY);
+      if (!movedX && !movedY) recoverEnemyOverlap(enemy, enemy.speed * deltaTime);
     }
   }
 }
@@ -1038,7 +1175,7 @@ function renderBuildPanel() {
   }
   for (const upgrade of owned) {
     const stacks = RunBuild.getUpgradeStacks(buildState, upgrade.id);
-    list.append(textElement("li", "", `${upgrade.name} · ${stacks} / ${upgrade.maxStacks}`));
+    list.append(textElement("li", "", `${upgrade.name} ×${stacks}`));
   }
   if (RunBuild.UPGRADE_LIST.every(upgrade => !RunBuild.canSelectUpgrade(buildState, upgrade.id))) {
     list.append(textElement("li", "build-maxed", "BUILD MAXED"));
@@ -1055,13 +1192,29 @@ function updateHud() {
   document.getElementById("abandonButton").hidden = isGameOver || isVictory || isChoosingUpgrade || isAbandoned;
 }
 
+function updateArenaPresentation() {
+  const showIntermission = runPhase === RUN_PHASES.INTERMISSION &&
+    !isGameOver && !isVictory && !isAbandoned;
+  intermissionBanner.hidden = !showIntermission;
+  if (!showIntermission) {
+    intermissionBanner.classList.remove("boss-incoming");
+    return;
+  }
+
+  const bossIncoming = stageRuntime.waveIndex + 1 >= stageRuntime.definition.waveCount;
+  intermissionTitle.textContent = `WAVE ${stageRuntime.waveIndex + 1} CLEAR`;
+  intermissionDetail.textContent = bossIncoming
+    ? "BOSS INCOMING"
+    : `NEXT · WAVE ${stageRuntime.waveIndex + 2}`;
+  intermissionCountdown.textContent = String(
+    Math.ceil(Math.max(0, Encounters.CONFIG.intermission - intermissionTimer))
+  );
+  intermissionBanner.classList[bossIncoming ? "add" : "remove"]("boss-incoming");
+}
+
 function drawPhasePresentation() {
   let title = "", subtitle = "";
-  if (runPhase === RUN_PHASES.INTERMISSION) {
-    title = `WAVE ${stageRuntime.waveIndex + 1} CLEAR`;
-    subtitle = stageRuntime.waveIndex === 4 ? "BOSS INCOMING" : `NEXT: WAVE ${stageRuntime.waveIndex + 2}`;
-    subtitle += ` · ${Math.ceil(Math.max(0, Encounters.CONFIG.intermission - intermissionTimer))}`;
-  } else if (runPhase === RUN_PHASES.STAGE_CLEAR) title = "STAGE 1 CLEAR";
+  if (runPhase === RUN_PHASES.STAGE_CLEAR) title = "STAGE 1 CLEAR";
   if (isGameOver || isVictory || isAbandoned) {
     title = isAbandoned ? "ABANDONED" : isVictory ? "VICTORY" : "GAME OVER";
     subtitle = lastSettlement ? `Score ${lastSettlement.finalScore} · Points ${lastSettlement.points}` : "No secured checkpoint · Points 0";
@@ -1161,6 +1314,7 @@ function gameLoop(timestamp) {
   drawBoss();
   drawBullets();
   drawWeaponDamage();
+  updateArenaPresentation();
   drawPhasePresentation();
   updateHud();
 

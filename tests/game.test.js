@@ -8,6 +8,8 @@ const gameSource = fs.readFileSync(gamePath, "utf8");
 const settlementSource = fs.readFileSync(path.join(__dirname, "..", "settlement.js"), "utf8");
 const weaponsSource = fs.readFileSync(path.join(__dirname, "..", "weapons.js"), "utf8");
 const buildSource = fs.readFileSync(path.join(__dirname, "..", "build.js"), "utf8");
+const layoutPath = path.join(__dirname, "..", "layout.js");
+const layoutSource = fs.existsSync(layoutPath) ? fs.readFileSync(layoutPath, "utf8") : "";
 const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
 
 const testHook = `
@@ -44,6 +46,16 @@ globalThis.__gameTest = {
   renderUpgradeChoices,
   renderBuildPanel,
   clearInput,
+  spawnEnemy,
+  updateEnemies,
+  updateBoss,
+  pushEnemy,
+  hasOtherEnemyCollision,
+  isOverlapping,
+  isInsideCanvas,
+  updateAim,
+  resizeCanvasDisplay: typeof resizeCanvasDisplay === "function" ? resizeCanvasDisplay : null,
+  updateArenaPresentation: typeof updateArenaPresentation === "function" ? updateArenaPresentation : null,
   setBuildState(value) {
     buildState = RunBuild.createBuildState(value);
     weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
@@ -102,6 +114,7 @@ globalThis.__gameTest = {
     if ("isGameStarted" in values) isGameStarted = values.isGameStarted;
     if ("isGameOver" in values) isGameOver = values.isGameOver;
     if ("isVictory" in values) isVictory = values.isVictory;
+    if ("isAbandoned" in values) isAbandoned = values.isAbandoned;
     if ("isChoosingUpgrade" in values) isChoosingUpgrade = values.isChoosingUpgrade;
     if ("score" in values) score = values.score;
     if ("level" in values) level = values.level;
@@ -110,11 +123,14 @@ globalThis.__gameTest = {
     if ("xpToNextLevel" in values) xpToNextLevel = values.xpToNextLevel;
     if ("runPhase" in values) runPhase = values.runPhase;
     if ("intermissionTimer" in values) intermissionTimer = values.intermissionTimer;
+    if ("stageRuntime" in values) stageRuntime = values.stageRuntime;
+    if ("currentWave" in values) currentWave = values.currentWave;
+    if ("waveRuntime" in values) waveRuntime = values.waveRuntime;
   }
 };
 `;
 
-function loadGame(initialStorage = {}) {
+function loadGame(initialStorage = {}, options = {}) {
   const listeners = {};
   const storage = new Map(Object.entries(initialStorage));
   let documentStub;
@@ -131,11 +147,24 @@ function loadGame(initialStorage = {}) {
       attributes: {},
       className: "",
       parentNode: null,
+      style: {
+        setProperty(name, value) { this[name] = String(value); },
+        removeProperty(name) { delete this[name]; }
+      },
+      clientWidth: 0,
+      clientHeight: 0,
+      _rect: null,
       classList: {
         values: new Set(),
         add(...names) { names.forEach(name => this.values.add(name)); },
         remove(...names) { names.forEach(name => this.values.delete(name)); },
-        contains(name) { return this.values.has(name); }
+        contains(name) { return this.values.has(name); },
+        toggle(name, force) {
+          const shouldAdd = force === undefined ? !this.values.has(name) : Boolean(force);
+          if (shouldAdd) this.values.add(name);
+          else this.values.delete(name);
+          return shouldAdd;
+        }
       },
       addEventListener(type, handler) {
         elementListeners[type] = handler;
@@ -155,6 +184,15 @@ function loadGame(initialStorage = {}) {
       },
       setAttribute(name, value) { this.attributes[name] = String(value); },
       getAttribute(name) { return this.attributes[name] ?? null; },
+      removeAttribute(name) { delete this.attributes[name]; },
+      getBoundingClientRect() {
+        return this._rect || { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight };
+      },
+      setBoundingClientRect(rect) {
+        this._rect = { left: 0, top: 0, ...rect };
+        if (Number.isFinite(rect.width)) this.clientWidth = rect.width;
+        if (Number.isFinite(rect.height)) this.clientHeight = rect.height;
+      },
       focus() { if (documentStub) documentStub.activeElement = this; },
       click() { elementListeners.click?.({ button: 0, target: this, currentTarget: this, preventDefault() {} }); },
       dispatch(type, event = {}) { elementListeners[type]?.({ target: this, currentTarget: this, ...event }); }
@@ -176,13 +214,15 @@ function loadGame(initialStorage = {}) {
   const canvas = Object.assign(createElement("canvas"), {
     width: 800,
     height: 600,
+    clientWidth: 800,
+    clientHeight: 600,
     getContext() {
       return {
         clearRect() {}, fillRect() {}, fillText() {}, save() {}, restore() {}
       };
     },
     getBoundingClientRect() {
-      return { left: 0, top: 0, width: 800, height: 600 };
+      return this._rect || { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight };
     },
     addEventListener(type, handler) {
       listeners[`canvas:${type}`] = handler;
@@ -213,12 +253,24 @@ function loadGame(initialStorage = {}) {
     buildProjectileCount: createElement("buildProjectileCount"),
     buildMoveSpeed: createElement("buildMoveSpeed"),
     buildMaxHp: createElement("buildMaxHp"),
-    buildUpgradeList: createElement("buildUpgradeList")
+    buildUpgradeList: createElement("buildUpgradeList"),
+    arenaRegion: createElement("arenaRegion"),
+    canvasStage: createElement("canvasStage"),
+    intermissionBanner: createElement("intermissionBanner"),
+    intermissionTitle: createElement("intermissionTitle"),
+    intermissionDetail: createElement("intermissionDetail"),
+    intermissionCountdown: createElement("intermissionCountdown")
   };
+  elements.arenaRegion.clientWidth = options.arenaWidth ?? 1000;
+  elements.arenaRegion.clientHeight = options.arenaHeight ?? 760;
+  elements.canvasStage.clientWidth = options.stageWidth ?? 800;
+  elements.canvasStage.clientHeight = options.stageHeight ?? 600;
   elements.abandonOverlay.hidden = true;
   elements.upgradeOverlay.hidden = true;
+  elements.intermissionBanner.hidden = true;
+  const resizeObservers = [];
   const context = {
-    Math: Object.assign(Object.create(Math), { random: () => 0.25 }),
+    Math: Object.assign(Object.create(Math), { random: options.random || (() => 0.25) }),
     console,
     __listeners: listeners,
     __elements: elements,
@@ -245,6 +297,14 @@ function loadGame(initialStorage = {}) {
     },
     Uint32Array,
     Set,
+    innerWidth: options.innerWidth ?? 1280,
+    innerHeight: options.innerHeight ?? 800,
+    devicePixelRatio: options.devicePixelRatio ?? 1,
+    ResizeObserver: class ResizeObserver {
+      constructor(callback) { this.callback = callback; resizeObservers.push(this); }
+      observe(target) { this.target = target; }
+      disconnect() { this.target = null; }
+    },
     document: documentStub = {
       activeElement: null,
       getElementById(id) {
@@ -267,7 +327,10 @@ function loadGame(initialStorage = {}) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "encounters.js"), "utf8"), context);
   vm.runInContext(weaponsSource, context, { filename: "weapons.js" });
   vm.runInContext(buildSource, context, { filename: "build.js" });
+  if (layoutSource) vm.runInContext(layoutSource, context, { filename: "layout.js" });
   vm.runInContext(gameSource + testHook, context, { filename: gamePath });
+  context.__gameTest.triggerResize = () => resizeObservers.forEach(observer =>
+    observer.callback([{ target: observer.target, contentRect: observer.target?.getBoundingClientRect?.() }]));
   return context.__gameTest;
 }
 
@@ -300,6 +363,38 @@ function makeBullet(overrides = {}) {
     directionY: 0,
     ...overrides
   };
+}
+
+const ENEMY_TEST_STATS = Object.freeze({
+  normal: { width: 40, height: 40, speed: 120, hp: 3, maxHp: 3 },
+  fast: { width: 30, height: 30, speed: 200, hp: 1, maxHp: 1 },
+  tank: { width: 60, height: 60, speed: 70, hp: 8, maxHp: 8 }
+});
+
+function makeEnemy(game, type = "normal", overrides = {}) {
+  return {
+    type,
+    waveId: game.getState().currentWave?.id,
+    x: 0,
+    y: 0,
+    damage: 1,
+    ...ENEMY_TEST_STATS[type],
+    ...overrides
+  };
+}
+
+function rectanglesOverlap(a, b) {
+  return a.x < b.x + b.width && a.x + a.width > b.x &&
+    a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+function distanceToPlayer(game, enemy) {
+  return Math.hypot(game.player.x - enemy.x, game.player.y - enemy.y);
+}
+
+function closeTo(actual, expected, tolerance = 1e-8) {
+  assert.ok(Math.abs(actual - expected) <= tolerance,
+    `expected ${actual} to be within ${tolerance} of ${expected}`);
 }
 
 function primaryPointer(clientX = 780, clientY = 300) {
@@ -406,7 +501,9 @@ function testUpgradePause() {
   game.update(1);
   assert.deepEqual({ x: game.player.x, y: game.player.y, groupDelayElapsed: game.getState().waveRuntime.groupDelayElapsed }, { x: 100, y: 100, groupDelayElapsed: 0 });
 
-  const enemy = { x: 200, y: 100, width: 20, height: 20, hp: 1, maxHp: 1, speed: 0, type: "normal" };
+  const enemy = makeEnemy(game, "normal", {
+    x: 200, y: 100, width: 20, height: 20, hp: 1, maxHp: 1, speed: 0
+  });
   const bossBullet = makeBullet({ x: 100, y: 100, damage: 1 });
   const enemyBullet = makeBullet({ x: 200, y: 100, damage: 1 });
   game.enemies.push(enemy);
@@ -526,13 +623,20 @@ function testStartScreenAndPlay() {
 
 function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="gameInterface" class="game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=2"/);
+  assert.match(indexSource, /href="style\.css\?v=3"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1>CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
   assert.match(indexSource, /id="upgradeChoices"/);
   assert.match(indexSource, /id="buildUpgradeList"/);
+  assert.match(indexSource, /id="arenaRegion"/);
+  assert.match(indexSource, /id="canvasStage"/);
+  assert.match(indexSource, /id="intermissionBanner"/);
+  assert.match(indexSource, /id="intermissionTitle"/);
+  assert.match(indexSource, /id="intermissionDetail"/);
+  assert.match(indexSource, /id="intermissionCountdown"/);
   assert.match(indexSource, /<script src="weapons\.js"><\/script>\s*<script src="build\.js"><\/script>/);
+  assert.match(indexSource, /<script src="layout\.js"><\/script>[\s\S]*<script src="game\.js"><\/script>/);
 }
 
 function testSaveDefaultsAndRoundTrip() {
@@ -702,7 +806,10 @@ function testDeathSettlesCurrentRunAndAwardsPointsOnce() {
   game.settlement.awardScore(runState, game.settlement.SCORE_TYPES.ENEMY_KILL, 1000);
   game.setState({ score: 1000 });
   game.player.hp = 1;
-  game.enemies.push({ x: game.player.x, y: game.player.y, width: 20, height: 20, hp: 1, maxHp: 1, speed: 0, type: "normal" });
+  game.enemies.push(makeEnemy(game, "normal", {
+    x: game.player.x, y: game.player.y, width: 20, height: 20,
+    hp: 1, maxHp: 1, speed: 0
+  }));
   game.update(0);
 
   const result = game.getLastSettlement();
@@ -733,14 +840,19 @@ function testInvalidSaveShapeFallsBackToDefaults() {
 function testNormalEnemyKillsPersist() {
   const game = loadGame();
   startGame(game);
-  const enemy = { x: 100, y: 100, width: 20, height: 20, hp: 1, maxHp: 1, speed: 0, type: "normal" };
+  const enemy = makeEnemy(game, "normal", {
+    x: 100, y: 100, width: 20, height: 20, hp: 1, maxHp: 1, speed: 0
+  });
   game.enemies.push(enemy);
   game.bullets.push(makeBullet({ x: 100, y: 100 }));
   game.handleBulletEnemyCollisions();
   assert.equal(game.getSaveData().statistics.totalKills, 1);
   assert.equal(JSON.parse(game.storage.get("canva-war-save")).statistics.totalKills, 1);
 
-  game.enemies.push({ x: game.player.x, y: game.player.y, width: 20, height: 20, hp: 1, maxHp: 1, speed: 0, type: "normal" });
+  game.enemies.push(makeEnemy(game, "normal", {
+    x: game.player.x, y: game.player.y, width: 20, height: 20,
+    hp: 1, maxHp: 1, speed: 0
+  }));
   game.update(0);
   assert.equal(game.getSaveData().statistics.totalKills, 1);
 }
@@ -1053,10 +1165,10 @@ test("blur and run-ending transitions clear held attack input", () => {
   game.weaponRuntime.timeUntilNextShot = 0;
   pressPrimary(game);
   game.player.hp = 1;
-  game.enemies.push({
+  game.enemies.push(makeEnemy(game, "normal", {
     x: game.player.x, y: game.player.y, width: 20, height: 20,
-    hp: 1, maxHp: 1, speed: 0, type: "normal"
-  });
+    hp: 1, maxHp: 1, speed: 0
+  }));
   game.update(0);
   assert.equal(game.getState().runPhase, "RUN_DEAD");
   assert.equal(game.weaponRuntime.attackHeld, false);
@@ -1111,10 +1223,10 @@ test("fractional Split Shot damage is applied without rounding", () => {
   pressPrimary(game); releasePrimary(game);
   game.bullets.splice(1);
   const bullet = game.bullets[0];
-  const enemy = {
+  const enemy = makeEnemy(game, "normal", {
     x: bullet.x, y: bullet.y, width: 20, height: 20,
-    hp: 1, maxHp: 1, speed: 0, type: "normal"
-  };
+    hp: 1, maxHp: 1, speed: 0
+  });
   game.enemies.push(enemy);
   game.handleBulletEnemyCollisions();
   assert.equal(enemy.hp, 0.25);
@@ -1124,8 +1236,8 @@ test("fractional Split Shot damage is applied without rounding", () => {
 test("pierce zero stops at one target while pierce one hits two distinct targets", () => {
   const noPierce = loadGame(); startGame(noPierce);
   const noPierceTargets = [
-    { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0, type: "normal" },
-    { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0, type: "normal" }
+    makeEnemy(noPierce, "normal", { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0 }),
+    makeEnemy(noPierce, "normal", { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0 })
   ];
   noPierce.enemies.push(...noPierceTargets);
   noPierce.bullets.push(makeBullet({ pierceRemaining: 0 }));
@@ -1135,8 +1247,8 @@ test("pierce zero stops at one target while pierce one hits two distinct targets
 
   const pierce = loadGame(); startGame(pierce);
   const pierceTargets = [
-    { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0, type: "normal" },
-    { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0, type: "normal" }
+    makeEnemy(pierce, "normal", { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0 }),
+    makeEnemy(pierce, "normal", { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0 })
   ];
   pierce.enemies.push(...pierceTargets);
   pierce.bullets.push(makeBullet({ pierceRemaining: 1 }));
@@ -1147,7 +1259,9 @@ test("pierce zero stops at one target while pierce one hits two distinct targets
 
 test("a piercing projectile cannot hit the same enemy twice across frames", () => {
   const game = loadGame(); startGame(game);
-  const first = { x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0, type: "normal" };
+  const first = makeEnemy(game, "normal", {
+    x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0
+  });
   game.enemies.push(first);
   game.bullets.push(makeBullet({ pierceRemaining: 1 }));
   game.handleBulletEnemyCollisions();
@@ -1162,6 +1276,32 @@ test("a piercing projectile cannot hit the same enemy twice across frames", () =
   assert.equal(first.hp, 4);
   assert.equal(second.hp, 4);
   assert.equal(game.bullets.length, 0);
+});
+
+test("stale and dead ghosts cannot absorb projectiles or award combat credit", () => {
+  const game = loadGame(); startGame(game);
+  const active = makeEnemy(game, "normal", {
+    x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0
+  });
+  const stale = makeEnemy(game, "normal", {
+    waveId: "stale-wave", x: 100, y: 100, width: 20, height: 20,
+    hp: 5, maxHp: 5, speed: 0
+  });
+  const dead = makeEnemy(game, "normal", {
+    x: 100, y: 100, width: 20, height: 20, hp: 0, maxHp: 5, speed: 0
+  });
+  game.enemies.push(active, stale, dead);
+  game.bullets.push(makeBullet({ pierceRemaining: 0 }));
+
+  game.handleBulletEnemyCollisions();
+
+  assert.equal(active.hp, 4);
+  assert.equal(stale.hp, 5);
+  assert.equal(dead.hp, 0);
+  assert.equal(game.bullets.length, 0);
+  assert.equal(game.getState().score, 0);
+  assert.equal(game.getState().xp, 0);
+  assert.equal(game.getSaveData().statistics.totalKills, 0);
 });
 
 test("a piercing projectile cannot repeatedly damage the Boss", () => {
@@ -1267,9 +1407,9 @@ test("Build panel lists owned Upgrades only and displays resolved combat stats",
   assert.equal(game.elements.buildMaxHp.textContent, "6");
   assert.equal(game.elements.buildUpgradeList.children.length, 3);
   const ownedText = game.elements.buildUpgradeList.textContent;
-  assert.match(ownedText, /Heavy Shot · 1 \/ 4/);
-  assert.match(ownedText, /Vitality · 1 \/ 3/);
-  assert.match(ownedText, /Swift Feet · 1 \/ 4/);
+  assert.match(ownedText, /Heavy Shot ×1/);
+  assert.match(ownedText, /Vitality ×1/);
+  assert.match(ownedText, /Swift Feet ×1/);
   assert.doesNotMatch(ownedText, /Rapid Fire|Split Shot/);
 });
 
@@ -1287,4 +1427,344 @@ test("restart clears the Run Build and restores its panel", () => {
   assert.equal(game.elements.buildProjectileCount.textContent, "1");
   assert.equal(game.elements.buildUpgradeList.children.length, 1);
   assert.equal(game.elements.buildUpgradeList.children[0].textContent, "No upgrades yet.");
+});
+
+test("Normal, Fast, and Tank enemies advance toward the Player at their own speed", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  const normal = makeEnemy(game, "normal", { x: 40, y: 40 });
+  const fast = makeEnemy(game, "fast", { x: 40, y: 280 });
+  const tank = makeEnemy(game, "tank", { x: 700, y: 500 });
+  game.enemies.push(normal, fast, tank);
+  const beforeDistances = game.enemies.map(enemy => distanceToPlayer(game, enemy));
+  const beforePositions = game.enemies.map(enemy => ({ x: enemy.x, y: enemy.y }));
+
+  game.updateEnemies(0.05);
+
+  game.enemies.forEach((enemy, index) => {
+    assert.ok(distanceToPlayer(game, enemy) < beforeDistances[index]);
+    closeTo(
+      Math.hypot(enemy.x - beforePositions[index].x, enemy.y - beforePositions[index].y),
+      enemy.speed * 0.05
+    );
+  });
+});
+
+test("only living current-Wave enemies update or participate in enemy collision", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  const active = makeEnemy(game, "normal", { x: 0, y: 250 });
+  const stale = makeEnemy(game, "normal", { waveId: "stale-wave", x: 35, y: 250 });
+  const dead = makeEnemy(game, "normal", { hp: 0, x: 35, y: 250 });
+  game.enemies.push(active, stale, dead);
+  const staleBefore = { x: stale.x, y: stale.y };
+  const deadBefore = { x: dead.x, y: dead.y };
+
+  assert.equal(game.hasOtherEnemyCollision(active), false);
+  game.updateEnemies(0.1);
+
+  assert.ok(active.x > 0);
+  assert.deepEqual({ x: stale.x, y: stale.y }, staleBefore);
+  assert.deepEqual({ x: dead.x, y: dead.y }, deadBefore);
+  assert.equal(game.hasOtherEnemyCollision(active), false);
+});
+
+test("two living enemies that start overlapped deterministically separate", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  game.player.x = 650;
+  game.player.y = 450;
+  const first = makeEnemy(game, "normal", { x: 100, y: 100 });
+  const second = makeEnemy(game, "normal", { x: 100, y: 100 });
+  game.enemies.push(first, second);
+  const origins = game.enemies.map(enemy => ({ x: enemy.x, y: enemy.y }));
+
+  for (let frame = 0; frame < 180 && rectanglesOverlap(first, second); frame++) {
+    game.updateEnemies(1 / 60);
+  }
+
+  assert.equal(rectanglesOverlap(first, second), false);
+  game.enemies.forEach((enemy, index) => {
+    assert.ok(enemy.x !== origins[index].x || enemy.y !== origins[index].y);
+    assert.equal(game.isInsideCanvas(enemy), true);
+  });
+});
+
+test("enemy collision still rejects movement that would create a new stack", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  const first = makeEnemy(game, "normal", { x: 100, y: 100 });
+  const second = makeEnemy(game, "normal", { x: 145, y: 100 });
+  game.enemies.push(first, second);
+  assert.equal(rectanglesOverlap(first, second), false);
+
+  assert.equal(game.pushEnemy(first, 10, 0), false);
+  assert.deepEqual({ x: first.x, y: first.y }, { x: 100, y: 100 });
+  assert.equal(rectanglesOverlap(first, second), false);
+});
+
+test("an Enemy blocked at a boundary can still slide on its legal axis", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  game.player.x = -100;
+  game.player.y = 400;
+  const enemy = makeEnemy(game, "normal", { x: 0, y: 100 });
+  game.enemies.push(enemy);
+
+  game.updateEnemies(0.1);
+
+  assert.equal(enemy.x, 0);
+  assert.ok(enemy.y > 100);
+  assert.equal(game.isInsideCanvas(enemy), true);
+});
+
+test("a dense current-Wave group cannot remain at zero displacement", () => {
+  let randomCalls = 0;
+  const game = loadGame({}, { random() { randomCalls++; return 0.25; } });
+  startGame(game);
+  game.enemies.length = 0;
+  const types = ["normal", "fast", "tank", "normal", "fast", "tank", "normal", "fast"];
+  const dense = types.map(type => makeEnemy(game, type, { x: 720, y: 120 }));
+  game.enemies.push(...dense);
+  const origins = dense.map(enemy => ({ x: enemy.x, y: enemy.y }));
+  const moved = new Set();
+  const callsBeforeRecovery = randomCalls;
+
+  for (let frame = 0; frame < 180; frame++) {
+    game.updateEnemies(1 / 60);
+    dense.forEach((enemy, index) => {
+      if (enemy.x !== origins[index].x || enemy.y !== origins[index].y) moved.add(index);
+    });
+  }
+
+  assert.equal(moved.size, dense.length);
+  assert.equal(randomCalls, callsBeforeRecovery);
+  assert.equal(dense.every(enemy => game.isInsideCanvas(enemy)), true);
+});
+
+test("spawn overlap recovery is bounded, deterministic, and consumes no extra RNG", () => {
+  function spawnSnapshot() {
+    let calls = 0;
+    const game = loadGame({}, { random() { calls++; return 0.25; } });
+    startGame(game);
+    game.enemies.length = 0;
+    const before = calls;
+    for (let index = 0; index < 4; index++) game.spawnEnemy("normal");
+    return {
+      calls: calls - before,
+      positions: game.enemies.map(enemy => ({ x: enemy.x, y: enemy.y })),
+      overlap: game.enemies.some((enemy, index) =>
+        game.enemies.slice(index + 1).some(other => rectanglesOverlap(enemy, other)))
+    };
+  }
+
+  const first = spawnSnapshot();
+  const second = spawnSnapshot();
+  assert.equal(first.calls, 8);
+  assert.equal(first.overlap, false);
+  assert.deepEqual(Array.from(first.positions, point => ({ ...point })),
+    Array.from(second.positions, point => ({ ...point })));
+});
+
+test("Player pushing still moves a valid active Enemy", () => {
+  const game = loadGame(); startGame(game);
+  const state = game.getState();
+  state.waveRuntime.nextSpawnGroupIndex = state.currentWave.spawnGroups.length;
+  game.enemies.length = 0;
+  game.player.x = 380;
+  game.player.y = 280;
+  const enemy = makeEnemy(game, "normal", { x: 421, y: 280, speed: 0 });
+  game.enemies.push(enemy);
+  game.keys.d = true;
+
+  game.update(0.05);
+
+  assert.equal(game.player.x, 392);
+  assert.equal(enemy.x, 433);
+  assert.equal(game.player.hp, 5);
+  assert.equal(game.enemies.includes(enemy), true);
+});
+
+test("stale and dead ghost enemies neither block nor damage the Player", () => {
+  for (const ghostOverrides of [{ waveId: "old-wave" }, { hp: 0 }]) {
+    const game = loadGame(); startGame(game);
+    const state = game.getState();
+    state.waveRuntime.nextSpawnGroupIndex = state.currentWave.spawnGroups.length;
+    game.enemies.length = 0;
+    game.player.x = 380;
+    game.player.y = 280;
+    const ghost = makeEnemy(game, "normal", { x: 421, y: 280, speed: 0, ...ghostOverrides });
+    game.enemies.push(ghost);
+    game.keys.d = true;
+
+    game.update(0.05);
+
+    assert.equal(game.player.x, 392);
+    assert.equal(game.player.hp, 5);
+  }
+});
+
+test("Enemies in the next Wave resume movement under the new ownership id", () => {
+  const game = loadGame(); startGame(game);
+  finishWave(game);
+  game.update(game.encounters.CONFIG.intermission);
+  assert.equal(game.getState().runPhase, "WAVE_ACTIVE");
+  game.update(0);
+  const nextWaveId = game.getState().currentWave.id;
+  const active = game.enemies.filter(enemy => enemy.waveId === nextWaveId && enemy.hp > 0);
+  assert.ok(active.length > 0);
+  const before = active.map(enemy => distanceToPlayer(game, enemy));
+
+  game.updateEnemies(1 / 60);
+
+  active.forEach((enemy, index) => assert.ok(distanceToPlayer(game, enemy) < before[index]));
+});
+
+test("Boss movement remains the original direct clamped chase", () => {
+  const game = loadGame(); startGame(game); game.startBossEncounter();
+  game.player.x = 380;
+  game.player.y = 280;
+  const boss = makeBoss({ x: 0, y: 0, speed: 50 });
+  game.setState({ boss });
+  const length = Math.hypot(380, 280);
+
+  game.updateBoss(0.1);
+
+  closeTo(boss.x, 380 / length * 5);
+  closeTo(boss.y, 280 / length * 5);
+  assert.deepEqual(
+    { width: boss.width, height: boss.height, speed: boss.speed, hp: boss.hp, maxHp: boss.maxHp },
+    { width: 100, height: 100, speed: 50, hp: 50, maxHp: 50 }
+  );
+});
+
+test("scaled Canvas pointer coordinates map to the unchanged logical arena", () => {
+  const game = loadGame(); startGame(game);
+  game.elements.gameCanvas.setBoundingClientRect({ left: 100, top: 50, width: 400, height: 300 });
+
+  game.updateAim({ clientX: 300, clientY: 200 });
+  assert.deepEqual({ ...game.getMouse() }, { x: 400, y: 300 });
+
+  game.weaponRuntime.timeUntilNextShot = 0;
+  game.beginAttack(primaryPointer(500, 200));
+  game.endAttack(primaryPointer());
+  const bullet = game.bullets.at(-1);
+  closeTo(bullet.directionX, 1);
+  closeTo(bullet.directionY, 0);
+});
+
+test("resizing changes display size without changing logical or Run state or RNG", () => {
+  let randomCalls = 0;
+  const game = loadGame({}, { random() { randomCalls++; return 0.25; } });
+  startGame(game);
+  game.update(0);
+  const before = JSON.stringify({
+    player: game.player,
+    enemies: game.enemies,
+    build: game.buildState,
+    weapon: game.weapon,
+    weaponRuntime: game.weaponRuntime,
+    phase: game.getState().runPhase,
+    waveRuntime: game.getState().waveRuntime
+  });
+  const callsBefore = randomCalls;
+  game.elements.arenaRegion.setBoundingClientRect({ left: 0, top: 0, width: 400, height: 1000 });
+
+  const size = game.resizeCanvasDisplay();
+  game.triggerResize();
+
+  assert.deepEqual({ ...size }, { scale: 0.5, width: 400, height: 300 });
+  assert.equal(game.elements.canvasStage.style.width, "400px");
+  assert.equal(game.elements.canvasStage.style.height, "300px");
+  assert.deepEqual(
+    { width: game.elements.gameCanvas.width, height: game.elements.gameCanvas.height },
+    { width: 800, height: 600 }
+  );
+  assert.equal(JSON.stringify({
+    player: game.player,
+    enemies: game.enemies,
+    build: game.buildState,
+    weapon: game.weapon,
+    weaponRuntime: game.weaponRuntime,
+    phase: game.getState().runPhase,
+    waveRuntime: game.getState().waveRuntime
+  }), before);
+  assert.equal(randomCalls, callsBefore);
+});
+
+test("Intermission banner text and countdown follow the existing timer", () => {
+  const game = loadGame(); startGame(game);
+  finishWave(game);
+  game.updateArenaPresentation();
+  assert.equal(game.elements.intermissionBanner.hidden, false);
+  assert.equal(game.elements.intermissionTitle.textContent, "WAVE 1 CLEAR");
+  assert.equal(game.elements.intermissionDetail.textContent, "NEXT · WAVE 2");
+  assert.equal(game.elements.intermissionCountdown.textContent, "4");
+  assert.equal(game.elements.intermissionBanner.classList.contains("boss-incoming"), false);
+
+  game.update(1.2);
+  game.updateArenaPresentation();
+  assert.equal(game.elements.intermissionCountdown.textContent, "3");
+  game.update(2.79);
+  game.updateArenaPresentation();
+  assert.equal(game.elements.intermissionCountdown.textContent, "1");
+  game.update(0.02);
+  game.updateArenaPresentation();
+  assert.equal(game.getState().runPhase, "WAVE_ACTIVE");
+  assert.equal(game.elements.intermissionBanner.hidden, true);
+});
+
+test("the fifth Wave announces the Boss and terminal states hide the banner", () => {
+  const game = loadGame(); startGame(game);
+  const state = game.getState();
+  state.stageRuntime.waveIndex = 4;
+  game.setState({ runPhase: "INTERMISSION", intermissionTimer: 0 });
+  game.updateArenaPresentation();
+  assert.equal(game.elements.intermissionBanner.hidden, false);
+  assert.equal(game.elements.intermissionTitle.textContent, "WAVE 5 CLEAR");
+  assert.equal(game.elements.intermissionDetail.textContent, "BOSS INCOMING");
+  assert.equal(game.elements.intermissionCountdown.textContent, "4");
+  assert.equal(game.elements.intermissionBanner.classList.contains("boss-incoming"), true);
+
+  game.setState({ isGameOver: true });
+  game.updateArenaPresentation();
+  assert.equal(game.elements.intermissionBanner.hidden, true);
+
+  for (const terminalState of [{ isVictory: true }, { isAbandoned: true }]) {
+    const terminalGame = loadGame(); startGame(terminalGame);
+    terminalGame.getState().stageRuntime.waveIndex = 4;
+    terminalGame.setState({ runPhase: "INTERMISSION", intermissionTimer: 0, ...terminalState });
+    terminalGame.updateArenaPresentation();
+    assert.equal(terminalGame.elements.intermissionBanner.hidden, true);
+  }
+});
+
+test("arena resizing and presentation cannot disturb modal UI or fire attacks", () => {
+  const game = loadGame(); startGame(game);
+  game.setUpgradeChoices(["rapid-fire", "heavy-shot", "split-shot"]);
+  const choicesBefore = game.currentUpgradeChoices.map(choice => choice.id).join(",");
+  const buildBefore = JSON.stringify(game.buildState);
+  game.elements.arenaRegion.setBoundingClientRect({ left: 0, top: 0, width: 640, height: 360 });
+
+  game.resizeCanvasDisplay();
+  game.updateArenaPresentation();
+
+  assert.equal(game.elements.upgradeOverlay.hidden, false);
+  assert.equal(game.elements.abandonOverlay.hidden, true);
+  assert.equal(game.getState().isChoosingUpgrade, true);
+  assert.equal(game.currentUpgradeChoices.map(choice => choice.id).join(","), choicesBefore);
+  assert.equal(JSON.stringify(game.buildState), buildBefore);
+  assert.equal(game.bullets.length, 0);
+  assert.equal(game.weaponRuntime.attackHeld, false);
+
+  const abandonGame = loadGame(); startGame(abandonGame);
+  abandonGame.openAbandon();
+  abandonGame.elements.arenaRegion.setBoundingClientRect({ left: 0, top: 0, width: 500, height: 500 });
+  abandonGame.resizeCanvasDisplay();
+  abandonGame.updateArenaPresentation();
+  assert.equal(abandonGame.elements.abandonOverlay.hidden, false);
+  assert.equal(abandonGame.elements.upgradeOverlay.hidden, true);
+  assert.equal(abandonGame.getState().isAbandonConfirmOpen, true);
+  assert.equal(abandonGame.bullets.length, 0);
+  assert.equal(abandonGame.weaponRuntime.attackHeld, false);
 });

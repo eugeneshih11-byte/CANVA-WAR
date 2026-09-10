@@ -16,6 +16,9 @@
     const panel = element("section", "", "playtest-panel");
     panel.hidden = true;
     panel.setAttribute("aria-label", "Playtest report");
+    const closeReport = element("button", "CLOSE REPORT", "playtest-report-close");
+    closeReport.type = "button";
+    closeReport.addEventListener("click", () => { panel.hidden = true; });
     const summary = element("div");
     const raw = element("textarea");
     raw.readOnly = true;
@@ -23,7 +26,7 @@
     raw.setAttribute("aria-label", "Report JSON for manual copy");
     const status = element("p", "", "playtest-status");
     status.setAttribute("role", "status");
-    panel.append(summary, raw);
+    panel.append(closeReport, summary, raw);
     document.getElementById("gameInterface").append(panel);
     controls.append(status);
     const warn = error => console.warn("Playtest report unavailable; gameplay continues.", error);

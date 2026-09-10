@@ -2,27 +2,56 @@
   box-sizing: border-box;
 }
 
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
 body {
   margin: 0;
   min-width: 320px;
-  background: #111827;
-  font-family: sans-serif;
+  background: #0b1120;
+  color: #f9fafb;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .app {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 100dvh;
 }
 
 [hidden] {
   display: none !important;
 }
 
+button {
+  border: 1px solid #64748b;
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: #f9fafb;
+  background: #334155;
+  cursor: pointer;
+}
+
+button:hover,
+button:focus-visible {
+  outline: 2px solid #a5b4fc;
+  outline-offset: 1px;
+  background: #475569;
+}
+
 .start-screen {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-content: center;
   gap: 24px;
-  color: #f9fafb;
   text-align: center;
 }
 
@@ -38,53 +67,253 @@ body {
 }
 
 .game-screen {
-  min-height: 100vh;
-  padding: 20px;
-  color: #f9fafb;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr);
+  gap: 8px;
+  overflow: hidden;
+  padding: 8px 12px;
 }
 
 .hud {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #1e293b;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.hud-player,
+.hud-stage,
+.hud-score {
+  min-width: 0;
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px 32px;
-  margin-bottom: 20px;
-  padding: 16px 20px;
-  background: #1f2937;
+  align-items: center;
+  gap: 10px;
+}
+
+.hud-stage {
+  justify-content: center;
+  color: #c7d2fe;
+  letter-spacing: 0.04em;
+}
+
+.hud-stage strong {
+  color: #f9fafb;
+}
+
+.hud-score {
+  justify-content: flex-end;
+}
+
+.hud strong {
+  font-variant-numeric: tabular-nums;
+}
+
+#abandonButton {
+  padding: 4px 9px;
+  font-size: 12px;
 }
 
 .main-game-layout {
+  min-width: 0;
+  min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 800px) minmax(240px, 1fr);
-  gap: 20px;
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr) clamp(190px, 18vw, 240px);
+  gap: 10px;
 }
 
-.canvas-area {
-  overflow-x: auto;
-  background: #1f2937;
+.arena-region {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid #263449;
+  border-radius: 8px;
+  background: #111827;
+}
+
+.canvas-stage {
+  position: relative;
+  width: 800px;
+  height: 600px;
+  flex: none;
+  overflow: hidden;
+  background: #87ceeb;
+  box-shadow: 0 0 0 1px rgba(226, 232, 240, 0.12);
 }
 
 #gameCanvas {
   display: block;
-  width: 800px;
-  height: 600px;
+  width: 100%;
+  height: 100%;
   background: #87ceeb;
+  cursor: crosshair;
+  touch-action: none;
 }
 
-.inventory-area {
-  min-height: 600px;
+.arena-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.intermission-banner {
+  position: absolute;
+  top: 3%;
+  left: 50%;
+  max-width: calc(100% - 24px);
+  display: grid;
+  grid-template-columns: auto auto auto;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(165, 180, 252, 0.75);
+  border-radius: 999px;
+  padding: 6px 11px;
+  color: #f8fafc;
+  background: rgba(15, 23, 42, 0.82);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.28);
+  font-size: clamp(10px, 1.35vw, 14px);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+
+.intermission-banner strong {
+  color: #e0e7ff;
+}
+
+.intermission-countdown {
+  min-width: 1.7em;
+  color: #fde68a;
+  font-size: 1.2em;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.intermission-banner.boss-incoming {
+  border-color: #c084fc;
+  background: rgba(76, 29, 149, 0.86);
+  box-shadow: 0 0 18px rgba(168, 85, 247, 0.42);
+}
+
+.abandon-overlay,
+.upgrade-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: auto;
+}
+
+.abandon-overlay {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: center;
+  justify-content: center;
+  gap: 12px;
   padding: 20px;
-  background: #1f2937;
+  background: rgba(15, 23, 42, 0.95);
+  text-align: center;
 }
 
-.inventory-area h2,
-.inventory-area p {
+.abandon-overlay h2,
+.abandon-overlay p {
+  width: 100%;
   margin: 0;
 }
 
-.inventory-area p {
-  margin-top: 12px;
+.upgrade-overlay {
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 14px;
+  background: rgba(15, 23, 42, 0.96);
+}
+
+.upgrade-dialog {
+  width: min(100%, 720px);
+  text-align: center;
+}
+
+.upgrade-dialog h2 {
+  margin: 0;
+  color: #f9fafb;
+  font-size: clamp(22px, 4vw, 38px);
+  letter-spacing: 0.08em;
+}
+
+.upgrade-dialog > p {
+  margin: 6px 0 14px;
+  color: #c7d2fe;
+  font-size: clamp(11px, 1.5vw, 14px);
+}
+
+.upgrade-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.upgrade-card {
+  min-width: 0;
+  min-height: 128px;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 12px;
+  border-color: #6366f1;
+  background: #1e293b;
+  text-align: left;
+}
+
+.upgrade-card:hover,
+.upgrade-card:focus-visible {
+  border-color: #c7d2fe;
+  background: #312e81;
+}
+
+.upgrade-card-name {
+  color: #f9fafb;
+  font-size: clamp(12px, 1.6vw, 16px);
+  font-weight: 700;
+}
+
+.upgrade-card-effect {
   color: #d1d5db;
+  font-size: clamp(10px, 1.25vw, 13px);
+  line-height: 1.3;
+}
+
+.upgrade-card-stack {
+  align-self: end;
+  color: #a5b4fc;
+  font-size: 11px;
+}
+
+.build-panel {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  padding: 11px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #1e293b;
+  scrollbar-width: thin;
 }
 
 .build-panel h2,
@@ -92,139 +321,330 @@ body {
   margin: 0;
 }
 
+.build-panel h2 {
+  color: #f8fafc;
+  font-size: 16px;
+  letter-spacing: 0.1em;
+}
+
 .build-panel h3 {
-  margin-top: 24px;
+  margin-top: 12px;
   color: #c7d2fe;
-  font-size: 14px;
+  font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .build-stats {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin: 16px 0 0;
+  gap: 5px;
+  margin: 9px 0 0;
 }
 
 .build-stats > div {
   min-width: 0;
-  padding: 10px;
-  border: 1px solid #374151;
-  border-radius: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #334155;
+  border-radius: 5px;
   background: #111827;
 }
 
-.build-stats .build-weapon-row {
-  grid-column: 1 / -1;
-}
-
 .build-stats dt {
-  color: #9ca3af;
-  font-size: 12px;
-  letter-spacing: 0.04em;
+  min-width: 0;
+  overflow: hidden;
+  color: #94a3b8;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-overflow: ellipsis;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .build-stats dd {
-  overflow-wrap: anywhere;
-  margin: 4px 0 0;
-  color: #f9fafb;
-  font-size: 17px;
-  font-weight: 700;
+  min-width: 0;
+  margin: 0;
+  color: #f8fafc;
+  font-size: 14px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
 }
 
 .build-upgrade-list {
   display: grid;
-  gap: 8px;
-  margin: 10px 0 0;
+  gap: 5px;
+  margin: 7px 0 0;
   padding: 0;
   list-style: none;
 }
 
 .build-upgrade-list li {
-  padding: 9px 10px;
+  padding: 6px 8px;
   border-left: 3px solid #818cf8;
+  border-radius: 3px;
   background: #111827;
   color: #e5e7eb;
-  font-size: 13px;
+  font-size: 11px;
 }
 
 .build-upgrade-list .build-empty {
-  border-left-color: #4b5563;
-  color: #9ca3af;
+  border-left-color: #475569;
+  color: #94a3b8;
 }
 
 .build-upgrade-list .build-maxed {
   border-left-color: #fbbf24;
   color: #fde68a;
   font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-@media (max-width: 1100px) {
-  .main-game-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .inventory-area {
-    min-height: 160px;
-  }
-}
-
-@media (max-width: 600px) {
-  .game-screen {
-    padding: 12px;
-  }
-
-  .hud {
-    gap: 10px 16px;
-    padding: 12px;
-  }
-}
-
-.hud { justify-content: space-between; align-items: center; }
-.hud-player, .hud-stage, .hud-score { display: grid; gap: 8px; }
-.hud-stage { text-align: center; letter-spacing: 0.08em; }
-.hud-stage strong { font-size: 22px; }
-.hud-stage span { color: #a5b4fc; }
-.hud-score { text-align: right; }
-button { color: #f9fafb; background: #374151; border: 1px solid #6b7280; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
-button:hover, button:focus-visible { background: #4b5563; outline-color: #a5b4fc; }
-.canvas-area { position: relative; }
-.abandon-overlay { position: absolute; inset: 0; z-index: 1; display: flex; flex-wrap: wrap; align-content: center; justify-content: center; gap: 16px; padding: 24px; background: rgba(17,24,39,0.95); text-align: center; }
-.abandon-overlay h2, .abandon-overlay p { width: 100%; }
-.upgrade-overlay { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; overflow-y: auto; padding: 24px; background: rgba(17,24,39,0.96); }
-.upgrade-dialog { width: min(100%, 720px); text-align: center; }
-.upgrade-dialog h2 { margin: 0; color: #f9fafb; font-size: clamp(26px, 5vw, 42px); letter-spacing: 0.08em; }
-.upgrade-dialog > p { margin: 8px 0 20px; color: #c7d2fe; }
-.upgrade-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.upgrade-card { display: grid; align-content: start; gap: 8px; min-height: 150px; padding: 16px; border-color: #6366f1; background: #1f2937; text-align: left; }
-.upgrade-card:hover, .upgrade-card:focus-visible { border-color: #c7d2fe; background: #312e81; }
-.upgrade-card-name { color: #f9fafb; font-size: 17px; font-weight: 700; }
-.upgrade-card-effect { color: #d1d5db; font-size: 13px; line-height: 1.4; }
-.upgrade-card-stack { align-self: end; color: #a5b4fc; font-size: 12px; }
-#gameCanvas { max-width: 100%; height: auto; aspect-ratio: 4 / 3; }
-@media (max-width: 600px) {
-  .hud { gap: 12px; font-size: 13px; }
-  .hud-stage strong { font-size: 17px; }
-  .hud-score { margin-left: auto; }
-  .upgrade-overlay { place-items: start center; padding: 14px; }
-  .upgrade-dialog > p { margin-bottom: 12px; font-size: 13px; }
-  .upgrade-choices { grid-template-columns: 1fr; gap: 8px; }
-  .upgrade-card { min-height: 0; padding: 11px 12px; }
+  letter-spacing: 0.06em;
 }
 
 /* These elements are created only in ?playtest=1 mode. */
-.playtest-badge { position: fixed; top: 2px; right: 20px; color: #94a3b8; font-size: 10px; letter-spacing: 0.1em; pointer-events: none; }
-.playtest-results { position: absolute; bottom: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
-.playtest-results button { font-size: 11px; padding: 6px 9px; }
-.playtest-status { flex-basis: 100%; margin: 0; text-align: center; color: #f9fafb; background: #1f2937; font-size: 12px; }
-.playtest-status:empty { display: none; }
-.playtest-panel { margin-top: 20px; padding: 16px; background: #1f2937; min-width: 0; }
-.playtest-panel h3 { margin-bottom: 8px; }
-.playtest-panel p { color: #cbd5e1; line-height: 1.5; }
-.playtest-table-scroll { max-width: 100%; overflow-x: auto; }
-.playtest-panel table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
-.playtest-panel th, .playtest-panel td { padding: 8px; border-bottom: 1px solid #475569; }
-.playtest-panel textarea { width: 100%; min-height: 220px; margin-top: 16px; color: #f9fafb; background: #111827; }
+.playtest-badge {
+  position: fixed;
+  top: 2px;
+  right: 18px;
+  z-index: 12;
+  color: #94a3b8;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  pointer-events: none;
+}
+
+.playtest-results {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 5px;
+  pointer-events: auto;
+}
+
+.playtest-results button {
+  padding: 5px 8px;
+  font-size: 10px;
+}
+
+.playtest-status {
+  flex-basis: 100%;
+  margin: 0;
+  background: rgba(30, 41, 59, 0.94);
+  color: #f9fafb;
+  font-size: 11px;
+  text-align: center;
+}
+
+.playtest-status:empty {
+  display: none;
+}
+
+.playtest-panel {
+  position: fixed;
+  inset: 56px 12px 12px;
+  z-index: 20;
+  min-width: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  background: #1e293b;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+.playtest-panel h3 {
+  margin-bottom: 8px;
+}
+
+.playtest-report-close {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  float: right;
+  margin: 0 0 8px 12px;
+}
+
+.playtest-panel p {
+  color: #cbd5e1;
+  line-height: 1.5;
+}
+
+.playtest-table-scroll {
+  max-width: 100%;
+  overflow: auto;
+}
+
+.playtest-panel table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+
+.playtest-panel th,
+.playtest-panel td {
+  padding: 8px;
+  border-bottom: 1px solid #475569;
+}
+
+.playtest-panel textarea {
+  width: 100%;
+  min-height: 220px;
+  margin-top: 16px;
+  color: #f9fafb;
+  background: #111827;
+}
+
+@media (max-width: 760px) {
+  .game-screen {
+    grid-template-rows: 46px minmax(0, 1fr);
+    gap: 6px;
+    padding: 6px;
+  }
+
+  .hud {
+    gap: 4px;
+    padding: 4px 6px;
+    font-size: clamp(9px, 2.7vw, 11px);
+  }
+
+  .hud-player,
+  .hud-stage,
+  .hud-score {
+    gap: 4px;
+  }
+
+  #abandonButton {
+    padding: 3px 5px;
+    font-size: 9px;
+  }
+
+  .main-game-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .arena-region {
+    order: 2;
+  }
+
+  .build-panel {
+    order: 1;
+    height: auto;
+    overflow: hidden;
+    padding: 4px;
+  }
+
+  .build-panel h2,
+  .build-weapon-row,
+  .build-upgrades-title,
+  .build-upgrade-list {
+    display: none !important;
+  }
+
+  .build-stats {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 3px;
+    margin: 0;
+  }
+
+  .build-stats > div {
+    display: block;
+    overflow: hidden;
+    padding: 4px 2px;
+    text-align: center;
+  }
+
+  .build-stats dt {
+    font-size: clamp(7px, 2.1vw, 9px);
+  }
+
+  .build-stats dd {
+    overflow: hidden;
+    margin-top: 2px;
+    font-size: clamp(10px, 3.4vw, 14px);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .upgrade-overlay {
+    padding: 8px;
+  }
+
+  .upgrade-dialog > p {
+    margin-bottom: 8px;
+  }
+
+  .upgrade-choices {
+    gap: 5px;
+  }
+
+  .upgrade-card {
+    min-height: 0;
+    gap: 4px;
+    padding: 7px;
+  }
+
+  .upgrade-card-stack {
+    font-size: 9px;
+  }
+
+  .intermission-banner {
+    gap: 5px;
+    padding: 5px 8px;
+    font-size: 9px;
+  }
+
+  .playtest-panel {
+    inset: 54px 6px 6px;
+    padding: 10px;
+  }
+}
+
+@media (max-height: 520px) {
+  .game-screen {
+    grid-template-rows: 40px minmax(0, 1fr);
+    gap: 5px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+
+  .hud {
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+
+  .build-panel {
+    padding: 7px;
+  }
+
+  .build-stats {
+    gap: 3px;
+    margin-top: 6px;
+  }
+
+  .build-stats > div {
+    padding: 4px 6px;
+  }
+
+  .build-upgrade-list {
+    gap: 3px;
+  }
+
+  .build-upgrade-list li {
+    padding: 4px 6px;
+  }
+
+  .upgrade-card {
+    min-height: 0;
+    padding: 8px;
+  }
+}
