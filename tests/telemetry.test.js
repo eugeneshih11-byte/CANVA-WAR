@@ -43,6 +43,28 @@ test("Playtest Mode requires the explicit playtest=1 query value", () => {
   assert.equal(T.isEnabled("?playtest=1"), true);
   assert.equal(T.isEnabled("?debug=yes&playtest=1"), true);
 });
+test("behavior telemetry records interpretable metrics once per action or hazard", () => {
+  const telemetry = start();
+  telemetry.recordInterceptorAttempt({ enemyId: 1, actionId: "1:1" });
+  telemetry.recordInterceptorAttempt({ enemyId: 1, actionId: "1:1" });
+  telemetry.recordInterceptorCommit({ enemyId: 1, actionId: "1:1" });
+  telemetry.recordInterceptorContact({ enemyId: 1, actionId: "1:1" });
+  telemetry.recordInterceptorMiss({ enemyId: 2, actionId: "2:1" });
+  telemetry.recordInterceptorInterrupted({ enemyId: 3, actionId: "3:1" });
+  telemetry.recordDenierCast({ enemyId: 4, actionId: "4:1" });
+  telemetry.recordDenierHazardCreated({ hazardId: 10 });
+  telemetry.recordDenierHazardCreated({ hazardId: 10 });
+  telemetry.recordDenierHazardContact({ hazardId: 10 });
+  telemetry.recordDenierHazardContact({ hazardId: 10 });
+  telemetry.recordBehaviorFrame({ activeHazardTime: 0.5, supportActiveTime: 1, affectedEnemyTime: 2 });
+  telemetry.recordBehaviorFrame({ activeHazardTime: 0.25, supportActiveTime: 0.5, affectedEnemyTime: 0.75 });
+  telemetry.recordSupportAffectedAction();
+  const encounter = currentEncounter(telemetry);
+  assert.deepEqual(encounter.interceptor, { attempts: 1, chargeCommits: 1, chargeContacts: 1,
+    missedCharges: 1, interruptedTelegraphs: 1 });
+  assert.deepEqual(encounter.denier, { casts: 1, hazardsCreated: 1, hazardContacts: 1, activeHazardTime: 0.75 });
+  assert.deepEqual(encounter.support, { activeTime: 1.5, affectedEnemyTime: 2.75, affectedSpecialActions: 1 });
+});
 test("disabled telemetry performs no recording, input copying or diagnostics", () => {
   const poison = new Proxy({}, { get() { throw new Error("input read"); } });
   const telemetry = T.createTelemetry({ configuration: poison, warn() { assert.fail("warned in normal mode"); } });

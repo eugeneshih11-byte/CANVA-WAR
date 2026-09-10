@@ -137,6 +137,16 @@ test("report UI shows numeric clear time and ratio for a cleared encounter", () 
   assert.ok(cells.includes("0.44"));
 });
 
+test("report UI exposes Interceptor, Denier, and Support behavior outcomes", () => {
+  const fixture = loadUi([encounter({
+    interceptor: { attempts: 4, chargeContacts: 1, missedCharges: 3 },
+    denier: { hazardsCreated: 2, hazardContacts: 1 },
+    support: { affectedEnemyTime: 5.25, affectedSpecialActions: 2 }
+  })]);
+  const cells = fixture.nodes().filter(node => node.tagName === "TD").map(node => node.textContent);
+  assert.ok(cells.includes("I 4/1/3 · D 2/1 · S 5.25s/2"));
+});
+
 test("fixed report closes and reopens without either control changing report content", () => {
   const fixture = loadUi([encounter({ outcome: "clear", actualClearTime: 12.4, clearTimeRatio: 12.4 / 22.5 })]);
   const reportBefore = JSON.stringify(fixture.telemetry.getSessionReport());

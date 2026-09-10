@@ -17,6 +17,7 @@ globalThis.__gameTest = {
   player,
   enemies,
   bullets,
+  hazards,
   get weapon() { return weapon; },
   get buildState() { return buildState; },
   get currentUpgradeChoices() { return currentUpgradeChoices; },
@@ -325,6 +326,7 @@ function loadGame(initialStorage = {}, options = {}) {
   vm.createContext(context);
   vm.runInContext(settlementSource, context, { filename: "settlement.js" });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "encounters.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "behaviors.js"), "utf8"), context);
   vm.runInContext(weaponsSource, context, { filename: "weapons.js" });
   vm.runInContext(buildSource, context, { filename: "build.js" });
   if (layoutSource) vm.runInContext(layoutSource, context, { filename: "layout.js" });
@@ -635,10 +637,10 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="intermissionTitle"/);
   assert.match(indexSource, /id="intermissionDetail"/);
   assert.match(indexSource, /id="intermissionCountdown"/);
-  const scriptVersion = "20260910-calibration-a";
+  const scriptVersion = "20260910-combat-variety-v1";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
-  assert.deepEqual(scriptSources, ["settlement.js", "encounters.js", "weapons.js", "build.js",
+  assert.deepEqual(scriptSources, ["settlement.js", "encounters.js", "behaviors.js", "weapons.js", "build.js",
     "layout.js", "telemetry.js", "telemetry-ui.js", "game.js"]
     .map(source => `${source}?v=${scriptVersion}`));
 }

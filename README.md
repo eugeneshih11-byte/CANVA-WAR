@@ -6,13 +6,27 @@ A 2D browser game built with HTML, CSS, vanilla JavaScript and an 800 x 600 logi
 
 From this directory, run `python -m http.server 8080`, then open `http://localhost:8080`. Run the complete dependency-free automated suite with `node --test`.
 
+Combat Variety Foundation v1 is an experimental behavior-validation build, not permanent Stage 1 content. Launch it with `http://localhost:8080/?prototype=combat-variety-v1`. Add telemetry independently with `http://localhost:8080/?playtest=1&prototype=combat-variety-v1`; `?playtest=1` by itself keeps Calibration A gameplay unchanged.
+
 Local script URLs use an explicit version query to prevent stale browser JavaScript during development and playtesting. Bump the shared version string when a new test build must load guaranteed fresh assets.
 
 Controls: WASD movement, mouse aiming, hold the primary mouse button to fire, and click a level-up card or press 1/2/3 to choose its upgrade. R restarts after Victory, Game Over or Abandon. The HUD's Abandon button opens a paused confirmation overlay; Continue or Escape resumes. Held movement and firing input clear at encounter boundaries.
 
 ## Architecture and flow
 
-`encounters.js` owns frozen Stage, Enemy evaluation, Template and Boss definitions, generation, validation, analysis, scaling and Wave runtime helpers. `weapons.js` owns immutable Weapon definitions, the technical Fire Rate cap and deterministic projectile-direction math. `build.js` owns immutable Upgrade definitions plus pure Build creation, validation, choice and stat-resolution helpers. `layout.js` owns pure 800 x 600 display sizing and display-to-world pointer conversion. `game.js` coordinates those modules with movement, firing, collision, XP, Run phases and saves. `settlement.js` remains the authoritative Score-to-Points calculation and checkpoint implementation.
+`encounters.js` owns frozen Stage, Enemy evaluation, Template and Boss definitions, generation, validation, analysis, scaling and Wave runtime helpers. `behaviors.js` owns extensible regular-Enemy behavior profiles, per-Enemy mutable behavior runtimes, locked prediction, hazard lifetime and dynamic support relationships; Boss 1 deliberately keeps its curated state machine in `game.js`. `weapons.js` owns immutable Weapon definitions, the technical Fire Rate cap and deterministic projectile-direction math. `build.js` owns immutable Upgrade definitions plus pure Build creation, validation, choice and stat-resolution helpers. `layout.js` owns pure 800 x 600 display sizing and display-to-world pointer conversion. `game.js` coordinates those modules with movement, firing, collision, XP, Run phases and saves. `settlement.js` remains the authoritative Score-to-Points calculation and checkpoint implementation.
+
+## Combat Variety Foundation v1
+
+The normal `STAGES` plan remains Calibration A. `getStagesForSearch()` selects a separate frozen prototype plan only for the exact `prototype=combat-variety-v1` value, without reading or writing Save data. The prototype retains the Stage 1 Threat curve `[8, 10, 12, 14, 17]`, MaxActiveThreat curve `[6, 7, 8.5, 10, 12]`, existing allocator/validation limits and all baseline Enemy costs. Its generation constraints reserve room inside those budgets for exactly one Interceptor in Wave 3, one Denier in Wave 4, and one Support plus one Interceptor in Wave 5.
+
+Regular Enemy definitions now pair immutable stats and Roles with a behavior profile. Each spawned Enemy receives an independent runtime containing state, elapsed state time, cooldown and locked target data. Registry-dispatched profiles keep the main update loop free of type-specific branches:
+
+- **Interceptor:** CHASE -> 0.55-second TELEGRAPH -> locked-vector CHARGE -> RECOVERY. It predicts once from current Player movement and can be dodged by changing direction, speed, rhythm or route.
+- **Denier:** predicts once, telegraphs a fixed circular route hazard, activates it for 1.8 seconds and permits at most one damage event per hazard.
+- **Support:** shows a 220-pixel aura and relationship lines. While alive and in range, it dynamically changes only Interceptor/Denier cooldown recovery to x1.5; leaving the aura or removing Support restores x1 immediately.
+
+All provisional prototype stats and timings are centralized in `COMBAT_VARIETY_V1`. Behavior and hazard timers advance only from active Wave combat updates. Pending/active hazards and support relationships clear at Wave end, Boss entry, death, Abandon and restart. Charge movement uses the existing bounded Enemy collision and overlap-recovery policy.
 
 Run phases sit underneath the existing menu, result and upgrade-pause state:
 
@@ -115,6 +129,8 @@ The game uses a `100dvh` application shell with a compact top HUD, a height-and-
 ### Development-only Playtest Mode
 
 Open `http://localhost:8080/?playtest=1` to record encounter composition, analysis/Build snapshots, active combat and Intermission time, damage/low HP, attacks, projectiles/hits, kills versus contact removals, field pressure, spawn waiting, offered and selected upgrades, Boss charge attempts/contacts, and the exact existing Settlement result. Without that parameter there is no recording, badge, report UI or console API. Telemetry does not affect gameplay or Save; it stays in memory, keeps the latest 20 completed Runs, and disappears on refresh.
+
+Under the Combat Variety prototype, the same memory-only report also records Interceptor attempts/commits/contacts/misses/interrupted telegraphs, Denier casts/hazards/contacts/active hazard time, and Support active time/affected-enemy time/affected special actions. The existing report adds one compact Special behavior column; gameplay remains viewport-first and the report keeps local scrolling.
 
 At a result, choose **COPY RUN REPORT**, or **COPY SESSION REPORT** after multiple Runs. Both copy pretty-printed JSON; clipboard failure reveals selected text for manual copying. **VIEW REPORT** shows a concise session summary. The optional read-only `CanvaWarPlaytest` console API offers `getCurrentRun()`, `getSessionReport()` and `copySessionReport()`.
 

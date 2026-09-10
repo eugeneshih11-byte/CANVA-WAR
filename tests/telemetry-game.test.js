@@ -84,14 +84,15 @@ function loadGame(search = "", options = {}) {
   context.globalThis = context;
   context.window = context;
   vm.createContext(context);
-  for (const file of ["settlement.js", "encounters.js", "weapons.js", "build.js", "layout.js", "telemetry.js"]) {
+  for (const file of ["settlement.js", "encounters.js", "behaviors.js", "weapons.js", "build.js", "layout.js", "telemetry.js"]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context, { filename: file });
   }
   options.beforeGame?.(context);
   vm.runInContext(fs.readFileSync(path.join(root, "game.js"), "utf8") + `
     globalThis.__testGame = {
-      player, enemies, bullets, keys,
+      player, enemies, bullets, hazards, keys,
       resetGame, update, startWave, startBossEncounter, completeBossEncounter,
+      spawnEnemy, updateEnemies, handleHazardPlayerCollisions,
       enterIntermission, openAbandon, closeAbandon, abandonRun,
       handleBulletEnemyCollisions, handlePlayerEnemyCollisions,
       handleBulletBossCollisions, handleBossPlayerCollision,
@@ -167,6 +168,50 @@ function current(game) { return game.telemetry.getCurrentRun(); }
 function session(game) { return game.telemetry.getSessionReport(); }
 function lastRun(game) { return session(game).runs.at(-1); }
 function currentEncounter(game) { return current(game).encounters.at(-1); }
+
+test("game selects prototype Stage content independently from Playtest Mode", () => {
+  const normal = loadGame(); normal.start(); normal.startWave(2);
+  const playtest = loadGame("?playtest=1"); playtest.start(); playtest.startWave(2);
+  const prototype = loadGame("?prototype=combat-variety-v1"); prototype.start(); prototype.startWave(2);
+  const both = loadGame("?playtest=1&prototype=combat-variety-v1"); both.start(); both.startWave(4);
+  const composition = game => game.state.currentWave.spawnGroups.flatMap(group => group.enemies)
+    .reduce((counts, entry) => ({ ...counts, [entry.type]: (counts[entry.type] || 0) + entry.count }), {});
+  assert.equal(composition(normal).interceptor, undefined);
+  assert.equal(composition(playtest).interceptor, undefined);
+  assert.equal(composition(prototype).interceptor, 1);
+  assert.equal(composition(both).interceptor, 1);
+  assert.equal(composition(both).support, 1);
+  assert.equal(normal.state.stageRuntime.definition, normal.context.Encounters.STAGES[0]);
+  assert.equal(prototype.state.stageRuntime.definition, prototype.context.Encounters.PROTOTYPE_STAGES[0]);
+  assert.equal(prototype.telemetry?.enabled ?? false, false);
+  assert.equal(both.telemetry.enabled, true);
+});
+
+test("production behavior hooks pause with gameplay and feed exact encounter telemetry", () => {
+  const game = loadGame("?playtest=1&prototype=combat-variety-v1");
+  game.start();
+  game.startWave(2);
+  game.spawnEnemy("interceptor");
+  const interceptor = game.enemies[0];
+  interceptor.x = 100;
+  interceptor.y = 100;
+  interceptor.speed = 0;
+  game.updateEnemies(2);
+  assert.equal(interceptor.behaviorRuntime.behaviorState, "TELEGRAPH");
+  const frozen = JSON.stringify(interceptor.behaviorRuntime);
+  game.setState({ isChoosingUpgrade: true });
+  game.update(60);
+  assert.equal(JSON.stringify(interceptor.behaviorRuntime), frozen);
+  game.setState({ isChoosingUpgrade: false });
+  game.updateEnemies(0.55);
+  assert.equal(interceptor.behaviorRuntime.behaviorState, "CHARGE");
+  interceptor.x = game.player.x;
+  interceptor.y = game.player.y;
+  game.handlePlayerEnemyCollisions();
+  const metrics = currentEncounter(game).interceptor;
+  assert.deepEqual(plain(metrics), { attempts: 1, chargeCommits: 1, chargeContacts: 1,
+    missedCharges: 0, interruptedTelegraphs: 0 });
+});
 
 test("game telemetry is opt-in, does not initialize a Run on page load, and consumes no RNG", () => {
   const normal = loadGame(), enabled = loadGame("?playtest=1");

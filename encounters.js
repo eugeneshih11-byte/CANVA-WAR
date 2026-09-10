@@ -13,10 +13,47 @@
     // Analysis-only references: current kills award 1; no clear/performance awards exist yet.
     scoreReference: { normal: 1, fast: 1, tank: 1, boss: 0, clear: 0, performance: 0 }
   });
+  // Combat Variety v1 is experimental content. Its values are intentionally kept
+  // together so the protected Calibration A values remain easy to audit.
+  const COMBAT_VARIETY_V1 = freeze({
+    id: "combat-variety-v1",
+    enemies: {
+      interceptor: {
+        roles: ["pressure", "interceptor"], threatCost: 1.6,
+        stats: { width: 34, height: 34, speed: 105, hp: 3, maxHp: 3, damage: 1 },
+        behavior: { profile: "interceptor", initialCooldown: 2, cooldown: 3,
+          telegraphDuration: 0.55, chargeDuration: 0.45, recoveryDuration: 0.65,
+          chargeSpeed: 340, predictionLeadTime: 0.5 }
+      },
+      denier: {
+        roles: ["control"], threatCost: 1.8,
+        stats: { width: 40, height: 40, speed: 85, hp: 3, maxHp: 3, damage: 1 },
+        behavior: { profile: "denier", initialCooldown: 2.5, cooldown: 4,
+          predictionLeadTime: 0.75, telegraphDuration: 0.75,
+          hazardRadius: 55, hazardActiveDuration: 1.8, hazardDamage: 1 }
+      },
+      support: {
+        roles: ["support"], threatCost: 1.7,
+        stats: { width: 38, height: 38, speed: 80, hp: 3, maxHp: 3, damage: 1 },
+        behavior: { profile: "support", radius: 220, cooldownRate: 1.5,
+          eligibleProfiles: ["interceptor", "denier"] }
+      }
+    },
+    requiredEnemies: [{}, {}, { interceptor: 1 }, { denier: 1 }, { support: 1, interceptor: 1 }],
+    clearTime: { interceptor: 0.4, denier: 0.4, support: 0.4 },
+    scoreReference: { interceptor: 1, denier: 1, support: 1 }
+  });
   const ENEMIES = freeze({
-    normal: { roles: ["frontline"], threatCost: 1 },
-    fast: { roles: ["pressure"], threatCost: 1.4 },
-    tank: { roles: ["frontline", "heavy"], threatCost: 2.2 }
+    normal: { roles: ["frontline"], threatCost: 1,
+      stats: { width: 40, height: 40, speed: 120, hp: 3, maxHp: 3, damage: 1 },
+      behavior: { profile: "chase" } },
+    fast: { roles: ["pressure"], threatCost: 1.4,
+      stats: { width: 30, height: 30, speed: 200, hp: 1, maxHp: 1, damage: 1 },
+      behavior: { profile: "chase" } },
+    tank: { roles: ["frontline", "heavy"], threatCost: 2.2,
+      stats: { width: 60, height: 60, speed: 70, hp: 8, maxHp: 8, damage: 1 },
+      behavior: { profile: "chase" } },
+    ...COMBAT_VARIETY_V1.enemies
   });
   const TEMPLATES = freeze({
     basic: { shares: [0.55, 0.45], delays: [0, 2.5], bias: { frontline: 1.25 }, required: [] },
@@ -34,6 +71,14 @@
     templates: [["basic"], ["basic", "rush"], ["basic", "rush", "heavy"],
       ["rush", "heavy", "escalation"], ["heavy", "escalation", "mixed"]],
     mechanics: [], enemyScaling: { hpMultiplier: 1, damageMultiplier: 1, speedMultiplier: 1 }, boss: "boss-1"
+  }]);
+  const PROTOTYPE_STAGES = freeze([{
+    ...STAGES[0],
+    enemyPool: ["normal", "fast", "tank", "interceptor", "denier", "support"],
+    availability: [["normal"], ["normal", "fast"], ["normal", "fast", "tank", "interceptor"],
+      ["normal", "fast", "tank", "denier"], ["normal", "fast", "tank", "support", "interceptor"]],
+    requiredEnemies: COMBAT_VARIETY_V1.requiredEnemies,
+    mechanics: [COMBAT_VARIETY_V1.id]
   }]);
   const BOSSES = freeze({ "boss-1": { id: "boss-1",
     stats: { width: 100, height: 100, speed: 60, hp: 100, maxHp: 100, damage: 1 },
@@ -59,7 +104,12 @@
     const templates = stage.templates[index].filter(t => stage.templatePool.includes(t) && TEMPLATES[t] &&
       (t !== "mixed" || TEMPLATES[t].required.every(r => pool.some(e => hasRole(e, r)))));
     if (!pool.length || !templates.length) throw new Error("No eligible encounter content");
-    return { pool, templates, budget: stage.threatCurve[index], cap: stage.maxActiveThreatCurve[index] };
+    const requiredEnemies = stage.requiredEnemies?.[index] || {};
+    if (Object.entries(requiredEnemies).some(([type, count]) =>
+      !pool.includes(type) || !Number.isInteger(count) || count < 0)) {
+      throw new Error("Invalid required Enemy restriction");
+    }
+    return { pool, templates, budget: stage.threatCurve[index], cap: stage.maxActiveThreatCurve[index], requiredEnemies };
   }
   function templateWeight(id, history = []) {
     if (history.at(-1) === id) return 0.35;
@@ -86,6 +136,7 @@
         wave.threatBudget !== rule.budget || wave.maxActiveThreat !== rule.cap) errors.push("Invalid Stage restriction");
     let count = 0, threat = 0;
     const roles = new Set();
+    const composition = {};
     if (!Array.isArray(wave?.spawnGroups) || !wave.spawnGroups.length) errors.push("Empty Wave");
     for (const group of Array.isArray(wave?.spawnGroups) ? wave.spawnGroups : []) {
       if (!group || !Number.isFinite(group.delay) || group.delay < 0 || !Array.isArray(group.enemies) || !group.enemies.length) {
@@ -98,6 +149,7 @@
         }
         groupCount += entry.count;
         groupThreat += ENEMIES[entry.type].threatCost * entry.count;
+        composition[entry.type] = (composition[entry.type] || 0) + entry.count;
         ENEMIES[entry.type].roles.forEach(r => roles.add(r));
       }
       if (groupCount > CONFIG.maxActiveEnemies || groupThreat > rule.cap + 1e-9) errors.push("Spawn Group exceeds field capacity");
@@ -108,6 +160,9 @@
     for (const role of TEMPLATES[wave?.templateId]?.required || []) {
       if ((wave.templateId === "mixed" || rule.pool.some(e => hasRole(e, role))) && !roles.has(role)) errors.push(`Missing required Role: ${role}`);
     }
+    for (const [type, requiredCount] of Object.entries(rule.requiredEnemies)) {
+      if ((composition[type] || 0) !== requiredCount) errors.push(`Invalid required Enemy count: ${type}`);
+    }
     return { valid: errors.length === 0, errors, threat, enemyCount: count };
   }
   function analyzeWave(wave) {
@@ -116,8 +171,8 @@
       plannedSpawnFloor += group.delay;
       for (const { type, count } of group.enemies) {
         threat += ENEMIES[type].threatCost * count;
-        combatEstimate += CONFIG.clearTime[type] * count;
-        expectedBaseScore += CONFIG.scoreReference[type] * count;
+        combatEstimate += (CONFIG.clearTime[type] ?? COMBAT_VARIETY_V1.clearTime[type] ?? 0) * count;
+        expectedBaseScore += (CONFIG.scoreReference[type] ?? COMBAT_VARIETY_V1.scoreReference[type] ?? 0) * count;
       }
     }
     const performanceAllowance = CONFIG.scoreReference.performance;
@@ -205,13 +260,17 @@
     const template = TEMPLATES[templateId], selected = [];
     let threat = 0;
     const add = type => { selected.push(type); threat += ENEMIES[type].threatCost; };
+    for (const [type, count] of Object.entries(rule.requiredEnemies)) {
+      for (let requiredIndex = 0; requiredIndex < count; requiredIndex++) add(type);
+    }
     for (const role of template.required) {
       if (selected.some(t => hasRole(t, role))) continue;
       const candidates = rule.pool.filter(t => hasRole(t, role) && ENEMIES[t].threatCost <= rule.cap);
       if (candidates.length) add(fallback ? candidates[0] : choose(candidates, () => 1, rng));
     }
     for (let i = selected.length; i < CONFIG.maxEnemies; i++) {
-      const candidates = rule.pool.filter(t => ENEMIES[t].threatCost <= rule.cap && threat + ENEMIES[t].threatCost <= rule.budget + 1e-9);
+      const candidates = rule.pool.filter(t => !Object.hasOwn(rule.requiredEnemies, t) &&
+        ENEMIES[t].threatCost <= rule.cap && threat + ENEMIES[t].threatCost <= rule.budget + 1e-9);
       if (!candidates.length) break;
       add(fallback ? ["normal", "fast", "tank"].find(t => candidates.includes(t)) : choose(candidates, t => {
         let weight = ENEMIES[t].roles.reduce((w, r) => w * (template.bias[r] || 1), 1);
@@ -220,7 +279,8 @@
       }, rng));
     }
     if (threat < rule.budget * CONFIG.minimumFill && selected.length < CONFIG.maxEnemies) {
-      const extra = rule.pool.find(t => ENEMIES[t].threatCost <= rule.cap && threat + ENEMIES[t].threatCost <= rule.budget * CONFIG.maximumFill);
+      const extra = rule.pool.find(t => !Object.hasOwn(rule.requiredEnemies, t) &&
+        ENEMIES[t].threatCost <= rule.cap && threat + ENEMIES[t].threatCost <= rule.budget * CONFIG.maximumFill);
       if (extra) add(extra);
     }
     const spawnGroups = allocateGroups(selected, template, rule.cap);
@@ -276,6 +336,21 @@
     return { ...base, hp: base.hp * scaling.hpMultiplier, maxHp: base.maxHp * scaling.hpMultiplier,
       damage: (base.damage ?? 1) * scaling.damageMultiplier, speed: base.speed * scaling.speedMultiplier };
   }
-  global.Encounters = Object.freeze({ CONFIG, ENEMIES, TEMPLATES, STAGES, BOSSES, templateWeight,
+  function isPrototypeEnabled(search = "") {
+    try {
+      if (typeof global.URLSearchParams === "function") {
+        return new global.URLSearchParams(search).get("prototype") === COMBAT_VARIETY_V1.id;
+      }
+      return String(search).replace(/^\?/, "").split("&").some(part => {
+        const [key, value = ""] = part.split("=");
+        return decodeURIComponent(key) === "prototype" && decodeURIComponent(value) === COMBAT_VARIETY_V1.id;
+      });
+    } catch { return false; }
+  }
+  function getStagesForSearch(search = "") {
+    return isPrototypeEnabled(search) ? PROTOTYPE_STAGES : STAGES;
+  }
+  global.Encounters = Object.freeze({ CONFIG, COMBAT_VARIETY_V1, ENEMIES, TEMPLATES, STAGES, PROTOTYPE_STAGES, BOSSES,
+    isPrototypeEnabled, getStagesForSearch, templateWeight,
     validateWave, analyzeWave, generateWave, safeFallback, createWaveRuntime, syncWaveRuntime, updateWaveRuntime, getScaledEnemyStats });
 })(globalThis);

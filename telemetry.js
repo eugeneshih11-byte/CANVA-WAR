@@ -122,10 +122,19 @@
         killsByEnemyType: {}, nonKillRemovalsByEnemyType: {}, nonKillRemovalsByReason: {},
         attackEvents: 0, shotsFired: 0, bulletHits: 0,
         bulletHitsByEnemyType: {}, bulletDamageByEnemyType: {}, enemySecondsByType: {},
+        interceptor: { attempts: 0, chargeCommits: 0, chargeContacts: 0,
+          missedCharges: 0, interruptedTelegraphs: 0 },
+        denier: { casts: 0, hazardsCreated: 0, hazardContacts: 0, activeHazardTime: 0 },
+        support: { activeTime: 0, affectedEnemyTime: 0, affectedSpecialActions: 0 },
         peakActiveEnemyCount: 0, peakActiveThreat: 0, configuredSpawnFloor: spawnGroups.reduce((sum, g) => sum + g.delay, 0),
         groupReleaseTimes: [], lastSpawnGroupReleaseTime: null, actualLastGroupReleaseTime: null,
         pressureBlockedTime: 0, pressureBlockedEvents: 0, threatBlockedTime: 0, enemyCountBlockedTime: 0, outcome: null };
-      encounter = { data, enemyIntegral: 0, threatIntegral: 0, pressureBlocked: false, released: new Set() };
+      encounter = { data, enemyIntegral: 0, threatIntegral: 0, pressureBlocked: false, released: new Set(),
+        behaviorEvents: {
+          interceptorAttempts: new Set(), interceptorCommits: new Set(), interceptorContacts: new Set(),
+          interceptorMisses: new Set(), interceptorInterrupts: new Set(), denierCasts: new Set(),
+          denierHazards: new Set(), denierContacts: new Set()
+        } };
       run.stageReached = data.stageId;
       if (type === "wave") run.waveReached = Math.max(run.waveReached, data.waveIndex + 1);
       if (type === "boss") run.bossReached = true;
@@ -202,6 +211,14 @@
     function recordAttack() {
       if (encounter) encounter.data.attackEvents++;
     }
+    function uniqueBehaviorEvent(setName, id, callback) {
+      if (!encounter) return;
+      const events = encounter.behaviorEvents[setName];
+      const key = id ?? `${setName}-${events.size}`;
+      if (events.has(key)) return;
+      events.add(key);
+      callback(encounter.data);
+    }
     const report = runs => copy({ schemaVersion: 1, generatedAt: timestamp(), environment, configuration, runs });
     return Object.freeze({ enabled,
       startRun: safe("start run", startRun), startEncounter: safe("start encounter", startEncounter),
@@ -233,6 +250,31 @@
       }),
       recordBossChargeContact: safe("record Boss charge contact", () => {
         if (encounter?.data.type === "boss") encounter.data.chargeContacts++;
+      }),
+      recordInterceptorAttempt: safe("record Interceptor attempt", ({ enemyId, actionId } = {}) =>
+        uniqueBehaviorEvent("interceptorAttempts", actionId ?? enemyId, data => { data.interceptor.attempts++; })),
+      recordInterceptorCommit: safe("record Interceptor commit", ({ enemyId, actionId } = {}) =>
+        uniqueBehaviorEvent("interceptorCommits", actionId ?? enemyId, data => { data.interceptor.chargeCommits++; })),
+      recordInterceptorContact: safe("record Interceptor contact", ({ enemyId, actionId } = {}) =>
+        uniqueBehaviorEvent("interceptorContacts", actionId ?? enemyId, data => { data.interceptor.chargeContacts++; })),
+      recordInterceptorMiss: safe("record Interceptor miss", ({ enemyId, actionId } = {}) =>
+        uniqueBehaviorEvent("interceptorMisses", actionId ?? enemyId, data => { data.interceptor.missedCharges++; })),
+      recordInterceptorInterrupted: safe("record Interceptor interruption", ({ enemyId, actionId } = {}) =>
+        uniqueBehaviorEvent("interceptorInterrupts", actionId ?? enemyId, data => { data.interceptor.interruptedTelegraphs++; })),
+      recordDenierCast: safe("record Denier cast", ({ enemyId, actionId } = {}) =>
+        uniqueBehaviorEvent("denierCasts", actionId ?? enemyId, data => { data.denier.casts++; })),
+      recordDenierHazardCreated: safe("record Denier hazard", ({ hazardId } = {}) =>
+        uniqueBehaviorEvent("denierHazards", hazardId, data => { data.denier.hazardsCreated++; })),
+      recordDenierHazardContact: safe("record Denier hazard contact", ({ hazardId } = {}) =>
+        uniqueBehaviorEvent("denierContacts", hazardId, data => { data.denier.hazardContacts++; })),
+      recordBehaviorFrame: safe("record behavior frame", (details = {}) => {
+        if (!encounter) return;
+        encounter.data.denier.activeHazardTime += nonNegative(details.activeHazardTime);
+        encounter.data.support.activeTime += nonNegative(details.supportActiveTime);
+        encounter.data.support.affectedEnemyTime += nonNegative(details.affectedEnemyTime);
+      }),
+      recordSupportAffectedAction: safe("record Support affected action", () => {
+        if (encounter) encounter.data.support.affectedSpecialActions++;
       }),
       recordUpgrade: safe("record upgrade", recordUpgrade),
       recordUpgradeChoice: safe("record upgrade choice", recordUpgradeChoice),

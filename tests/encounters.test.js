@@ -32,8 +32,53 @@ test("Stage 1 calibration changes concurrency and analysis without changing tota
   assert.deepEqual(stage.maxActiveThreatCurve, [6, 7, 8.5, 10, 12]);
   assert.equal(E.CONFIG.maxActiveEnemies, 8);
   assert.deepEqual(E.CONFIG.clearTime, { normal: 0.4, fast: 0.25, tank: 1 });
-  assert.deepEqual(Object.fromEntries(Object.entries(E.ENEMIES)
-    .map(([type, enemy]) => [type, enemy.threatCost])), { normal: 1, fast: 1.4, tank: 2.2 });
+  assert.deepEqual(Object.fromEntries(["normal", "fast", "tank"]
+    .map(type => [type, E.ENEMIES[type].threatCost])), { normal: 1, fast: 1.4, tank: 2.2 });
+});
+
+test("prototype selection is explicit and playtest telemetry alone is gameplay-neutral", () => {
+  for (const search of ["", "?playtest=1", "?prototype=other", "?playtest=0&prototype=other"]) {
+    assert.equal(E.isPrototypeEnabled(search), false);
+    assert.equal(E.getStagesForSearch(search), E.STAGES);
+  }
+  for (const search of ["?prototype=combat-variety-v1", "?playtest=1&prototype=combat-variety-v1"]) {
+    assert.equal(E.isPrototypeEnabled(search), true);
+    assert.equal(E.getStagesForSearch(search), E.PROTOTYPE_STAGES);
+  }
+  assert.deepEqual(E.STAGES[0].enemyPool, ["normal", "fast", "tank"]);
+  assert.equal(E.STAGES[0].requiredEnemies, undefined);
+  assert.deepEqual(E.STAGES[0].threatCurve, E.PROTOTYPE_STAGES[0].threatCurve);
+  assert.deepEqual(E.STAGES[0].maxActiveThreatCurve, E.PROTOTYPE_STAGES[0].maxActiveThreatCurve);
+});
+
+test("prototype Waves require exact teaching compositions within every existing safety constraint", () => {
+  const prototype = E.PROTOTYPE_STAGES[0];
+  const expected = [{}, {}, { interceptor: 1 }, { denier: 1 }, { interceptor: 1, support: 1 }];
+  for (let seed = 1; seed <= 200; seed++) {
+    const rng = seeded(seed), recentTemplates = [];
+    for (let index = 0; index < prototype.waveCount; index++) {
+      const wave = E.generateWave(prototype, index, { recentTemplates }, rng);
+      const validation = E.validateWave(wave, prototype);
+      assert.equal(validation.valid, true, validation.errors.join(", "));
+      assert.ok(validation.enemyCount <= E.CONFIG.maxEnemies);
+      assert.ok(validation.threat <= wave.threatBudget * E.CONFIG.maximumFill + 1e-9);
+      const composition = {};
+      for (const group of wave.spawnGroups) {
+        let groupCount = 0, groupThreat = 0;
+        for (const entry of group.enemies) {
+          composition[entry.type] = (composition[entry.type] || 0) + entry.count;
+          groupCount += entry.count;
+          groupThreat += E.ENEMIES[entry.type].threatCost * entry.count;
+        }
+        assert.ok(groupCount <= E.CONFIG.maxActiveEnemies);
+        assert.ok(groupThreat <= wave.maxActiveThreat + 1e-9);
+      }
+      for (const type of ["interceptor", "denier", "support"]) {
+        assert.equal(composition[type] || 0, expected[index][type] || 0, `seed ${seed}, Wave ${index + 1}, ${type}`);
+      }
+      recentTemplates.push(wave.templateId);
+    }
+  }
 });
 
 test("generator enforces unlocks, templates, roles, tolerance and caps across 1000 Waves", () => {

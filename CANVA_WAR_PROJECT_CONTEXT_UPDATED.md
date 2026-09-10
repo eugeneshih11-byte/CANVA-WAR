@@ -1,5 +1,13 @@
 # CANVA WAR --- Project Context & Design Notes
 
+## Experimental checkpoint: Combat Variety Foundation v1
+
+The query `prototype=combat-variety-v1` selects a separate Stage 1 experiment; normal URLs and `?playtest=1` alone continue to use Calibration A. The prototype is not final Stage 1 content. It preserves all established Threat, concurrency, Wave, Boss, Weapon, Build, XP, Score, Settlement, save and progression calibration.
+
+`behaviors.js` is the extensible regular-Enemy behavior boundary. Immutable definitions live in `encounters.js`; mutable per-spawn behavior state lives on Enemy runtimes. Interceptor provides a locked predictive charge for Direction/Timing decisions, Denier provides a fixed predicted route hazard for Route decisions, and Support dynamically accelerates nearby eligible special cooldowns for Target-priority decisions. Telegraph, committed consequence, recovery, cleanup and telemetry are explicit. Boss 1 remains on its existing curated state machine.
+
+Prototype exposure is Wave 3 = one Interceptor, Wave 4 = one Denier, and Wave 5 = one Support plus one Interceptor. Requirements pass through the existing generator, allocator, Threat/cap/count validation and bounded fallback. Test locally at `http://localhost:8080/?playtest=1&prototype=combat-variety-v1`.
+
 > 用途：在新的 ChatGPT / Codex 聊天室中快速恢復 CANVA WAR 專案上下文。\
 > 專案路徑：`C:\Game01`\
 > 技術：Vanilla HTML / CSS / JavaScript + HTML Canvas（800×600）\
