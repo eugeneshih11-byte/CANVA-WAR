@@ -4,22 +4,62 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CANVA WAR</title>
-  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="stylesheet" href="style.css?v=20260911-main-hub">
 </head>
 <body>
   <main class="app">
-    <section id="startScreen" class="start-screen">
-      <h1>CANVA WAR</h1>
-      <button id="playButton" type="button">Play</button>
+    <section id="hubView" class="app-view hub-view" aria-labelledby="hubTitle">
+      <div class="hub-panel">
+        <p class="menu-kicker">ROGUELITE OPERATIONS</p>
+        <h1 id="hubTitle">CANVA WAR</h1>
+        <p class="hub-status">Choose your next destination.</p>
+        <nav class="hub-menu" aria-label="Main menu">
+          <button id="playButton" class="play-button" type="button">PLAY</button>
+          <div class="meta-menu">
+            <button id="shopButton" type="button">SHOP</button>
+            <button id="armoryButton" type="button">ARMORY</button>
+            <button id="equipmentButton" type="button">EQUIPMENT</button>
+          </div>
+        </nav>
+      </div>
     </section>
 
-    <section id="gameInterface" class="game-screen" hidden>
+    <section id="shopView" class="app-view meta-view" aria-labelledby="shopTitle" hidden>
+      <div class="meta-panel">
+        <p class="menu-kicker">META PROGRESSION</p>
+        <h1 id="shopTitle">SHOP</h1>
+        <p class="meta-placeholder">Coming Soon</p>
+        <p class="meta-data">POINTS <strong id="shopPoints">0</strong></p>
+        <button id="shopBackButton" class="back-to-hub" type="button">Back to Hub</button>
+      </div>
+    </section>
+
+    <section id="armoryView" class="app-view meta-view" aria-labelledby="armoryTitle" hidden>
+      <div class="meta-panel">
+        <p class="menu-kicker">WEAPONS</p>
+        <h1 id="armoryTitle">ARMORY</h1>
+        <p class="meta-placeholder">Owned Weapon</p>
+        <p class="meta-data" id="armoryWeaponName"></p>
+        <button id="armoryBackButton" class="back-to-hub" type="button">Back to Hub</button>
+      </div>
+    </section>
+
+    <section id="equipmentView" class="app-view meta-view" aria-labelledby="equipmentTitle" hidden>
+      <div class="meta-panel">
+        <p class="menu-kicker">LOADOUT</p>
+        <h1 id="equipmentTitle">EQUIPMENT</h1>
+        <p class="meta-placeholder" id="equipmentStatus"></p>
+        <button id="equipmentBackButton" class="back-to-hub" type="button">Back to Hub</button>
+      </div>
+    </section>
+
+    <section id="gameView" class="app-view game-screen" hidden>
       <header class="hud" aria-label="Combat status">
         <div class="hud-player"><span>HP <strong id="hpValue"></strong></span>
           <span>LV <strong id="levelValue"></strong></span><span>XP <strong id="xpValue"></strong></span></div>
         <div class="hud-stage"><strong id="stageValue">STAGE 1</strong><span aria-hidden="true">·</span><span id="waveValue">WAVE 1 / 5</span></div>
         <div class="hud-score"><span>SCORE <strong id="scoreValue"></strong></span>
-          <button id="abandonButton" type="button">Abandon</button></div>
+          <button id="backToHubButton" type="button">Back to Hub</button></div>
       </header>
 
       <div class="main-game-layout">
@@ -86,14 +126,14 @@
     </section>
   </main>
 
-  <script src="settlement.js?v=20260910-enemy-introduction-ux"></script>
-  <script src="encounters.js?v=20260910-enemy-introduction-ux"></script>
-  <script src="behaviors.js?v=20260910-enemy-introduction-ux"></script>
-  <script src="weapons.js?v=20260910-enemy-introduction-ux"></script>
-  <script src="build.js?v=20260910-enemy-introduction-ux"></script>
-  <script src="layout.js?v=20260910-enemy-introduction-ux"></script>
-  <script src="telemetry.js?v=20260910-enemy-introduction-ux"></script>
-  <script src="telemetry-ui.js?v=20260910-enemy-introduction-ux"></script>
-  <script src="game.js?v=20260910-enemy-introduction-ux"></script>
+  <script src="settlement.js?v=20260911-main-hub"></script>
+  <script src="encounters.js?v=20260911-main-hub"></script>
+  <script src="behaviors.js?v=20260911-main-hub"></script>
+  <script src="weapons.js?v=20260911-main-hub"></script>
+  <script src="build.js?v=20260911-main-hub"></script>
+  <script src="layout.js?v=20260911-main-hub"></script>
+  <script src="telemetry.js?v=20260911-main-hub"></script>
+  <script src="telemetry-ui.js?v=20260911-main-hub"></script>
+  <script src="game.js?v=20260911-main-hub"></script>
 </body>
 </html>

@@ -13,9 +13,13 @@ const enemyIntroductionRole = document.getElementById("enemyIntroductionRole");
 const enemyIntroductionDescription = document.getElementById("enemyIntroductionDescription");
 const enemyIntroductionCounterplay = document.getElementById("enemyIntroductionCounterplay");
 const enemyIntroductionContinue = document.getElementById("enemyIntroductionContinue");
-const startScreen = document.getElementById("startScreen");
-const gameInterface = document.getElementById("gameInterface");
+const hubView = document.getElementById("hubView");
+const shopView = document.getElementById("shopView");
+const armoryView = document.getElementById("armoryView");
+const equipmentView = document.getElementById("equipmentView");
+const gameView = document.getElementById("gameView");
 const playButton = document.getElementById("playButton");
+const backToHubButton = document.getElementById("backToHubButton");
 const hpValue = document.getElementById("hpValue");
 const scoreValue = document.getElementById("scoreValue");
 const levelValue = document.getElementById("levelValue");
@@ -24,6 +28,22 @@ const upgradeOverlay = document.getElementById("upgradeOverlay");
 const upgradeTitle = document.getElementById("upgradeTitle");
 const upgradeMessage = document.getElementById("upgradeMessage");
 const upgradeChoices = document.getElementById("upgradeChoices");
+const APP_VIEWS = Object.freeze({
+  HUB: "hub",
+  SHOP: "shop",
+  ARMORY: "armory",
+  EQUIPMENT: "equipment",
+  GAME: "game"
+});
+const appViews = Object.freeze({
+  [APP_VIEWS.HUB]: hubView,
+  [APP_VIEWS.SHOP]: shopView,
+  [APP_VIEWS.ARMORY]: armoryView,
+  [APP_VIEWS.EQUIPMENT]: equipmentView,
+  [APP_VIEWS.GAME]: gameView
+});
+let currentView = APP_VIEWS.HUB;
+let returnToHubAfterAbandon = false;
 const { RUN_END_REASONS, SCORE_TYPES, createRunSettlementState, awardScore, selectSettlementState, calculateSettlement } = RunSettlement;
 const activeStages = Encounters.getStagesForSearch(globalThis.location?.search || "");
 
@@ -337,19 +357,22 @@ function takeDamage(amount, enemyType) {
 }
 function openAbandon() {
   if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandoned ||
-      [RUN_PHASES.INTRODUCTION_PENDING, RUN_PHASES.INTRODUCTION_ACTIVE].includes(runPhase)) return;
+      [RUN_PHASES.INTRODUCTION_PENDING, RUN_PHASES.INTRODUCTION_ACTIVE].includes(runPhase)) return false;
   isAbandonConfirmOpen = true;
   abandonOverlay.hidden = false;
   clearInput();
   document.getElementById("continueButton").focus?.();
+  return true;
 }
 function closeAbandon() {
   isAbandonConfirmOpen = false;
+  returnToHubAfterAbandon = false;
   abandonOverlay.hidden = true;
   clearInput();
 }
 function abandonRun() {
   if (!isAbandonConfirmOpen) return;
+  const shouldReturnToHub = returnToHubAfterAbandon;
   closeAbandon();
   settleRun(RUN_END_REASONS.ABANDON);
   isAbandoned = true;
@@ -357,8 +380,8 @@ function abandonRun() {
   EnemyBehaviors.clearTransient(enemies, hazards);
   resetHazardDamageRuntime();
   clearIntroductionTransient();
+  if (shouldReturnToHub) showView(APP_VIEWS.HUB);
 }
-document.getElementById("abandonButton").addEventListener("click", openAbandon);
 document.getElementById("continueButton").addEventListener("click", closeAbandon);
 document.getElementById("confirmAbandonButton").addEventListener("click", abandonRun);
 enemyIntroductionContinue.addEventListener("click", dismissEnemyIntroduction);
@@ -387,16 +410,66 @@ const mouse = {
   y: 0
 };
 
-playButton.addEventListener("click", () => {
+function renderMetaView(view) {
+  if (view === APP_VIEWS.SHOP) {
+    document.getElementById("shopPoints").textContent = saveData.progression.points;
+  }
+  if (view === APP_VIEWS.ARMORY) {
+    document.getElementById("armoryWeaponName").textContent = saveData.unlocks.weapons.includes(Weapons.STARTER.id)
+      ? Weapons.STARTER.name
+      : "No weapons unlocked";
+  }
+  if (view === APP_VIEWS.EQUIPMENT) {
+    const equipmentCount = saveData.unlocks.equipment.length;
+    document.getElementById("equipmentStatus").textContent = equipmentCount === 0
+      ? "No equipment unlocked"
+      : `${equipmentCount} equipment unlocked`;
+  }
+}
+
+function showView(view) {
+  if (!appViews[view]) return false;
+  clearInput();
+  Object.entries(appViews).forEach(([id, element]) => { element.hidden = id !== view; });
+  currentView = view;
+  renderMetaView(view);
+  if (view === APP_VIEWS.HUB) isGameStarted = false;
+  if (view === APP_VIEWS.GAME) resizeCanvasDisplay();
+  return true;
+}
+
+function hasActiveRun() {
+  return isGameStarted && !isGameOver && !isVictory && !isAbandoned;
+}
+
+function requestHub() {
+  if (currentView !== APP_VIEWS.GAME || !hasActiveRun()) return showView(APP_VIEWS.HUB);
+  returnToHubAfterAbandon = true;
+  if (!openAbandon()) {
+    returnToHubAfterAbandon = false;
+    return false;
+  }
+  return true;
+}
+
+function startGameplay() {
+  ensurePlaytestTelemetry();
+  isGameStarted = true;
   resetGame();
   saveData.statistics.totalRuns += 1;
   saveGame();
-  isGameStarted = true;
-  startScreen.hidden = true;
-  gameInterface.hidden = false;
-  resizeCanvasDisplay();
+  showView(APP_VIEWS.GAME);
   updateHud();
-});
+}
+
+playButton.addEventListener("click", startGameplay);
+document.getElementById("shopButton").addEventListener("click", () => showView(APP_VIEWS.SHOP));
+document.getElementById("armoryButton").addEventListener("click", () => showView(APP_VIEWS.ARMORY));
+document.getElementById("equipmentButton").addEventListener("click", () => showView(APP_VIEWS.EQUIPMENT));
+document.getElementById("shopBackButton").addEventListener("click", requestHub);
+document.getElementById("armoryBackButton").addEventListener("click", requestHub);
+document.getElementById("equipmentBackButton").addEventListener("click", requestHub);
+backToHubButton.addEventListener("click", requestHub);
 
 function resizeCanvasDisplay() {
   const bounds = arenaRegion?.getBoundingClientRect?.();
@@ -431,7 +504,7 @@ function updateAim(event) {
 }
 
 function canAttack() {
-  return isGameStarted && !isGameOver && !isVictory && !isChoosingUpgrade &&
+  return currentView === APP_VIEWS.GAME && isGameStarted && !isGameOver && !isVictory && !isChoosingUpgrade &&
     !isAbandonConfirmOpen && !isAbandoned &&
     [RUN_PHASES.WAVE_ACTIVE, RUN_PHASES.BOSS_ACTIVE].includes(runPhase);
 }
@@ -523,6 +596,8 @@ canvas.addEventListener("click", () => {
 
 document.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
+
+  if (currentView !== APP_VIEWS.GAME) return;
 
   if (key === "r" && (isGameOver || isVictory || isAbandoned)) {
     resetGame();
@@ -632,7 +707,7 @@ function resetGame() {
 }
 
 function update(deltaTime) {
-  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandonConfirmOpen || isAbandoned) {
+  if (currentView !== APP_VIEWS.GAME || !isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandonConfirmOpen || isAbandoned) {
     return;
   }
 
@@ -1456,7 +1531,7 @@ function updateHud() {
   xpValue.textContent = `${xp} / ${xpToNextLevel}`;
   document.getElementById("stageValue").textContent = `STAGE ${stageIndex + 1}`;
   document.getElementById("waveValue").textContent = runPhase === RUN_PHASES.BOSS_ACTIVE ? "BOSS 1" : `WAVE ${(stageRuntime?.waveIndex ?? 0) + 1} / 5`;
-  document.getElementById("abandonButton").hidden = isGameOver || isVictory || isChoosingUpgrade || isAbandoned ||
+  backToHubButton.hidden = isChoosingUpgrade || isAbandonConfirmOpen ||
     [RUN_PHASES.INTRODUCTION_PENDING, RUN_PHASES.INTRODUCTION_ACTIVE].includes(runPhase);
 }
 
@@ -1499,7 +1574,7 @@ function drawPhasePresentation() {
   if (isGameOver || isVictory || isAbandoned) {
     title = isAbandoned ? "ABANDONED" : isVictory ? "VICTORY" : "GAME OVER";
     subtitle = lastSettlement ? `Score ${lastSettlement.finalScore} · Points ${lastSettlement.points}` : "No secured checkpoint · Points 0";
-    subtitle += " · Press R to Restart";
+    subtitle += " · Press R to Restart · Back to Hub above";
   }
   if (title) {
     ctx.save(); ctx.fillStyle = "rgba(17, 24, 39, 0.88)"; ctx.fillRect(40, 230, 720, 140);
@@ -1582,24 +1657,30 @@ function observeRunEnd(endReason, result, sourceState) {
   } }));
 }
 let playtestView = null;
-const playtestTelemetry = initializePlaytestTelemetry();
+let playtestTelemetry = null;
+function ensurePlaytestTelemetry() {
+  if (!playtestTelemetry) playtestTelemetry = initializePlaytestTelemetry();
+  return playtestTelemetry;
+}
 let lastTime = null;
 
 function gameLoop(timestamp) {
   const deltaTime = lastTime === null ? 0 : (timestamp - lastTime) / 1000;
   lastTime = timestamp;
 
-  update(deltaTime);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawBehaviorArena();
-  drawPlayer();
-  drawEnemies();
-  drawBoss();
-  drawBullets();
-  drawWeaponDamage();
-  updateArenaPresentation();
-  drawPhasePresentation();
-  updateHud();
+  if (currentView === APP_VIEWS.GAME) {
+    update(deltaTime);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawBehaviorArena();
+    drawPlayer();
+    drawEnemies();
+    drawBoss();
+    drawBullets();
+    drawWeaponDamage();
+    updateArenaPresentation();
+    drawPhasePresentation();
+    updateHud();
+  }
 
   requestAnimationFrame(gameLoop);
 }

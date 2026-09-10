@@ -1,5 +1,26 @@
 # CANVA WAR --- Project Context & Design Notes
 
+## Main Hub and meta-page foundation
+
+CANVA WAR now boots into a non-combat Main Hub instead of treating the combat screen as the whole product. The application has five mutually exclusive, in-memory views:
+
+```text
+APP
+├─ HUB_VIEW
+├─ SHOP_VIEW
+├─ ARMORY_VIEW
+├─ EQUIPMENT_VIEW
+└─ GAME_VIEW
+```
+
+PLAY is the only action that creates a fresh active Run. Loading the application can remain in the Hub indefinitely without generating a Wave, advancing combat/encounter timers, incrementing `totalRuns`, or initializing a playtest telemetry session. Existing `playtest` and `prototype` query configuration is retained across Hub → PLAY and remains independent.
+
+Shop, Armory, and Equipment are standalone meta-progression locations, not panels beside combat. Shop currently says Coming Soon and presents existing Points, Armory presents the owned Starter from the immutable Weapon definition, and Equipment reflects the existing empty owned-equipment Save list. No prices, purchases, rerolls, inventory generation, new Weapons, fake Equipment, Equipment stats, loadout switching, or save-schema migration exists in this foundation. View state is not persistent progression.
+
+Gameplay input is isolated to GAME_VIEW, and held movement/firing clears on every view transition. Back to Hub during an active Run opens the existing Abandon confirmation and reaches the Hub only after the established secured-checkpoint Settlement path completes. Cancelling resumes the same Run. Death and Victory already use their existing Settlement paths and can return to Hub directly; R still restarts inside gameplay. Enemy Introduction and Level Up retain their input/pause protections.
+
+This establishes information architecture for the roguelite product while leaving the broader **Core Direction Realignment** in progress. Detailed Shop, Armory, and Equipment mechanics are intentionally not designed here, and Battlefield/Navigation implementation has not begun.
+
 ## Experimental checkpoint: Combat Variety v1.1 correction pass
 
 The query `prototype=combat-variety-v1` selects a separate Stage 1 experiment; normal URLs and `?playtest=1` alone continue to use Calibration A. The prototype is not final Stage 1 content. It preserves all established Threat, concurrency, Wave, Boss, Weapon, Build, XP, Score, Settlement, save and progression calibration.

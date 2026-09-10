@@ -16,7 +16,7 @@ function loadGame(search = "", options = {}) {
   const element = id => {
     let textContent = "";
     const node = {
-      id, hidden: id !== "startScreen", style: {}, className: "", dataset: {},
+      id, hidden: id !== "hubView", style: {}, className: "", dataset: {},
       attributes: {}, children: [], eventListeners: {},
       clientWidth: 0, clientHeight: 0,
       classList: { add() {}, remove() {}, contains() { return false; } },
@@ -107,7 +107,7 @@ function loadGame(search = "", options = {}) {
       get choices() { return currentUpgradeChoices; },
       get weaponRuntime() { return weaponRuntime; },
       get state() {
-        return { score, level, xp, isChoosingUpgrade, isGameOver, isVictory,
+        return { score, level, xp, isGameStarted, isChoosingUpgrade, isGameOver, isVictory,
           isAbandoned, isAbandonConfirmOpen, runPhase, stageIndex, stageRuntime, currentWave,
           waveRuntime, bossRuntime, boss, intermissionTimer, stageClearTimer,
           currentEnemyIntroduction, pendingWaveIndex,
@@ -274,7 +274,7 @@ test("prototype introductions pause before their Wave until explicit edge-trigge
   assert.equal(game.weaponRuntime.timeUntilNextShot, 0.2);
   assert.equal(current(game).totalActiveTime, activeTime);
   assert.equal(current(game).intermissionTime, intermissionTime);
-  assert.equal(game.openAbandon(), undefined);
+  assert.equal(game.openAbandon(), false);
   assert.equal(game.state.isAbandonConfirmOpen, false);
 
   game.listeners.keydown({ key: "Enter", repeat: true, preventDefault() {} });
@@ -393,14 +393,14 @@ test("Victory cleanup cannot leave an active introduction overlay behind", () =>
 test("game telemetry is opt-in, does not initialize a Run on page load, and consumes no RNG", () => {
   const normal = loadGame(), enabled = loadGame("?playtest=1");
   assert.equal(normal.telemetry?.enabled ?? false, false);
+  assert.equal(enabled.telemetry, null);
+  assert.equal(enabled.state.isGameStarted, false);
   let detailsRead = false;
   normal.observeTelemetry("recordDamage", () => { detailsRead = true; throw new Error("disabled details"); });
   assert.equal(detailsRead, false);
-  assert.equal(enabled.telemetry.enabled, true);
   assert.equal(enabled.getRandomCalls(), 0);
-  assert.equal(current(enabled), null);
-  assert.equal(session(enabled).runs.length, 0);
   normal.start(); enabled.start();
+  assert.equal(enabled.telemetry.enabled, true);
   assert.equal(enabled.getRandomCalls(), normal.getRandomCalls());
   assert.equal(current(enabled).runSequence, 1);
   assert.equal(current(enabled).encounters.length, 1);
@@ -437,6 +437,7 @@ test("Wave start snapshots exact definition, analysis, resolved Player and full 
 
 test("telemetry configuration snapshots immutable Weapon, Upgrade and Player balance data as plain JSON", () => {
   const game = loadGame("?playtest=1");
+  game.start();
   const configuration = session(game).configuration;
 
   assert.deepEqual(plain(configuration.starterWeapon), {

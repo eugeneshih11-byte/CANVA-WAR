@@ -1,20 +1,26 @@
 # CANVA WAR
 
-A 2D browser game built with HTML, CSS, vanilla JavaScript and an 800 x 600 logical Canvas. Only Stage 1 is implemented.
+A roguelite 2D browser game built with HTML, CSS, vanilla JavaScript and an 800 x 600 logical Canvas. Only Stage 1 is implemented.
 
 ## Run locally
 
 From this directory, run `python -m http.server 8080`, then open `http://localhost:8080`. Run the complete dependency-free automated suite with `node --test`.
 
-Combat Variety v1.1 is an experimental behavior-validation correction pass, not permanent Stage 1 content. Launch it with `http://localhost:8080/?prototype=combat-variety-v1`. Add telemetry independently with `http://localhost:8080/?playtest=1&prototype=combat-variety-v1`; `?playtest=1` by itself keeps Calibration A gameplay unchanged.
+CANVA WAR now boots into a non-combat Main Hub. Choose **PLAY** to begin a Run, or open the standalone **SHOP**, **ARMORY**, and **EQUIPMENT** destinations. Those three meta-progression pages are foundations only: Shop has no economy, Armory only presents the owned Starter definition, and Equipment does not invent items or stats.
+
+Combat Variety v1.1 is an experimental behavior-validation correction pass, not permanent Stage 1 content. Launch it with `http://localhost:8080/?prototype=combat-variety-v1`, then choose PLAY. Add telemetry independently with `http://localhost:8080/?playtest=1&prototype=combat-variety-v1`; `?playtest=1` by itself keeps Calibration A gameplay unchanged. Query configuration remains selected while the Hub is open and applies when PLAY begins.
 
 Local script URLs use an explicit version query to prevent stale browser JavaScript during development and playtesting. Bump the shared version string when a new test build must load guaranteed fresh assets.
 
-Controls: WASD movement, mouse aiming, hold the primary mouse button to fire, and click a level-up card or press 1/2/3 to choose its upgrade. R restarts after Victory, Game Over or Abandon. The HUD's Abandon button opens a paused confirmation overlay; Continue or Escape resumes. Held movement and firing input clear at encounter boundaries.
+Controls: use the menu buttons in the Hub and meta views. In combat, use WASD movement, mouse aiming, hold the primary mouse button to fire, and click a level-up card or press 1/2/3 to choose its upgrade. R restarts after Victory, Game Over or Abandon. **Back to Hub** opens the existing paused Abandon confirmation during an active Run; after Death, Victory, or Abandon it returns immediately. Continue or Escape resumes a Run from that confirmation. Held movement and firing input clear at view and encounter boundaries.
 
 ## Architecture and flow
 
-`encounters.js` owns frozen Stage, Enemy evaluation, Template and Boss definitions, generation, validation, analysis, scaling and Wave runtime helpers. `behaviors.js` owns extensible regular-Enemy behavior profiles, per-Enemy mutable behavior runtimes, locked prediction, hazard lifetime and dynamic support relationships; Boss 1 deliberately keeps its curated state machine in `game.js`. `weapons.js` owns immutable Weapon definitions, the technical Fire Rate cap and deterministic projectile-direction math. `build.js` owns immutable Upgrade definitions plus pure Build creation, validation, choice and stat-resolution helpers. `layout.js` owns pure 800 x 600 display sizing and display-to-world pointer conversion. `game.js` coordinates those modules with movement, firing, collision, XP, Run phases and saves. `settlement.js` remains the authoritative Score-to-Points calculation and checkpoint implementation.
+`index.html` contains five sibling top-level roots: Hub, Shop, Armory, Equipment, and Game. A lightweight in-memory router in `game.js` keeps exactly one active; navigation state is not saved. Application boot only loads existing durable progression and shows the Hub. PLAY initializes optional playtest telemetry, creates the in-memory Run, increments the existing Run statistic, and enters Game. Hidden non-combat views reject gameplay keyboard and firing input, and the game loop does not simulate or render combat outside Game.
+
+`encounters.js` owns frozen Stage, Enemy evaluation, Template and Boss definitions, generation, validation, analysis, scaling and Wave runtime helpers. `behaviors.js` owns extensible regular-Enemy behavior profiles, per-Enemy mutable behavior runtimes, locked prediction, hazard lifetime and dynamic support relationships; Boss 1 deliberately keeps its curated state machine in `game.js`. `weapons.js` owns immutable Weapon definitions, the technical Fire Rate cap and deterministic projectile-direction math. `build.js` owns immutable Upgrade definitions plus pure Build creation, validation, choice and stat-resolution helpers. `layout.js` owns pure 800 x 600 display sizing and display-to-world pointer conversion. `game.js` coordinates the view router and those modules with movement, firing, collision, XP, Run phases and saves. `settlement.js` remains the authoritative Score-to-Points calculation and checkpoint implementation.
+
+The Hub does not begin a Run, generate a Wave, advance combat timers, increment `totalRuns`, or initialize a playtest telemetry session. The Shop reads current Points from Save; Armory reads the existing Starter Weapon from `weapons.js`; Equipment reflects the existing owned-equipment list. No save migration or new persistent navigation/content fields were added. Returning from an active Run cannot hide or discard it: the same Abandon confirmation and secured-checkpoint Settlement semantics run first. Death and Victory have already settled and may return directly to the Hub. The broader development focus remains **Core Direction Realignment**; this navigation foundation does not complete that work.
 
 ## Combat Variety v1.1 correction pass
 

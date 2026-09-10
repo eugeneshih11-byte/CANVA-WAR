@@ -27,7 +27,7 @@
     const status = element("p", "", "playtest-status");
     status.setAttribute("role", "status");
     panel.append(closeReport, summary, raw);
-    document.getElementById("gameInterface").append(panel);
+    document.getElementById("gameView").append(panel);
     controls.append(status);
     const warn = error => console.warn("Playtest report unavailable; gameplay continues.", error);
     const safe = action => (...args) => {

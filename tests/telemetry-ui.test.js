@@ -36,8 +36,8 @@ function reportContent(panel) {
 function loadUi(encounters) {
   const body = new Element("body");
   const canvasArea = new Element("div");
-  const gameInterface = new Element("main");
-  body.append(canvasArea, gameInterface);
+  const gameView = new Element("main");
+  body.append(canvasArea, gameView);
   const document = {
     body,
     createElement(tagName) { return new Element(tagName); },
@@ -46,8 +46,8 @@ function loadUi(encounters) {
       return canvasArea;
     },
     getElementById(id) {
-      assert.equal(id, "gameInterface");
-      return gameInterface;
+      assert.equal(id, "gameView");
+      return gameView;
     }
   };
   const run = {
@@ -82,7 +82,7 @@ function loadUi(encounters) {
     .find(node => node.tagName === "BUTTON" && node.textContent === "CLOSE REPORT");
   assert.ok(panel);
   assert.ok(closeButton);
-  return { body, gameInterface, run, telemetry, viewButton, panel, closeButton,
+  return { body, gameView, run, telemetry, viewButton, panel, closeButton,
     nodes() { return descendants(body); } };
 }
 
@@ -153,7 +153,7 @@ test("fixed report closes and reopens without either control changing report con
   const contentBefore = reportContent(fixture.panel);
 
   assert.equal(fixture.panel.hidden, false);
-  assert.equal(fixture.gameInterface.children.includes(fixture.panel), true);
+  assert.equal(fixture.gameView.children.includes(fixture.panel), true);
   fixture.closeButton.click();
   assert.equal(fixture.panel.hidden, true);
   assert.deepEqual(reportContent(fixture.panel), contentBefore);

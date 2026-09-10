@@ -27,6 +27,7 @@ globalThis.__gameTest = {
   listeners: globalThis.__listeners,
   elements: globalThis.__elements,
   resetGame,
+  startGameplay, showView, requestHub,
   startWave, startBossEncounter, completeBossEncounter, updateLevel, openAbandon, closeAbandon, abandonRun,
   encounters: Encounters,
   setAwards(hook) { getEncounterAwards = hook; },
@@ -92,6 +93,9 @@ globalThis.__gameTest = {
   getLastSettlement() {
     return lastSettlement;
   },
+  getCurrentView() {
+    return currentView;
+  },
   getState() {
     return {
       boss,
@@ -148,7 +152,7 @@ function loadGame(initialStorage = {}, options = {}) {
       id,
       tagName: "DIV",
       _textContent: "",
-      hidden: id === "gameInterface",
+      hidden: ["shopView", "armoryView", "equipmentView", "gameView"].includes(id),
       children: [],
       dataset: {},
       attributes: {},
@@ -237,16 +241,28 @@ function loadGame(initialStorage = {}, options = {}) {
   });
   const elements = {
     gameCanvas: canvas,
-    startScreen: createElement("startScreen"),
-    gameInterface: createElement("gameInterface"),
+    hubView: createElement("hubView"),
+    shopView: createElement("shopView"),
+    armoryView: createElement("armoryView"),
+    equipmentView: createElement("equipmentView"),
+    gameView: createElement("gameView"),
     playButton: createElement("playButton"),
+    shopButton: createElement("shopButton"),
+    armoryButton: createElement("armoryButton"),
+    equipmentButton: createElement("equipmentButton"),
+    shopBackButton: createElement("shopBackButton"),
+    armoryBackButton: createElement("armoryBackButton"),
+    equipmentBackButton: createElement("equipmentBackButton"),
+    backToHubButton: createElement("backToHubButton"),
+    shopPoints: createElement("shopPoints"),
+    armoryWeaponName: createElement("armoryWeaponName"),
+    equipmentStatus: createElement("equipmentStatus"),
     hpValue: createElement("hpValue"),
     scoreValue: createElement("scoreValue"),
     levelValue: createElement("levelValue"),
     xpValue: createElement("xpValue"),
     stageValue: createElement("stageValue"),
     waveValue: createElement("waveValue"),
-    abandonButton: createElement("abandonButton"),
     abandonOverlay: createElement("abandonOverlay"),
     continueButton: createElement("continueButton"),
     confirmAbandonButton: createElement("confirmAbandonButton"),
@@ -612,11 +628,12 @@ function testRestartFromGameOverAndVictory() {
   }
 }
 
-function testStartScreenAndPlay() {
+function testHubAndPlay() {
   const game = loadGame();
   assert.equal(game.getState().isGameStarted, false);
-  assert.equal(game.elements.startScreen.hidden, false);
-  assert.equal(game.elements.gameInterface.hidden, true);
+  assert.equal(game.getCurrentView(), "hub");
+  assert.equal(game.elements.hubView.hidden, false);
+  assert.equal(game.elements.gameView.hidden, true);
   game.keys.d = true;
   game.update(1);
   assert.equal(game.player.x, 380);
@@ -624,8 +641,9 @@ function testStartScreenAndPlay() {
   makeDirtyRun(game, "gameOver");
   startGame(game);
   assertResetState(game);
-  assert.equal(game.elements.startScreen.hidden, true);
-  assert.equal(game.elements.gameInterface.hidden, false);
+  assert.equal(game.getCurrentView(), "game");
+  assert.equal(game.elements.hubView.hidden, true);
+  assert.equal(game.elements.gameView.hidden, false);
   assert.equal(game.elements.hpValue.textContent, "5 / 5");
   assert.equal(game.elements.scoreValue.textContent, "0");
   assert.equal(game.elements.levelValue.textContent, "1");
@@ -637,11 +655,90 @@ function testStartScreenAndPlay() {
   );
 }
 
+function testMetaViewsAndInputIsolation() {
+  const game = loadGame();
+  game.listeners.keydown({ key: "w", repeat: false });
+  game.beginAttack({ button: 0, clientX: 700, clientY: 300, preventDefault() {} });
+  assert.deepEqual({ ...game.keys }, { w: false, a: false, s: false, d: false });
+  assert.equal(game.bullets.length, 0);
+  assert.equal(game.weaponRuntime.attackHeld, false);
+
+  game.keys.d = true;
+  game.listeners["shopButton:click"]();
+  assert.equal(game.getCurrentView(), "shop");
+  assert.equal(game.elements.shopView.hidden, false);
+  assert.equal(game.elements.hubView.hidden, true);
+  assert.equal(game.elements.shopPoints.textContent, "0");
+  assert.deepEqual({ ...game.keys }, { w: false, a: false, s: false, d: false });
+  game.listeners.keydown({ key: "d", repeat: false });
+  assert.equal(game.keys.d, false);
+  game.listeners["shopBackButton:click"]();
+  assert.equal(game.getCurrentView(), "hub");
+
+  game.listeners["armoryButton:click"]();
+  assert.equal(game.getCurrentView(), "armory");
+  assert.equal(game.elements.armoryWeaponName.textContent, "Starter");
+  game.listeners["armoryBackButton:click"]();
+
+  game.listeners["equipmentButton:click"]();
+  assert.equal(game.getCurrentView(), "equipment");
+  assert.equal(game.elements.equipmentStatus.textContent, "No equipment unlocked");
+  game.listeners["equipmentBackButton:click"]();
+  assert.equal(game.getCurrentView(), "hub");
+  assert.equal(game.getState().isGameStarted, false);
+}
+
+function testGameplayHubReturnUsesAbandon() {
+  const game = loadGame();
+  startGame(game);
+  game.keys.w = true;
+  game.weaponRuntime.attackHeld = true;
+
+  game.listeners["backToHubButton:click"]();
+  assert.equal(game.getCurrentView(), "game");
+  assert.equal(game.getState().isAbandonConfirmOpen, true);
+  assert.equal(game.elements.abandonOverlay.hidden, false);
+  assert.deepEqual({ ...game.keys }, { w: false, a: false, s: false, d: false });
+  assert.equal(game.weaponRuntime.attackHeld, false);
+
+  game.listeners["continueButton:click"]();
+  assert.equal(game.getCurrentView(), "game");
+  assert.equal(game.getState().isAbandonConfirmOpen, false);
+  assert.equal(game.getState().isAbandoned, false);
+
+  game.listeners["backToHubButton:click"]();
+  game.listeners["confirmAbandonButton:click"]();
+  assert.equal(game.getState().isAbandoned, true);
+  assert.equal(game.getState().isGameStarted, false);
+  assert.equal(game.getCurrentView(), "hub");
+  assert.equal(game.elements.hubView.hidden, false);
+  assert.equal(game.elements.gameView.hidden, true);
+}
+
+function testTerminalStatesReturnToHubAfterSettlement() {
+  for (const endState of ["gameOver", "victory"]) {
+    const game = loadGame();
+    startGame(game);
+    game.settleRun(endState === "victory"
+      ? game.settlement.RUN_END_REASONS.VICTORY
+      : game.settlement.RUN_END_REASONS.DEATH);
+    game.setState({ isGameOver: endState === "gameOver", isVictory: endState === "victory" });
+    const settlement = game.getLastSettlement();
+    game.listeners["backToHubButton:click"]();
+    assert.equal(game.getCurrentView(), "hub");
+    assert.equal(game.getLastSettlement(), settlement);
+  }
+}
+
 function testInitialPageMarkup() {
-  assert.match(indexSource, /<section id="gameInterface" class="game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=3"/);
+  assert.match(indexSource, /<section id="hubView" class="app-view hub-view"/);
+  assert.match(indexSource, /<section id="shopView" class="app-view meta-view"[^>]*hidden>/);
+  assert.match(indexSource, /<section id="armoryView" class="app-view meta-view"[^>]*hidden>/);
+  assert.match(indexSource, /<section id="equipmentView" class="app-view meta-view"[^>]*hidden>/);
+  assert.match(indexSource, /<section id="gameView" class="app-view game-screen" hidden>/);
+  assert.match(indexSource, /href="style\.css\?v=20260911-main-hub"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
-  assert.match(indexSource, /<h1>CANVA WAR<\/h1>/);
+  assert.match(indexSource, /<h1 id="hubTitle">CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
   assert.match(indexSource, /id="upgradeChoices"/);
   assert.match(indexSource, /id="buildUpgradeList"/);
@@ -656,7 +753,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="enemyIntroductionCounterplay"/);
   assert.match(indexSource, /id="enemyIntroductionContinue"/);
   assert.match(indexSource, /aria-modal="true"/);
-  const scriptVersion = "20260910-enemy-introduction-ux";
+  const scriptVersion = "20260911-main-hub";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
   assert.deepEqual(scriptSources, ["settlement.js", "encounters.js", "behaviors.js", "weapons.js", "build.js",
@@ -888,7 +985,10 @@ const tests = [
   ["version one save migrates points", testVersionOneSaveMigratesPoints],
   ["corrupted save falls back to defaults", testCorruptedSaveFallsBackToDefaults],
   ["invalid save shape falls back to defaults", testInvalidSaveShapeFallsBackToDefaults],
-  ["start screen and Play", testStartScreenAndPlay],
+  ["Hub and Play", testHubAndPlay],
+  ["meta views and input isolation", testMetaViewsAndInputIsolation],
+  ["gameplay Hub return uses Abandon", testGameplayHubReturnUsesAbandon],
+  ["terminal states return to Hub after Settlement", testTerminalStatesReturnToHubAfterSettlement],
   ["normal enemy kills persist", testNormalEnemyKillsPersist],
   ["wave checkpoint includes clear and performance score", testWaveCheckpointIncludesClearAndPerformanceScore],
   ["settlement end reason selection", testSettlementEndReasonSelection],
