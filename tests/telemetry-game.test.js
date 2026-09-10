@@ -266,7 +266,7 @@ test("identical RNG and input produce identical combat, generated Waves, checkpo
     }
     assert.equal(game.state.runPhase, "BOSS_ACTIVE");
     game.state.boss.x = 100; game.state.boss.y = 100;
-    game.bullets.push(bullet({ damage: 50 }));
+    game.bullets.push(bullet({ damage: 100 }));
     game.handleBulletBossCollisions();
     game.completeBossEncounter();
     game.update(1.25); game.update(0);
@@ -327,16 +327,17 @@ test("real Spawn Group hooks distinguish configured delay from pressure and reco
   assert.equal(currentEncounter(game).pressureBlockedEvents, 1);
   game.openAbandon(); game.update(30); game.closeAbandon();
   assert.equal(currentEncounter(game).pressureBlockedTime, 0.75);
-  // The corrected Basic second Group carries Threat 4, so the first Group must
-  // leave the field before the existing pressure gate can release it.
-  game.enemies.length = 0;
+  // The calibrated cap allows the atomic 4-Threat second Group to release while
+  // exactly 2 Threat remains from the first Group.
+  game.enemies.splice(0, 2);
   game.update(0);
   assert.equal(runtime.nextSpawnGroupIndex, nextIndex + 1);
+  assert.equal(game.enemies.length, 6);
   const encounter = currentEncounter(game);
   assert.equal(encounter.actualLastGroupReleaseTime, runtime.elapsedTime);
   assert.equal(encounter.groupReleaseTimes.at(-1).groupIndex, nextIndex);
-  assert.equal(encounter.peakActiveEnemyCount, 4);
-  assert.equal(encounter.peakActiveThreat, 4);
+  assert.equal(encounter.peakActiveEnemyCount, 6);
+  assert.equal(encounter.peakActiveThreat, 6);
   assert.equal(encounter.averageActiveEnemyCount, 4);
   assert.equal(encounter.averageActiveThreat, 4);
 });
@@ -416,6 +417,8 @@ test("last kill that opens Level-Up retains the same encounter until the resumed
 test("formal Upgrade choices record the selected displayed ID and resolved Weapon, Player and Build snapshots", () => {
   const game = loadGame("?playtest=1"); game.start();
   const selectedIds = [];
+  let choiceRngCalls = 0;
+  game.setUpgradeRng(() => { choiceRngCalls++; return 0.25; });
 
   for (let selection = 0; selection < 3; selection++) {
     game.setState({ xp: game.state.xpToNextLevel, isChoosingUpgrade: false });
@@ -427,6 +430,9 @@ test("formal Upgrade choices record the selected displayed ID and resolved Weapo
 
     const index = selection % game.choices.length;
     const selected = game.choices[index];
+    const offeredUpgradeIds = game.choices.map(choice => choice.id);
+    const randomCallsBeforeSelection = game.getRandomCalls();
+    const choiceRngCallsBeforeSelection = choiceRngCalls;
     selectedIds.push(selected.id);
     game.listeners.keydown({ key: String(index + 1), repeat: false });
 
@@ -440,6 +446,13 @@ test("formal Upgrade choices record the selected displayed ID and resolved Weapo
     assert.deepEqual(plain(entry.player.build), plain(game.build));
     assert.equal(entry.player.playerSpeed, game.player.speed);
     assert.equal(entry.player.playerMaxHp, game.player.maxHp);
+    assert.deepEqual(plain(current(game).upgradeChoiceHistory.at(-1)), {
+      playerLevel: entry.playerLevel,
+      offeredUpgradeIds: plain(offeredUpgradeIds),
+      selectedUpgradeId: selected.id
+    });
+    assert.equal(game.getRandomCalls(), randomCallsBeforeSelection);
+    assert.equal(choiceRngCalls, choiceRngCallsBeforeSelection);
   }
 
   const history = current(game).upgradeHistory;
@@ -447,6 +460,7 @@ test("formal Upgrade choices record the selected displayed ID and resolved Weapo
   assert.deepEqual(plain(history.map(entry => entry.upgradeId)), selectedIds);
   assert.equal(history.every(entry => Object.hasOwn(game.context.RunBuild.UPGRADES, entry.upgradeId)), true);
   assert.equal(history.every(entry => entry.playerLevel >= 2), true);
+  assert.equal(current(game).upgradeChoiceHistory.length, 3);
 });
 
 test("Split Shot records one attack event per discharge and projectile-level shots at both stacks", () => {
@@ -523,7 +537,7 @@ test("early Abandon has a report and preserves the absence of a secured Settleme
   assert.equal(game.state.saveData.progression.points, 0);
 });
 
-test("Boss has a separate encounter, preserves the 30-second reference, and pauses with gameplay", () => {
+test("Boss has a separate encounter, preserves the 15-second reference, and pauses with gameplay", () => {
   const game = loadGame("?playtest=1"); game.start();
   finishWave(game); game.startBossEncounter();
   game.state.boss.speed = 0;
@@ -533,16 +547,16 @@ test("Boss has a separate encounter, preserves the 30-second reference, and paus
   assert.deepEqual(plain(currentEncounter(game)), before);
   game.setState({ isChoosingUpgrade: false });
   game.state.boss.x = 100; game.state.boss.y = 100;
-  game.bullets.push(bullet({ damage: 50 })); game.handleBulletBossCollisions();
+  game.bullets.push(bullet({ damage: 100 })); game.handleBulletBossCollisions();
   game.completeBossEncounter(); game.completeBossEncounter();
   const encounter = currentEncounter(game);
   assert.equal(encounter.type, "boss");
   assert.equal(encounter.bossId, "boss-1");
   assert.equal(encounter.templateId, undefined);
-  assert.equal(encounter.analysis.expectedClearTime, 30);
+  assert.equal(encounter.analysis.expectedClearTime, 15);
   assert.equal(encounter.encounterElapsedTime, 0.5);
   assert.equal(encounter.actualClearTime, 0.5);
-  assert.equal(encounter.clearTimeRatio, 0.5 / 30);
+  assert.equal(encounter.clearTimeRatio, 0.5 / 15);
   assert.equal(encounter.bulletHits, 1);
   assert.equal(encounter.outcome, "clear");
   assert.equal(current(game).encounters.length, 2);
@@ -557,6 +571,36 @@ test("Boss has a separate encounter, preserves the 30-second reference, and paus
   assert.equal(unfinishedBoss.encounterElapsedTime, 0.4);
   assert.equal(unfinishedBoss.actualClearTime, null);
   assert.equal(unfinishedBoss.clearTimeRatio, null);
+});
+
+test("Boss telemetry counts entered Charges and only damaging Charge contacts", () => {
+  const game = loadGame("?playtest=1"); game.start();
+  finishWave(game); game.startBossEncounter();
+  game.state.boss.x = 200;
+  game.state.boss.y = 200;
+  game.state.boss.speed = 0;
+  game.player.x = 500;
+  game.player.y = 200;
+  const randomCallsBeforeCycle = game.getRandomCalls();
+
+  game.update(2.5);
+  assert.equal(game.state.bossRuntime.phase, "TELEGRAPH");
+  assert.equal(currentEncounter(game).chargeAttempts, 0);
+  game.update(0.65);
+  assert.equal(game.state.bossRuntime.phase, "CHARGE");
+  assert.equal(currentEncounter(game).chargeAttempts, 1);
+  assert.equal(currentEncounter(game).chargeContacts, 0);
+  assert.equal(game.getRandomCalls(), randomCallsBeforeCycle);
+
+  game.state.boss.x = game.player.x;
+  game.state.boss.y = game.player.y;
+  const hpBefore = game.player.hp;
+  game.update(0);
+  assert.equal(game.player.hp, hpBefore - 1);
+  assert.equal(currentEncounter(game).chargeContacts, 1);
+  game.update(0);
+  assert.equal(game.player.hp, hpBefore - 1);
+  assert.equal(currentEncounter(game).chargeContacts, 1);
 });
 
 test("Settlement observes the pipeline result once and telemetry never enters persistent Save", () => {
@@ -581,7 +625,7 @@ test("Settlement observes the pipeline result once and telemetry never enters pe
   for (const [, value] of game.writes) {
     const save = JSON.parse(value);
     assert.deepEqual(Object.keys(save).sort(), ["progression", "statistics", "unlocks", "version"]);
-    assert.equal(/telemetry|runSequence|playtest|upgradeHistory/.test(value), false);
+    assert.equal(/telemetry|runSequence|playtest|upgradeHistory|upgradeChoiceHistory/.test(value), false);
   }
 });
 

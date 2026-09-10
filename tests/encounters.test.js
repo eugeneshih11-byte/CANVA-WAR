@@ -27,6 +27,15 @@ function summarizeWave(wave) {
     threat: groups.reduce((sum, group) => sum + group.threat, 0) };
 }
 
+test("Stage 1 calibration changes concurrency and analysis without changing total Threat or costs", () => {
+  assert.deepEqual(stage.threatCurve, [8, 10, 12, 14, 17]);
+  assert.deepEqual(stage.maxActiveThreatCurve, [6, 7, 8.5, 10, 12]);
+  assert.equal(E.CONFIG.maxActiveEnemies, 8);
+  assert.deepEqual(E.CONFIG.clearTime, { normal: 0.4, fast: 0.25, tank: 1 });
+  assert.deepEqual(Object.fromEntries(Object.entries(E.ENEMIES)
+    .map(([type, enemy]) => [type, enemy.threatCost])), { normal: 1, fast: 1.4, tank: 2.2 });
+});
+
 test("generator enforces unlocks, templates, roles, tolerance and caps across 1000 Waves", () => {
   const seen = Array.from({ length: 5 }, () => new Set());
   const seenTemplates = Array.from({ length: 5 }, () => new Set());
@@ -88,11 +97,20 @@ test("Basic 8-Threat packing uses two balanced Groups and the corrected planned 
   assert.deepEqual(wave.spawnGroups.map(group => group.delay), [0, 2.5]);
   assert.equal(wave.spawnGroups.reduce((sum, group) => sum + group.delay, 0), 2.5);
   assert.deepEqual(wave.analysis, E.analyzeWave(wave));
-  assert.equal(wave.analysis.expectedClearTime, 22.5);
+  assert.equal(wave.analysis.expectedClearTime, 8.2);
 
   const floorProbe = copy(wave);
   floorProbe.spawnGroups[1].delay = 25;
-  assert.equal(E.analyzeWave(floorProbe).expectedClearTime, 27.5);
+  assert.equal(E.analyzeWave(floorProbe).expectedClearTime, 30.7);
+});
+test("7-Fast Rush reference has a 5.75-second build-independent expected time", () => {
+  const rush = { spawnGroups: [
+    { delay: 0, enemies: [{ type: "fast", count: 3 }] },
+    { delay: 1.5, enemies: [{ type: "fast", count: 4 }] }
+  ] };
+  const analysis = E.analyzeWave(rush);
+  assert.equal(analysis.expectedClearTime, 5.75);
+  assert.deepEqual(E.analyzeWave({ ...rush, player: { damage: 999, projectileCount: 99 } }), analysis);
 });
 test("a genuine field-Threat constraint uses one zero-delay structural continuation Group", () => {
   const restricted = forceTemplate(0, "basic");
@@ -172,14 +190,14 @@ test("Analyzer uses content and planned timing only, without mutations or awards
   const wave = E.generateWave(stage, 0, {}, () => 0);
   const before = JSON.stringify(wave), analysis = E.analyzeWave(wave);
   assert.equal(analysis.threat, 8);
-  assert.equal(analysis.expectedClearTime, 22.5);
+  assert.equal(analysis.expectedClearTime, 8.2);
   assert.equal(analysis.expectedBaseScore, 8);
   assert.equal(analysis.performanceAllowance, 0);
   assert.equal(analysis.scoreCapacity, 8);
   assert.equal(JSON.stringify(wave), before);
   assert.deepEqual(E.analyzeWave({ ...wave, player: { damage: 999 } }), analysis);
   const slower = copy(wave); slower.spawnGroups[1].delay = 100;
-  assert.ok(E.analyzeWave(slower).expectedClearTime >= 102.5);
+  assert.equal(E.analyzeWave(slower).expectedClearTime, 105.7);
   const heavy = E.generateWave(stage, 4, {}, () => 0);
   assert.ok(Number.isFinite(heavy.analysis.expectedClearTime));
   assert.notEqual(heavy.analysis.expectedClearTime, analysis.expectedClearTime);
@@ -205,6 +223,30 @@ test("atomic groups wait for relative delay and available field threat", () => {
   assert.equal(runtime.activeThreat, 4); assert.equal(runtime.isComplete, false);
   enemies.length = 0; E.syncWaveRuntime(wave, runtime, enemies);
   assert.equal(runtime.isComplete, true);
+});
+test("new Stage cap releases the whole second Basic Group while 2 Threat remains", () => {
+  const wave = { id: "overlap", maxActiveThreat: stage.maxActiveThreatCurve[0], spawnGroups: [
+    { delay: 0, enemies: [{ type: "normal", count: 4 }] },
+    { delay: 2.5, enemies: [{ type: "normal", count: 4 }] }
+  ] };
+  const runtime = E.createWaveRuntime(wave), enemies = [];
+  const released = [];
+  const tick = dt => E.updateWaveRuntime(wave, runtime, enemies, dt, (type, waveId) => {
+    enemies.push({ type, waveId, hp: 1 });
+    released.push(type);
+  });
+
+  tick(0);
+  assert.equal(enemies.length, 4);
+  tick(2.5);
+  assert.equal(runtime.nextSpawnGroupIndex, 1);
+  assert.equal(released.length, 4);
+  enemies.splice(0, 2);
+  tick(0);
+  assert.equal(runtime.nextSpawnGroupIndex, 2);
+  assert.equal(enemies.length, 6);
+  assert.equal(runtime.activeThreat, 6);
+  assert.equal(released.length, 8);
 });
 test("gaps cannot clear, unrelated encounters cannot block, hard count cap also applies", () => {
   const { wave, runtime, enemies, tick } = runtimeFixture();

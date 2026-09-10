@@ -143,6 +143,12 @@ const RUN_PHASES = Object.freeze(Object.fromEntries([
   "STAGE_ENTER", "WAVE_ACTIVE", "INTERMISSION", "BOSS_ACTIVE", "STAGE_CLEAR",
   "STAGE_REWARD", "RUN_VICTORY", "RUN_DEAD"
 ].map(phase => [phase, phase])));
+const BOSS_PHASES = Object.freeze({
+  CHASE: "CHASE",
+  TELEGRAPH: "TELEGRAPH",
+  CHARGE: "CHARGE",
+  RECOVERY: "RECOVERY"
+});
 let runPhase = null;
 let stageIndex = 0;
 let stageRuntime = null;
@@ -210,7 +216,9 @@ function enterIntermission() {
 function startBossEncounter() {
   const definition = Encounters.BOSSES[stageRuntime.definition.boss];
   bossRuntime = { encounterId: definition.id, elapsedTime: 0, damageTaken: 0,
-    analysis: definition.analysis, isComplete: false };
+    analysis: definition.analysis, isComplete: false, phase: BOSS_PHASES.CHASE,
+    phaseElapsed: 0, chaseDuration: definition.chargeCycle.initialChaseDuration,
+    chargeDirectionX: 0, chargeDirectionY: 0, collisionPhase: BOSS_PHASES.CHASE };
   runSettlementState.progress.currentEncounter = { id: definition.id, type: "boss" };
   spawnBoss();
   runPhase = RUN_PHASES.BOSS_ACTIVE;
@@ -865,6 +873,11 @@ function chooseUpgrade(key) {
   player.speed = playerStats.speed;
   player.maxHp = playerStats.maxHp;
   player.hp = Math.min(player.maxHp, result.playerHp ?? player.hp);
+  observeTelemetry("recordUpgradeChoice", () => ({
+    playerLevel: level,
+    offeredUpgradeIds: currentUpgradeChoices.map(choice => choice.id),
+    selectedUpgradeId: upgrade.id
+  }));
   observeTelemetry("recordUpgrade", () => ({
     playerLevel: level,
     upgradeId: upgrade.id,
@@ -907,6 +920,9 @@ function handleBossPlayerCollision() {
     return;
   }
 
+  if (bossRuntime?.collisionPhase === BOSS_PHASES.CHARGE && player.hp > 0 && (boss.damage ?? 1) > 0) {
+    observeTelemetry("recordBossChargeContact");
+  }
   takeDamage(boss.damage ?? 1, "boss-1");
   bossDamageCooldown = bossDamageCooldownDuration;
 }
@@ -1043,24 +1059,90 @@ function updateEnemies(deltaTime) {
   }
 }
 
-function updateBoss(deltaTime) {
-  if (!boss) {
-    return;
-  }
-
-  let directionX = player.x - boss.x;
-  let directionY = player.y - boss.y;
+function lockBossChargeDirection() {
+  const directionX = player.x + player.width / 2 - (boss.x + boss.width / 2);
+  const directionY = player.y + player.height / 2 - (boss.y + boss.height / 2);
   const directionLength = Math.hypot(directionX, directionY);
+  bossRuntime.chargeDirectionX = directionLength > 0 ? directionX / directionLength : 1;
+  bossRuntime.chargeDirectionY = directionLength > 0 ? directionY / directionLength : 0;
+}
 
-  if (directionLength > 0) {
-    directionX /= directionLength;
-    directionY /= directionLength;
-    boss.x += directionX * boss.speed * deltaTime;
-    boss.y += directionY * boss.speed * deltaTime;
-  }
+function enterBossPhase(phase) {
+  const cycle = Encounters.BOSSES[bossRuntime.encounterId].chargeCycle;
+  bossRuntime.phase = phase;
+  bossRuntime.phaseElapsed = 0;
+  if (phase === BOSS_PHASES.TELEGRAPH) lockBossChargeDirection();
+  if (phase === BOSS_PHASES.CHARGE) observeTelemetry("recordBossChargeAttempt");
+  if (phase === BOSS_PHASES.CHASE) bossRuntime.chaseDuration = cycle.chaseDuration;
+}
 
+function getBossPhaseDuration() {
+  const cycle = Encounters.BOSSES[bossRuntime.encounterId].chargeCycle;
+  if (bossRuntime.phase === BOSS_PHASES.CHASE) return bossRuntime.chaseDuration;
+  if (bossRuntime.phase === BOSS_PHASES.TELEGRAPH) return cycle.telegraphDuration;
+  if (bossRuntime.phase === BOSS_PHASES.CHARGE) return cycle.chargeDuration;
+  return cycle.recoveryDuration;
+}
+
+function advanceBossPhase() {
+  if (bossRuntime.phase === BOSS_PHASES.CHASE) enterBossPhase(BOSS_PHASES.TELEGRAPH);
+  else if (bossRuntime.phase === BOSS_PHASES.TELEGRAPH) enterBossPhase(BOSS_PHASES.CHARGE);
+  else if (bossRuntime.phase === BOSS_PHASES.CHARGE) enterBossPhase(BOSS_PHASES.RECOVERY);
+  else enterBossPhase(BOSS_PHASES.CHASE);
+}
+
+function moveBossTowardPlayer(deltaTime) {
+  let directionX = player.x + player.width / 2 - (boss.x + boss.width / 2);
+  let directionY = player.y + player.height / 2 - (boss.y + boss.height / 2);
+  const directionLength = Math.hypot(directionX, directionY);
+  if (directionLength <= 0) return;
+  directionX /= directionLength;
+  directionY /= directionLength;
+  boss.x += directionX * boss.speed * deltaTime;
+  boss.y += directionY * boss.speed * deltaTime;
   boss.x = Math.max(0, Math.min(boss.x, canvas.width - boss.width));
   boss.y = Math.max(0, Math.min(boss.y, canvas.height - boss.height));
+  bossRuntime.collisionPhase = BOSS_PHASES.CHASE;
+}
+
+function moveBossCharge(deltaTime) {
+  const cycle = Encounters.BOSSES[bossRuntime.encounterId].chargeCycle;
+  const nextX = boss.x + bossRuntime.chargeDirectionX * cycle.chargeSpeed * deltaTime;
+  const nextY = boss.y + bossRuntime.chargeDirectionY * cycle.chargeSpeed * deltaTime;
+  const maxX = canvas.width - boss.width;
+  const maxY = canvas.height - boss.height;
+  boss.x = Math.max(0, Math.min(nextX, maxX));
+  boss.y = Math.max(0, Math.min(nextY, maxY));
+  bossRuntime.collisionPhase = BOSS_PHASES.CHARGE;
+  return boss.x !== nextX || boss.y !== nextY ||
+    (bossRuntime.chargeDirectionX < 0 && boss.x === 0) ||
+    (bossRuntime.chargeDirectionX > 0 && boss.x === maxX) ||
+    (bossRuntime.chargeDirectionY < 0 && boss.y === 0) ||
+    (bossRuntime.chargeDirectionY > 0 && boss.y === maxY);
+}
+
+function updateBoss(deltaTime) {
+  if (!boss || !bossRuntime || !Number.isFinite(deltaTime) || deltaTime < 0) return;
+  let remaining = deltaTime;
+  bossRuntime.collisionPhase = bossRuntime.phase;
+
+  while (remaining > 1e-9) {
+    const phaseDuration = getBossPhaseDuration();
+    const phaseRemaining = Math.max(0, phaseDuration - bossRuntime.phaseElapsed);
+    if (phaseRemaining <= 1e-9) {
+      advanceBossPhase();
+      continue;
+    }
+    const step = Math.min(remaining, phaseRemaining);
+    let reachedBoundary = false;
+    if (bossRuntime.phase === BOSS_PHASES.CHASE) moveBossTowardPlayer(step);
+    else if (bossRuntime.phase === BOSS_PHASES.CHARGE) reachedBoundary = moveBossCharge(step);
+    bossRuntime.phaseElapsed += step;
+    remaining -= step;
+
+    if (reachedBoundary) enterBossPhase(BOSS_PHASES.RECOVERY);
+    else if (bossRuntime.phaseElapsed >= phaseDuration - 1e-9) advanceBossPhase();
+  }
 }
 
 function drawPlayer() {
@@ -1096,7 +1178,24 @@ function drawBoss() {
     return;
   }
 
-  ctx.fillStyle = "#7e22ce";
+  const phase = bossRuntime?.phase;
+  if (phase === BOSS_PHASES.TELEGRAPH) {
+    const centerX = boss.x + boss.width / 2;
+    const centerY = boss.y + boss.height / 2;
+    ctx.save();
+    ctx.strokeStyle = "rgba(254, 240, 138, 0.9)";
+    ctx.lineWidth = 10;
+    ctx.setLineDash([18, 12]);
+    ctx.beginPath();
+    ctx.moveTo(centerX, centerY);
+    ctx.lineTo(centerX + bossRuntime.chargeDirectionX * 1000,
+      centerY + bossRuntime.chargeDirectionY * 1000);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.fillStyle = phase === BOSS_PHASES.TELEGRAPH ? "#f59e0b" :
+    phase === BOSS_PHASES.CHARGE ? "#dc2626" :
+      phase === BOSS_PHASES.RECOVERY ? "#6d28d9" : "#7e22ce";
   ctx.fillRect(boss.x, boss.y, boss.width, boss.height);
   drawHealthBar(boss);
 }

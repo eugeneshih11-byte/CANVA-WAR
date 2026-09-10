@@ -9,7 +9,7 @@
   }
   const CONFIG = freeze({ attempts: 12, maxEnemies: 18, maxActiveEnemies: 8,
     minimumFill: 0.85, maximumFill: 1.1, intermission: 4, stageClear: 1.25,
-    baseHandlingTime: 2.5, specialMechanicTime: 0, clearTime: { normal: 2.5, fast: 2, tank: 5.5 },
+    baseHandlingTime: 2.5, specialMechanicTime: 0, clearTime: { normal: 0.4, fast: 0.25, tank: 1 },
     // Analysis-only references: current kills award 1; no clear/performance awards exist yet.
     scoreReference: { normal: 1, fast: 1, tank: 1, boss: 0, clear: 0, performance: 0 }
   });
@@ -28,7 +28,7 @@
   const STAGES = freeze([{
     id: "stage-1", waveCount: 5, enemyPool: ["normal", "fast", "tank"],
     templatePool: Object.keys(TEMPLATES), threatCurve: [8, 10, 12, 14, 17],
-    maxActiveThreatCurve: [4.5, 5.5, 6.5, 7.5, 9],
+    maxActiveThreatCurve: [6, 7, 8.5, 10, 12],
     availability: [["normal"], ["normal", "fast"], ["normal", "fast", "tank"],
       ["normal", "fast", "tank"], ["normal", "fast", "tank"]],
     templates: [["basic"], ["basic", "rush"], ["basic", "rush", "heavy"],
@@ -36,9 +36,12 @@
     mechanics: [], enemyScaling: { hpMultiplier: 1, damageMultiplier: 1, speedMultiplier: 1 }, boss: "boss-1"
   }]);
   const BOSSES = freeze({ "boss-1": { id: "boss-1",
-    stats: { width: 100, height: 100, speed: 50, hp: 50, maxHp: 50, damage: 1 },
-    contactCooldown: 1, phases: [], adds: [], mechanics: [], supportEnemies: [],
-    analysis: { threat: 0, expectedClearTime: 30, expectedBaseScore: 0, performanceAllowance: 0, scoreCapacity: 0 }
+    stats: { width: 100, height: 100, speed: 60, hp: 100, maxHp: 100, damage: 1 },
+    contactCooldown: 1, phases: ["chase", "telegraph", "charge", "recovery"],
+    chargeCycle: { initialChaseDuration: 2.5, chaseDuration: 2, telegraphDuration: 0.65,
+      chargeDuration: 0.45, chargeSpeed: 420, recoveryDuration: 0.55 },
+    adds: [], mechanics: ["charge-cycle"], supportEnemies: [],
+    analysis: { threat: 0, expectedClearTime: 15, expectedBaseScore: 0, performanceAllowance: 0, scoreCapacity: 0 }
   } });
   const hasRole = (type, role) => ENEMIES[type].roles.includes(role);
   function rules(stage, index) {
@@ -118,7 +121,7 @@
       }
     }
     const performanceAllowance = CONFIG.scoreReference.performance;
-    return { threat, expectedClearTime: CONFIG.baseHandlingTime + Math.max(combatEstimate, plannedSpawnFloor) + CONFIG.specialMechanicTime,
+    return { threat, expectedClearTime: CONFIG.baseHandlingTime + combatEstimate + plannedSpawnFloor + CONFIG.specialMechanicTime,
       expectedBaseScore, performanceAllowance, scoreCapacity: expectedBaseScore + performanceAllowance };
   }
   function compareMaskOrder(first, second, itemCount) {

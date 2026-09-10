@@ -273,6 +273,19 @@ test("Player and upgrade snapshots preserve resolved stats and formal build valu
     build: { upgrades: { "rapid-fire": 1, "split-shot": 2 } }, encounterIndex: 0, activeCombatTime: 0 });
   assert.equal(typeof run.upgradeHistory[0].build.resolver, "undefined");
 });
+test("Upgrade choice history preserves offers separately from selected Upgrade history", () => {
+  const telemetry = start();
+  const offeredUpgradeIds = ["rapid-fire", "split-shot", "vitality"];
+  telemetry.recordUpgradeChoice({ playerLevel: 3, offeredUpgradeIds, selectedUpgradeId: "split-shot" });
+  telemetry.recordUpgrade({ playerLevel: 3, upgradeId: "split-shot", upgradeName: "Split Shot" });
+  offeredUpgradeIds[0] = "changed";
+  const run = telemetry.getCurrentRun();
+  assert.deepEqual(run.upgradeChoiceHistory, [{ playerLevel: 3,
+    offeredUpgradeIds: ["rapid-fire", "split-shot", "vitality"], selectedUpgradeId: "split-shot" }]);
+  assert.equal(run.upgradeHistory.length, 1);
+  assert.equal(run.upgradeHistory[0].upgradeId, "split-shot");
+  assert.equal(Object.hasOwn(run.upgradeHistory[0], "offeredUpgradeIds"), false);
+});
 test("Wave Clear finalizes exactly once and later hooks cannot change it", () => {
   const telemetry = start();
   frame(telemetry, { deltaTime: 5 });
@@ -331,6 +344,9 @@ test("Boss is separate from Wave Template observations and retains its analysis 
   const telemetry = start();
   telemetry.finishEncounter({ outcome: "clear", player });
   telemetry.startEncounter({ type: "boss", definition: E.BOSSES["boss-1"], stageId: "stage-1", waveIndex: 5, player });
+  telemetry.recordBossChargeAttempt();
+  telemetry.recordBossChargeAttempt();
+  telemetry.recordBossChargeContact();
   frame(telemetry, { deltaTime: 15, activeEnemyCount: 1 });
   telemetry.recordBulletHit({ enemyType: "boss", damage: 2 });
   telemetry.finishEncounter({ outcome: "clear", player });
@@ -341,13 +357,15 @@ test("Boss is separate from Wave Template observations and retains its analysis 
   assert.equal(Object.hasOwn(boss, "templateId"), false);
   assert.equal(Object.hasOwn(boss, "spawnGroups"), false);
   assert.deepEqual(boss.analysis, E.BOSSES["boss-1"].analysis);
-  assert.equal(boss.analysis.expectedClearTime, 30);
+  assert.equal(boss.analysis.expectedClearTime, 15);
+  assert.equal(boss.chargeAttempts, 2);
+  assert.equal(boss.chargeContacts, 1);
   assert.equal(typeof boss.encounterElapsedTime, "number");
   assert.equal(boss.encounterElapsedTime, 15);
   assert.equal(typeof boss.actualClearTime, "number");
   assert.equal(boss.actualClearTime, 15);
   assert.equal(typeof boss.clearTimeRatio, "number");
-  assert.equal(boss.clearTimeRatio, 0.5);
+  assert.equal(boss.clearTimeRatio, 1);
   assert.equal(boss.outcome, "clear");
   assert.equal(run.bossReached, true);
   assert.equal(run.victory, true);
@@ -387,7 +405,7 @@ test("report input/output copies prevent later gameplay and callers changing his
   assert.deepEqual(telemetry.getSessionReport(), original);
   assert.equal(original.runs[0].encounters[0].playerStart.weapon.damage, 2);
   assert.equal(original.runs[0].encounters[0].spawnGroups[0].enemyCount, 3);
-  assert.equal(original.configuration.clearTime.normal, 2.5);
+  assert.equal(original.configuration.clearTime.normal, 0.4);
   assert.equal(original.environment.viewport.width, 1000);
 });
 test("session history caps completed Runs at 20 and sequence remains monotonic", () => {

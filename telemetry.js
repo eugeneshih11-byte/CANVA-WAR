@@ -91,7 +91,8 @@
       run = { runSequence: ++sequence, startedAt: timestamp(), endedAt: null, endReason: null,
         completed: false, stageReached: null, waveReached: 0, bossReached: false, victory: false,
         playerStart, finalPlayerHp: playerStart.playerHp, finalPlayerLevel: playerStart.playerLevel,
-        totalActiveCombatTime: 0, totalIntermissionTime: 0, encounters: [], upgradeHistory: [], settlement: null };
+        totalActiveCombatTime: 0, totalIntermissionTime: 0, encounters: [], upgradeHistory: [],
+        upgradeChoiceHistory: [], settlement: null };
     }
     function startEncounter({ type, definition, stageId, waveIndex, player }) {
       if (!run) return;
@@ -108,7 +109,8 @@
       });
       if (encounter) finishEncounter({ outcome: "run-ended-other", player: playerStart });
       const data = { type, stageId: source.stageId ?? stageId, waveIndex: source.waveIndex ?? waveIndex,
-        ...(type === "boss" ? { bossId: source.id } : { waveId: source.id, templateId: source.templateId,
+        ...(type === "boss" ? { bossId: source.id, chargeAttempts: 0, chargeContacts: 0 } :
+          { waveId: source.id, templateId: source.templateId,
           threatBudget: source.threatBudget, generatedThreat: source.analysis.threat,
           maxActiveThreat: source.maxActiveThreat, enemyComposition, spawnGroups }),
         analysis: source.analysis, playerStart, playerEnd: null,
@@ -191,6 +193,12 @@
       run.finalPlayerLevel = playerLevel;
       if (encounter) encounter.data.playerLevelEnd = playerLevel;
     }
+    function recordUpgradeChoice({ playerLevel, offeredUpgradeIds, selectedUpgradeId } = {}) {
+      if (!run) return;
+      run.upgradeChoiceHistory.push(copy({ playerLevel,
+        offeredUpgradeIds: Array.isArray(offeredUpgradeIds) ? offeredUpgradeIds : [],
+        selectedUpgradeId: typeof selectedUpgradeId === "string" ? selectedUpgradeId : null }));
+    }
     function recordAttack() {
       if (encounter) encounter.data.attackEvents++;
     }
@@ -219,7 +227,15 @@
         increment(encounter.data.nonKillRemovalsByEnemyType, enemyType);
         increment(encounter.data.nonKillRemovalsByReason, reason);
       }),
-      recordDamage: safe("record damage", recordDamage), recordUpgrade: safe("record upgrade", recordUpgrade),
+      recordDamage: safe("record damage", recordDamage),
+      recordBossChargeAttempt: safe("record Boss charge attempt", () => {
+        if (encounter?.data.type === "boss") encounter.data.chargeAttempts++;
+      }),
+      recordBossChargeContact: safe("record Boss charge contact", () => {
+        if (encounter?.data.type === "boss") encounter.data.chargeContacts++;
+      }),
+      recordUpgrade: safe("record upgrade", recordUpgrade),
+      recordUpgradeChoice: safe("record upgrade choice", recordUpgradeChoice),
       finishEncounter: safe("finish encounter", finishEncounter), finishRun: safe("finish run", finishRun),
       getCurrentRun: safe("current run snapshot", runSnapshot),
       getRunReport: safe("run report", () => { const current = runSnapshot(); return report(current ? [current] : []); }),

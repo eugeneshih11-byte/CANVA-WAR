@@ -344,9 +344,9 @@ function makeBoss(overrides = {}) {
     y: 100,
     width: 100,
     height: 100,
-    speed: 0,
-    hp: 50,
-    maxHp: 50,
+    speed: 60,
+    hp: 100,
+    maxHp: 100,
     ...overrides
   };
 }
@@ -635,8 +635,12 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="intermissionTitle"/);
   assert.match(indexSource, /id="intermissionDetail"/);
   assert.match(indexSource, /id="intermissionCountdown"/);
-  assert.match(indexSource, /<script src="weapons\.js"><\/script>\s*<script src="build\.js"><\/script>/);
-  assert.match(indexSource, /<script src="layout\.js"><\/script>[\s\S]*<script src="game\.js"><\/script>/);
+  const scriptVersion = "20260910-calibration-a";
+  const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
+    .map(match => match[1]);
+  assert.deepEqual(scriptSources, ["settlement.js", "encounters.js", "weapons.js", "build.js",
+    "layout.js", "telemetry.js", "telemetry-ui.js", "game.js"]
+    .map(source => `${source}?v=${scriptVersion}`));
 }
 
 function testSaveDefaultsAndRoundTrip() {
@@ -977,6 +981,8 @@ test("Boss pause freezes timing and lethal HP alone never persists", () => {
   const game = loadGame(); startGame(game); game.startBossEncounter();
   game.setState({ isChoosingUpgrade: true }); game.update(5);
   assert.equal(game.getState().bossRuntime.elapsedTime, 0);
+  assert.equal(game.getState().bossRuntime.phase, "CHASE");
+  assert.equal(game.getState().bossRuntime.phaseElapsed, 0);
   game.setState({ isChoosingUpgrade: false, boss: makeBoss({ hp: 1 }) });
   game.bullets.push(makeBullet()); game.handleBulletBossCollisions();
   game.player.hp = 0; game.completeBossEncounter();
@@ -1620,22 +1626,83 @@ test("Enemies in the next Wave resume movement under the new ownership id", () =
   active.forEach((enemy, index) => assert.ok(distanceToPlayer(game, enemy) < before[index]));
 });
 
-test("Boss movement remains the original direct clamped chase", () => {
-  const game = loadGame(); startGame(game); game.startBossEncounter();
-  game.player.x = 380;
+test("Boss follows CHASE, TELEGRAPH, locked CHARGE, RECOVERY, then CHASE without RNG", () => {
+  let randomCalls = 0;
+  const game = loadGame({}, { random() { randomCalls++; return 0.25; } });
+  startGame(game);
+  game.startBossEncounter();
+  game.player.x = 500;
   game.player.y = 280;
-  const boss = makeBoss({ x: 0, y: 0, speed: 50 });
+  const boss = makeBoss({ x: 200, y: 250 });
   game.setState({ boss });
-  const length = Math.hypot(380, 280);
+  const callsBeforeCycle = randomCalls;
+
+  game.updateBoss(2.49);
+  assert.equal(game.getState().bossRuntime.phase, "CHASE");
+  game.updateBoss(0.01);
+  let runtime = game.getState().bossRuntime;
+  assert.equal(runtime.phase, "TELEGRAPH");
+  assert.equal(runtime.phaseElapsed, 0);
+  closeTo(runtime.chargeDirectionX, 1);
+  closeTo(runtime.chargeDirectionY, 0);
+  const chargeOrigin = { x: boss.x, y: boss.y };
+
+  game.player.x = 0;
+  game.player.y = 0;
+  game.updateBoss(0.64);
+  assert.deepEqual({ x: boss.x, y: boss.y }, chargeOrigin);
+  assert.equal(game.getState().bossRuntime.phase, "TELEGRAPH");
+  game.updateBoss(0.01);
+  assert.equal(game.getState().bossRuntime.phase, "CHARGE");
 
   game.updateBoss(0.1);
+  closeTo(boss.x, chargeOrigin.x + 42);
+  closeTo(boss.y, chargeOrigin.y);
+  game.updateBoss(0.35);
+  assert.equal(game.getState().bossRuntime.phase, "RECOVERY");
+  closeTo(boss.x, chargeOrigin.x + 189);
+  closeTo(boss.y, chargeOrigin.y);
+  const recoveryPosition = { x: boss.x, y: boss.y };
 
-  closeTo(boss.x, 380 / length * 5);
-  closeTo(boss.y, 280 / length * 5);
+  game.updateBoss(0.54);
+  assert.deepEqual({ x: boss.x, y: boss.y }, recoveryPosition);
+  game.updateBoss(0.01);
+  assert.equal(game.getState().bossRuntime.phase, "CHASE");
+  game.updateBoss(0.1);
+  closeTo(Math.hypot(boss.x - recoveryPosition.x, boss.y - recoveryPosition.y), 6);
+  assert.equal(randomCalls, callsBeforeCycle);
   assert.deepEqual(
-    { width: boss.width, height: boss.height, speed: boss.speed, hp: boss.hp, maxHp: boss.maxHp },
-    { width: 100, height: 100, speed: 50, hp: 50, maxHp: 50 }
+    { speed: game.encounters.BOSSES["boss-1"].stats.speed,
+      hp: game.encounters.BOSSES["boss-1"].stats.hp,
+      maxHp: game.encounters.BOSSES["boss-1"].stats.maxHp,
+      damage: game.encounters.BOSSES["boss-1"].stats.damage,
+      chargeCycle: JSON.parse(JSON.stringify(game.encounters.BOSSES["boss-1"].chargeCycle)) },
+    { speed: 60, hp: 100, maxHp: 100, damage: 1,
+      chargeCycle: { initialChaseDuration: 2.5, chaseDuration: 2, telegraphDuration: 0.65,
+        chargeDuration: 0.45, chargeSpeed: 420, recoveryDuration: 0.55 } }
   );
+});
+
+test("Boss charge ends at the arena boundary and observes the full recovery", () => {
+  const game = loadGame(); startGame(game); game.startBossEncounter();
+  game.player.x = 0;
+  game.player.y = 310;
+  const boss = makeBoss({ x: 10, y: 280, speed: 0 });
+  game.setState({ boss });
+
+  game.updateBoss(2.5);
+  assert.equal(game.getState().bossRuntime.phase, "TELEGRAPH");
+  game.updateBoss(0.65);
+  assert.equal(game.getState().bossRuntime.phase, "CHARGE");
+  game.updateBoss(0.1);
+  assert.equal(boss.x, 0);
+  assert.equal(game.getState().bossRuntime.phase, "RECOVERY");
+  const boundaryPosition = { x: boss.x, y: boss.y };
+  game.updateBoss(0.54);
+  assert.equal(game.getState().bossRuntime.phase, "RECOVERY");
+  assert.deepEqual({ x: boss.x, y: boss.y }, boundaryPosition);
+  game.updateBoss(0.01);
+  assert.equal(game.getState().bossRuntime.phase, "CHASE");
 });
 
 test("scaled Canvas pointer coordinates map to the unchanged logical arena", () => {
