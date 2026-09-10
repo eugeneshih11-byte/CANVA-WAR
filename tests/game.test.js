@@ -49,6 +49,9 @@ globalThis.__gameTest = {
   clearInput,
   spawnEnemy,
   updateEnemies,
+  handleDenierHazardDamage,
+  beginEnemyIntroductions,
+  showNextEnemyIntroduction,
   updateBoss,
   pushEnemy,
   hasOtherEnemyCollision,
@@ -104,7 +107,9 @@ globalThis.__gameTest = {
       isAbandonConfirmOpen,
       previousXpRequirement,
       xpToNextLevel,
-      runPhase, stageIndex, stageRuntime, currentWave, waveRuntime, bossRuntime, intermissionTimer, stageClearTimer, isAbandoned
+      runPhase, stageIndex, stageRuntime, currentWave, waveRuntime, bossRuntime, intermissionTimer, stageClearTimer,
+      isAbandoned, currentEnemyIntroduction, introductionTimer, pendingWaveIndex,
+      introducedEnemyTypes: [...introducedEnemyTypes], denierHazardDamageRuntime
     };
   },
   setState(values) {
@@ -260,7 +265,12 @@ function loadGame(initialStorage = {}, options = {}) {
     intermissionBanner: createElement("intermissionBanner"),
     intermissionTitle: createElement("intermissionTitle"),
     intermissionDetail: createElement("intermissionDetail"),
-    intermissionCountdown: createElement("intermissionCountdown")
+    intermissionCountdown: createElement("intermissionCountdown"),
+    enemyIntroduction: createElement("enemyIntroduction"),
+    enemyIntroductionIcon: createElement("enemyIntroductionIcon"),
+    enemyIntroductionName: createElement("enemyIntroductionName"),
+    enemyIntroductionRole: createElement("enemyIntroductionRole"),
+    enemyIntroductionDescription: createElement("enemyIntroductionDescription")
   };
   elements.arenaRegion.clientWidth = options.arenaWidth ?? 1000;
   elements.arenaRegion.clientHeight = options.arenaHeight ?? 760;
@@ -269,6 +279,7 @@ function loadGame(initialStorage = {}, options = {}) {
   elements.abandonOverlay.hidden = true;
   elements.upgradeOverlay.hidden = true;
   elements.intermissionBanner.hidden = true;
+  elements.enemyIntroduction.hidden = true;
   const resizeObservers = [];
   const context = {
     Math: Object.assign(Object.create(Math), { random: options.random || (() => 0.25) }),
@@ -637,7 +648,9 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="intermissionTitle"/);
   assert.match(indexSource, /id="intermissionDetail"/);
   assert.match(indexSource, /id="intermissionCountdown"/);
-  const scriptVersion = "20260910-combat-variety-v1";
+  assert.match(indexSource, /id="enemyIntroduction"/);
+  assert.match(indexSource, /id="enemyIntroductionName"/);
+  const scriptVersion = "20260910-combat-variety-v1-1";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
   assert.deepEqual(scriptSources, ["settlement.js", "encounters.js", "behaviors.js", "weapons.js", "build.js",

@@ -140,11 +140,11 @@ test("report UI shows numeric clear time and ratio for a cleared encounter", () 
 test("report UI exposes Interceptor, Denier, and Support behavior outcomes", () => {
   const fixture = loadUi([encounter({
     interceptor: { attempts: 4, chargeContacts: 1, missedCharges: 3 },
-    denier: { hazardsCreated: 2, hazardContacts: 1 },
-    support: { affectedEnemyTime: 5.25, affectedSpecialActions: 2 }
+    denier: { hazardsCreated: 2, hazardContacts: 1, hazardDamageEvents: 4 },
+    support: { affectedEnemyTime: 5.25, affectedSpecialActions: 2, linksCreated: 3 }
   })]);
   const cells = fixture.nodes().filter(node => node.tagName === "TD").map(node => node.textContent);
-  assert.ok(cells.includes("I 4/1/3 · D 2/1 · S 5.25s/2"));
+  assert.ok(cells.includes("I 4/1/3 · D 2/1/4 · S 5.25s/2/3"));
 });
 
 test("fixed report closes and reopens without either control changing report content", () => {

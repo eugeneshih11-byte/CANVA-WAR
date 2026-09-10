@@ -76,6 +76,19 @@ test("prototype Waves require exact teaching compositions within every existing 
       for (const type of ["interceptor", "denier", "support"]) {
         assert.equal(composition[type] || 0, expected[index][type] || 0, `seed ${seed}, Wave ${index + 1}, ${type}`);
       }
+      if (index === 4) {
+        const primaryGroupCount = E.TEMPLATES[wave.templateId].shares.length;
+        const primaryTypes = new Set(wave.spawnGroups.slice(0, primaryGroupCount)
+          .flatMap(group => group.enemies.map(entry => entry.type)));
+        assert.equal(primaryTypes.has("support"), true, `seed ${seed}, Wave 5 Support primary`);
+        assert.equal(primaryTypes.has("interceptor"), true, `seed ${seed}, Wave 5 Interceptor primary`);
+        assert.ok(wave.spawnGroups.slice(0, primaryGroupCount).some(group => {
+          const types = group.enemies.map(entry => entry.type);
+          return types.includes("support") && types.includes("interceptor");
+        }), `seed ${seed}, Wave 5 pair must share one primary group`);
+        assert.equal(wave.spawnGroups.length, primaryGroupCount,
+          `seed ${seed}, Wave 5 constraint must not create a continuation group`);
+      }
       recentTemplates.push(wave.templateId);
     }
   }

@@ -6,7 +6,7 @@ A 2D browser game built with HTML, CSS, vanilla JavaScript and an 800 x 600 logi
 
 From this directory, run `python -m http.server 8080`, then open `http://localhost:8080`. Run the complete dependency-free automated suite with `node --test`.
 
-Combat Variety Foundation v1 is an experimental behavior-validation build, not permanent Stage 1 content. Launch it with `http://localhost:8080/?prototype=combat-variety-v1`. Add telemetry independently with `http://localhost:8080/?playtest=1&prototype=combat-variety-v1`; `?playtest=1` by itself keeps Calibration A gameplay unchanged.
+Combat Variety v1.1 is an experimental behavior-validation correction pass, not permanent Stage 1 content. Launch it with `http://localhost:8080/?prototype=combat-variety-v1`. Add telemetry independently with `http://localhost:8080/?playtest=1&prototype=combat-variety-v1`; `?playtest=1` by itself keeps Calibration A gameplay unchanged.
 
 Local script URLs use an explicit version query to prevent stale browser JavaScript during development and playtesting. Bump the shared version string when a new test build must load guaranteed fresh assets.
 
@@ -16,23 +16,23 @@ Controls: WASD movement, mouse aiming, hold the primary mouse button to fire, an
 
 `encounters.js` owns frozen Stage, Enemy evaluation, Template and Boss definitions, generation, validation, analysis, scaling and Wave runtime helpers. `behaviors.js` owns extensible regular-Enemy behavior profiles, per-Enemy mutable behavior runtimes, locked prediction, hazard lifetime and dynamic support relationships; Boss 1 deliberately keeps its curated state machine in `game.js`. `weapons.js` owns immutable Weapon definitions, the technical Fire Rate cap and deterministic projectile-direction math. `build.js` owns immutable Upgrade definitions plus pure Build creation, validation, choice and stat-resolution helpers. `layout.js` owns pure 800 x 600 display sizing and display-to-world pointer conversion. `game.js` coordinates those modules with movement, firing, collision, XP, Run phases and saves. `settlement.js` remains the authoritative Score-to-Points calculation and checkpoint implementation.
 
-## Combat Variety Foundation v1
+## Combat Variety v1.1 correction pass
 
-The normal `STAGES` plan remains Calibration A. `getStagesForSearch()` selects a separate frozen prototype plan only for the exact `prototype=combat-variety-v1` value, without reading or writing Save data. The prototype retains the Stage 1 Threat curve `[8, 10, 12, 14, 17]`, MaxActiveThreat curve `[6, 7, 8.5, 10, 12]`, existing allocator/validation limits and all baseline Enemy costs. Its generation constraints reserve room inside those budgets for exactly one Interceptor in Wave 3, one Denier in Wave 4, and one Support plus one Interceptor in Wave 5.
+The normal `STAGES` plan remains Calibration A. `getStagesForSearch()` selects a separate frozen prototype plan only for the exact `prototype=combat-variety-v1` value, without reading or writing Save data. The prototype retains the Stage 1 Threat curve `[8, 10, 12, 14, 17]`, MaxActiveThreat curve `[6, 7, 8.5, 10, 12]`, existing allocator/validation limits and all Enemy costs. Its generation constraints reserve room inside those budgets for exactly one Interceptor in Wave 3, one Denier in Wave 4, and one Support plus one Interceptor in Wave 5. The Wave 5 pair is additionally constrained to the same primary spawn group without bypassing normal allocation or adding budget.
 
 Regular Enemy definitions now pair immutable stats and Roles with a behavior profile. Each spawned Enemy receives an independent runtime containing state, elapsed state time, cooldown and locked target data. Registry-dispatched profiles keep the main update loop free of type-specific branches:
 
-- **Interceptor:** CHASE -> 0.55-second TELEGRAPH -> locked-vector CHARGE -> RECOVERY. It predicts once from current Player movement and can be dodged by changing direction, speed, rhythm or route.
-- **Denier:** predicts once, telegraphs a fixed circular route hazard, activates it for 1.8 seconds and permits at most one damage event per hazard.
-- **Support:** shows a 220-pixel aura and relationship lines. While alive and in range, it dynamically changes only Interceptor/Denier cooldown recovery to x1.5; leaving the aura or removing Support restores x1 immediately.
+- **Interceptor:** takes its first special action after about 0.9 seconds, then runs CHASE -> 0.55-second TELEGRAPH -> locked-vector CHARGE -> RECOVERY. It predicts once, commits for up to 520 logical pixels, never retargets during the charge, and stops at the arena boundary.
+- **Denier:** takes its first cast after about 0.9 seconds, predicts once, telegraphs for 0.75 seconds, then leaves a fixed danger zone active for 3 seconds. Remaining inside can deal damage every second; all overlapping Denier zones share one Player-side cooldown so they cannot burst simultaneously.
+- **Support:** establishes one persistent, distance-independent Link to an eligible Interceptor or Denier. The linked special recovers ability cooldown at x1.75. Removing the Support breaks the effect immediately; removing its target allows a new eligible target to be linked. Normal, Fast, Tank, Support and Boss targets are ineligible.
 
-All provisional prototype stats and timings are centralized in `COMBAT_VARIETY_V1`. Behavior and hazard timers advance only from active Wave combat updates. Pending/active hazards and support relationships clear at Wave end, Boss entry, death, Abandon and restart. Charge movement uses the existing bounded Enemy collision and overlap-recovery policy.
+Each special receives a compact Enemy Introduction once per Run immediately before its first Wave. This is a noncombat phase after Intermission: movement, attacks, spawning, AI, hazards and combat timers remain frozen. Introduction state resets on a new Run. All provisional prototype stats and timings are centralized in `COMBAT_VARIETY_V1`. Behavior and hazard timers advance only from active Wave combat updates. Pending/active hazards and Support Links clear at Wave end, Boss entry, death, Abandon, Victory and restart. Charge movement uses the existing bounded Enemy collision and overlap-recovery policy.
 
 Run phases sit underneath the existing menu, result and upgrade-pause state:
 
 ```text
 New Run -> STAGE_ENTER -> WAVE_ACTIVE
-Wave Clear -> INTERMISSION -> next WAVE_ACTIVE
+Wave Clear -> INTERMISSION -> optional ENEMY_INTRODUCTION -> next WAVE_ACTIVE
 Wave 5 Clear -> INTERMISSION -> BOSS_ACTIVE
 Successful Boss Clear -> STAGE_CLEAR -> STAGE_REWARD -> RUN_VICTORY
 Lethal damage -> RUN_DEAD
@@ -130,7 +130,7 @@ The game uses a `100dvh` application shell with a compact top HUD, a height-and-
 
 Open `http://localhost:8080/?playtest=1` to record encounter composition, analysis/Build snapshots, active combat and Intermission time, damage/low HP, attacks, projectiles/hits, kills versus contact removals, field pressure, spawn waiting, offered and selected upgrades, Boss charge attempts/contacts, and the exact existing Settlement result. Without that parameter there is no recording, badge, report UI or console API. Telemetry does not affect gameplay or Save; it stays in memory, keeps the latest 20 completed Runs, and disappears on refresh.
 
-Under the Combat Variety prototype, the same memory-only report also records Interceptor attempts/commits/contacts/misses/interrupted telegraphs, Denier casts/hazards/contacts/active hazard time, and Support active time/affected-enemy time/affected special actions. The existing report adds one compact Special behavior column; gameplay remains viewport-first and the report keeps local scrolling.
+Under the Combat Variety prototype, the same memory-only report also records introductions shown; Interceptor attempts/commits/contacts/misses/interrupted telegraphs; Denier casts, hazards created, zone-entry contacts, periodic damage ticks and active hazard time; and Support active time, affected-enemy time, affected special actions and Links created. The existing report adds one compact Special behavior column; gameplay remains viewport-first and the report keeps local scrolling.
 
 At a result, choose **COPY RUN REPORT**, or **COPY SESSION REPORT** after multiple Runs. Both copy pretty-printed JSON; clipboard failure reveals selected text for manual copying. **VIEW REPORT** shows a concise session summary. The optional read-only `CanvaWarPlaytest` console API offers `getCurrentRun()`, `getSessionReport()` and `copySessionReport()`.
 

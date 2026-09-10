@@ -92,7 +92,7 @@
         completed: false, stageReached: null, waveReached: 0, bossReached: false, victory: false,
         playerStart, finalPlayerHp: playerStart.playerHp, finalPlayerLevel: playerStart.playerLevel,
         totalActiveCombatTime: 0, totalIntermissionTime: 0, encounters: [], upgradeHistory: [],
-        upgradeChoiceHistory: [], settlement: null };
+        upgradeChoiceHistory: [], enemyIntroductionsShown: [], settlement: null };
     }
     function startEncounter({ type, definition, stageId, waveIndex, player }) {
       if (!run) return;
@@ -124,8 +124,8 @@
         bulletHitsByEnemyType: {}, bulletDamageByEnemyType: {}, enemySecondsByType: {},
         interceptor: { attempts: 0, chargeCommits: 0, chargeContacts: 0,
           missedCharges: 0, interruptedTelegraphs: 0 },
-        denier: { casts: 0, hazardsCreated: 0, hazardContacts: 0, activeHazardTime: 0 },
-        support: { activeTime: 0, affectedEnemyTime: 0, affectedSpecialActions: 0 },
+        denier: { casts: 0, hazardsCreated: 0, hazardContacts: 0, hazardDamageEvents: 0, activeHazardTime: 0 },
+        support: { activeTime: 0, affectedEnemyTime: 0, affectedSpecialActions: 0, linksCreated: 0 },
         peakActiveEnemyCount: 0, peakActiveThreat: 0, configuredSpawnFloor: spawnGroups.reduce((sum, g) => sum + g.delay, 0),
         groupReleaseTimes: [], lastSpawnGroupReleaseTime: null, actualLastGroupReleaseTime: null,
         pressureBlockedTime: 0, pressureBlockedEvents: 0, threatBlockedTime: 0, enemyCountBlockedTime: 0, outcome: null };
@@ -133,7 +133,7 @@
         behaviorEvents: {
           interceptorAttempts: new Set(), interceptorCommits: new Set(), interceptorContacts: new Set(),
           interceptorMisses: new Set(), interceptorInterrupts: new Set(), denierCasts: new Set(),
-          denierHazards: new Set(), denierContacts: new Set()
+          denierHazards: new Set(), denierContacts: new Set(), supportLinks: new Set()
         } };
       run.stageReached = data.stageId;
       if (type === "wave") run.waveReached = Math.max(run.waveReached, data.waveIndex + 1);
@@ -265,8 +265,11 @@
         uniqueBehaviorEvent("denierCasts", actionId ?? enemyId, data => { data.denier.casts++; })),
       recordDenierHazardCreated: safe("record Denier hazard", ({ hazardId } = {}) =>
         uniqueBehaviorEvent("denierHazards", hazardId, data => { data.denier.hazardsCreated++; })),
-      recordDenierHazardContact: safe("record Denier hazard contact", ({ hazardId } = {}) =>
-        uniqueBehaviorEvent("denierContacts", hazardId, data => { data.denier.hazardContacts++; })),
+      recordDenierHazardContact: safe("record Denier hazard contact", ({ entryId, hazardId } = {}) =>
+        uniqueBehaviorEvent("denierContacts", entryId ?? hazardId, data => { data.denier.hazardContacts++; })),
+      recordDenierHazardDamage: safe("record Denier hazard damage", () => {
+        if (encounter) encounter.data.denier.hazardDamageEvents++;
+      }),
       recordBehaviorFrame: safe("record behavior frame", (details = {}) => {
         if (!encounter) return;
         encounter.data.denier.activeHazardTime += nonNegative(details.activeHazardTime);
@@ -275,6 +278,13 @@
       }),
       recordSupportAffectedAction: safe("record Support affected action", () => {
         if (encounter) encounter.data.support.affectedSpecialActions++;
+      }),
+      recordSupportLinkCreated: safe("record Support link", ({ linkId } = {}) =>
+        uniqueBehaviorEvent("supportLinks", linkId, data => { data.support.linksCreated++; })),
+      recordEnemyIntroduction: safe("record Enemy introduction", ({ enemyType } = {}) => {
+        if (run && typeof enemyType === "string" && enemyType && !run.enemyIntroductionsShown.includes(enemyType)) {
+          run.enemyIntroductionsShown.push(enemyType);
+        }
       }),
       recordUpgrade: safe("record upgrade", recordUpgrade),
       recordUpgradeChoice: safe("record upgrade choice", recordUpgradeChoice),

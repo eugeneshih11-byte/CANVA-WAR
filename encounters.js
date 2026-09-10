@@ -17,25 +17,34 @@
   // together so the protected Calibration A values remain easy to audit.
   const COMBAT_VARIETY_V1 = freeze({
     id: "combat-variety-v1",
+    introductionDuration: 4,
+    introductions: {
+      interceptor: { name: "INTERCEPTOR", role: "Predictive Attacker",
+        description: "Predicts your movement and commits to a long charge lane. Change direction to make it miss." },
+      denier: { name: "DENIER", role: "Area Controller",
+        description: "Predicts your route and creates a persistent danger zone. Leave marked areas before repeated damage builds up." },
+      support: { name: "SUPPORT", role: "Enemy Enhancer",
+        description: "Links to a special enemy and accelerates its abilities. Destroy the Support to break the link." }
+    },
     enemies: {
       interceptor: {
         roles: ["pressure", "interceptor"], threatCost: 1.6,
         stats: { width: 34, height: 34, speed: 105, hp: 3, maxHp: 3, damage: 1 },
-        behavior: { profile: "interceptor", initialCooldown: 2, cooldown: 3,
-          telegraphDuration: 0.55, chargeDuration: 0.45, recoveryDuration: 0.65,
-          chargeSpeed: 340, predictionLeadTime: 0.5 }
+        behavior: { profile: "interceptor", initialCooldown: 0.9, cooldown: 3,
+          telegraphDuration: 0.55, chargeDuration: 1.6, recoveryDuration: 0.65,
+          chargeSpeed: 340, maxChargeDistance: 520, predictionLeadTime: 0.5 }
       },
       denier: {
         roles: ["control"], threatCost: 1.8,
         stats: { width: 40, height: 40, speed: 85, hp: 3, maxHp: 3, damage: 1 },
-        behavior: { profile: "denier", initialCooldown: 2.5, cooldown: 4,
+        behavior: { profile: "denier", initialCooldown: 0.9, cooldown: 4,
           predictionLeadTime: 0.75, telegraphDuration: 0.75,
-          hazardRadius: 55, hazardActiveDuration: 1.8, hazardDamage: 1 }
+          hazardRadius: 55, hazardActiveDuration: 3, hazardDamage: 1, hazardDamageInterval: 1 }
       },
       support: {
         roles: ["support"], threatCost: 1.7,
         stats: { width: 38, height: 38, speed: 80, hp: 3, maxHp: 3, damage: 1 },
-        behavior: { profile: "support", radius: 220, cooldownRate: 1.5,
+        behavior: { profile: "support", cooldownRate: 1.75,
           eligibleProfiles: ["interceptor", "denier"] }
       }
     },
@@ -78,6 +87,8 @@
     availability: [["normal"], ["normal", "fast"], ["normal", "fast", "tank", "interceptor"],
       ["normal", "fast", "tank", "denier"], ["normal", "fast", "tank", "support", "interceptor"]],
     requiredEnemies: COMBAT_VARIETY_V1.requiredEnemies,
+    requiredTogether: [[], [], [], [], [["support", "interceptor"]]],
+    introductions: [[], [], ["interceptor"], ["denier"], ["support"]],
     mechanics: [COMBAT_VARIETY_V1.id]
   }]);
   const BOSSES = freeze({ "boss-1": { id: "boss-1",
@@ -109,7 +120,13 @@
       !pool.includes(type) || !Number.isInteger(count) || count < 0)) {
       throw new Error("Invalid required Enemy restriction");
     }
-    return { pool, templates, budget: stage.threatCurve[index], cap: stage.maxActiveThreatCurve[index], requiredEnemies };
+    const requiredTogether = stage.requiredTogether?.[index] || [];
+    if (!Array.isArray(requiredTogether) || requiredTogether.some(group => !Array.isArray(group) || group.length < 2 ||
+      group.some(type => !Object.hasOwn(requiredEnemies, type) || requiredEnemies[type] < 1))) {
+      throw new Error("Invalid required-together restriction");
+    }
+    return { pool, templates, budget: stage.threatCurve[index], cap: stage.maxActiveThreatCurve[index],
+      requiredEnemies, requiredTogether };
   }
   function templateWeight(id, history = []) {
     if (history.at(-1) === id) return 0.35;
@@ -163,6 +180,12 @@
     for (const [type, requiredCount] of Object.entries(rule.requiredEnemies)) {
       if ((composition[type] || 0) !== requiredCount) errors.push(`Invalid required Enemy count: ${type}`);
     }
+    const primaryGroupCount = TEMPLATES[wave?.templateId]?.shares.length || 0;
+    for (const together of rule.requiredTogether) {
+      const found = wave?.spawnGroups?.slice(0, primaryGroupCount).some(group =>
+        together.every(type => group.enemies.some(entry => entry.type === type && entry.count > 0)));
+      if (!found) errors.push(`Missing required primary Group: ${together.join("+")}`);
+    }
     return { valid: errors.length === 0, errors, threat, enemyCount: count };
   }
   function analyzeWave(wave) {
@@ -188,7 +211,7 @@
   }
   // A Wave has at most 18 selected Enemies, so bitmasks provide a bounded exact
   // search. Each slot chooses the closest legal subset; the final slot gets the remainder.
-  function packGroups(selected, shares, cap) {
+  function packGroups(selected, shares, cap, requiredTogetherIndexGroups = [], primaryGroupCount = shares.length) {
     if (selected.length < shares.length) return null;
     const maskLimit = 1 << selected.length, fullMask = maskLimit - 1;
     const counts = new Uint8Array(maskLimit), threats = new Float64Array(maskLimit);
@@ -199,6 +222,11 @@
       threats[mask] = threats[previous] + ENEMIES[selected[index]].threatCost;
     }
     const totalThreat = threats[fullMask], memo = new Map();
+    const togetherMasks = requiredTogetherIndexGroups.map(indexes =>
+      indexes.reduce((mask, index) => mask | (1 << index), 0));
+    const keepsTogether = mask => togetherMasks.every(togetherMask =>
+      (mask & togetherMask) === 0 || (mask & togetherMask) === togetherMask);
+    const containsTogether = mask => togetherMasks.some(togetherMask => (mask & togetherMask) === togetherMask);
     function search(remainingMask, slot) {
       const key = slot * maskLimit + remainingMask;
       if (memo.has(key)) return memo.get(key);
@@ -209,14 +237,16 @@
         memo.set(key, null); return null;
       }
       if (groupsLeft === 1) {
-        const result = counts[remainingMask] <= CONFIG.maxActiveEnemies && threats[remainingMask] <= cap + 1e-9 ?
+        const result = keepsTogether(remainingMask) && (!containsTogether(remainingMask) || slot < primaryGroupCount) &&
+          counts[remainingMask] <= CONFIG.maxActiveEnemies && threats[remainingMask] <= cap + 1e-9 ?
           [remainingMask] : null;
         memo.set(key, result); return result;
       }
       const target = totalThreat * shares[slot], candidates = [];
       for (let mask = remainingMask; mask; mask = (mask - 1) & remainingMask) {
         const rest = remainingMask ^ mask;
-        if (counts[mask] > CONFIG.maxActiveEnemies || threats[mask] > cap + 1e-9 ||
+        if (!keepsTogether(mask) || (containsTogether(mask) && slot >= primaryGroupCount) ||
+            counts[mask] > CONFIG.maxActiveEnemies || threats[mask] > cap + 1e-9 ||
             counts[rest] < groupsLeft - 1 || counts[rest] > (groupsLeft - 1) * CONFIG.maxActiveEnemies ||
             threats[rest] > (groupsLeft - 1) * cap + 1e-9) continue;
         candidates.push({ mask, distance: Math.abs(threats[mask] - target),
@@ -240,13 +270,14 @@
     const masks = search(fullMask, 0);
     return masks?.map(mask => selected.flatMap((type, index) => mask & (1 << index) ? [{ type, count: 1 }] : [])) || null;
   }
-  function allocateGroups(selected, template, cap) {
+  function allocateGroups(selected, template, cap, requiredTogether = []) {
     const primaryCount = template.shares.length;
+    const togetherIndexGroups = requiredTogether.map(group => group.map(type => selected.indexOf(type)));
     for (let groupCount = primaryCount; groupCount <= selected.length; groupCount++) {
       const extraCount = groupCount - primaryCount, finalSlotParts = extraCount + 1;
       const shares = extraCount ? [...template.shares.slice(0, -1),
         ...Array(finalSlotParts).fill(template.shares.at(-1) / finalSlotParts)] : template.shares;
-      const groups = packGroups(selected, shares, cap);
+      const groups = packGroups(selected, shares, cap, togetherIndexGroups, primaryCount);
       if (!groups) continue;
       // Structural continuations split only the final slot. Its configured delay occurs
       // once; zero-delay continuations are then paced by the existing field-capacity gate.
@@ -283,7 +314,7 @@
         ENEMIES[t].threatCost <= rule.cap && threat + ENEMIES[t].threatCost <= rule.budget * CONFIG.maximumFill);
       if (extra) add(extra);
     }
-    const spawnGroups = allocateGroups(selected, template, rule.cap);
+    const spawnGroups = allocateGroups(selected, template, rule.cap, rule.requiredTogether);
     return { id: `${stage.id}-wave-${index + 1}`, stageId: stage.id, waveIndex: index, templateId,
       threatBudget: rule.budget, maxActiveThreat: rule.cap, spawnGroups, mechanics: [...stage.mechanics] };
   }

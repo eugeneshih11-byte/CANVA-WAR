@@ -6,6 +6,11 @@ const intermissionBanner = document.getElementById("intermissionBanner");
 const intermissionTitle = document.getElementById("intermissionTitle");
 const intermissionDetail = document.getElementById("intermissionDetail");
 const intermissionCountdown = document.getElementById("intermissionCountdown");
+const enemyIntroduction = document.getElementById("enemyIntroduction");
+const enemyIntroductionIcon = document.getElementById("enemyIntroductionIcon");
+const enemyIntroductionName = document.getElementById("enemyIntroductionName");
+const enemyIntroductionRole = document.getElementById("enemyIntroductionRole");
+const enemyIntroductionDescription = document.getElementById("enemyIntroductionDescription");
 const startScreen = document.getElementById("startScreen");
 const gameInterface = document.getElementById("gameInterface");
 const playButton = document.getElementById("playButton");
@@ -118,6 +123,7 @@ const player = {
 const enemies = [];
 const bullets = [];
 const hazards = [];
+const denierHazardDamageRuntime = EnemyBehaviors.createHazardDamageRuntime();
 const playerVelocity = { x: 0, y: 0 };
 let nextEnemyRuntimeId = 1;
 let boss = null;
@@ -144,7 +150,7 @@ const enemyColors = {
 const SPAWN_PLACEMENT_ATTEMPTS = 16;
 const COLLISION_EPSILON = 1e-7;
 const RUN_PHASES = Object.freeze(Object.fromEntries([
-  "STAGE_ENTER", "WAVE_ACTIVE", "INTERMISSION", "BOSS_ACTIVE", "STAGE_CLEAR",
+  "STAGE_ENTER", "WAVE_ACTIVE", "INTERMISSION", "ENEMY_INTRODUCTION", "BOSS_ACTIVE", "STAGE_CLEAR",
   "STAGE_REWARD", "RUN_VICTORY", "RUN_DEAD"
 ].map(phase => [phase, phase])));
 const BOSS_PHASES = Object.freeze({
@@ -161,6 +167,11 @@ let waveRuntime = null;
 let bossRuntime = null;
 let intermissionTimer = 0;
 let stageClearTimer = 0;
+const introducedEnemyTypes = new Set();
+let introductionQueue = [];
+let currentEnemyIntroduction = null;
+let introductionTimer = 0;
+let pendingWaveIndex = null;
 let isAbandonConfirmOpen = false;
 let isAbandoned = false;
 const abandonOverlay = document.getElementById("abandonOverlay");
@@ -184,7 +195,41 @@ function clearInput({ weaponReady = false } = {}) {
   weaponRuntime.attackHeld = false;
   if (weaponReady) weaponRuntime.timeUntilNextShot = 0;
 }
+function resetHazardDamageRuntime() {
+  denierHazardDamageRuntime.cooldown = 0;
+  denierHazardDamageRuntime.inside = false;
+  denierHazardDamageRuntime.entrySequence = 0;
+}
+function clearIntroductionTransient() {
+  introductionQueue = [];
+  currentEnemyIntroduction = null;
+  introductionTimer = 0;
+  pendingWaveIndex = null;
+  enemyIntroduction.hidden = true;
+}
+function showNextEnemyIntroduction() {
+  const type = introductionQueue.shift();
+  const definition = Encounters.COMBAT_VARIETY_V1.introductions[type];
+  if (!definition) return false;
+  introducedEnemyTypes.add(type);
+  currentEnemyIntroduction = { type, ...definition };
+  introductionTimer = 0;
+  runPhase = RUN_PHASES.ENEMY_INTRODUCTION;
+  clearInput();
+  observeTelemetry("recordEnemyIntroduction", () => ({ enemyType: type }));
+  return true;
+}
+function beginEnemyIntroductions(waveIndex) {
+  const planned = stageRuntime.definition.introductions?.[waveIndex] || [];
+  introductionQueue = planned.filter(type => !introducedEnemyTypes.has(type));
+  if (!introductionQueue.length) return false;
+  pendingWaveIndex = waveIndex;
+  return showNextEnemyIntroduction();
+}
 function startWave(index) {
+  currentEnemyIntroduction = null;
+  introductionQueue = [];
+  pendingWaveIndex = null;
   currentWave = Encounters.generateWave(stageRuntime.definition, index, stageRuntime);
   stageRuntime.waveIndex = index;
   stageRuntime.recentTemplates.push(currentWave.templateId);
@@ -216,6 +261,7 @@ function enterIntermission() {
   intermissionTimer = 0;
   bullets.length = 0;
   EnemyBehaviors.clearTransient(enemies, hazards);
+  resetHazardDamageRuntime();
   clearInput();
 }
 function startBossEncounter() {
@@ -227,6 +273,7 @@ function startBossEncounter() {
   runSettlementState.progress.currentEncounter = { id: definition.id, type: "boss" };
   spawnBoss();
   EnemyBehaviors.clearTransient(enemies, hazards);
+  resetHazardDamageRuntime();
   runPhase = RUN_PHASES.BOSS_ACTIVE;
   clearInput({ weaponReady: true });
   observeTelemetry("startEncounter", () => ({ type: "boss", definition,
@@ -247,6 +294,8 @@ function completeBossEncounter() {
   stageClearTimer = 0;
   bullets.length = 0;
   EnemyBehaviors.clearTransient(enemies, hazards);
+  resetHazardDamageRuntime();
+  clearIntroductionTransient();
   clearInput();
 }
 function handleStageReward(stageContext) {
@@ -264,6 +313,8 @@ function takeDamage(amount, enemyType) {
     isGameOver = true;
     settleRun(RUN_END_REASONS.DEATH);
     EnemyBehaviors.clearTransient(enemies, hazards);
+    resetHazardDamageRuntime();
+    clearIntroductionTransient();
   }
 }
 function openAbandon() {
@@ -285,6 +336,8 @@ function abandonRun() {
   isAbandoned = true;
   bullets.length = 0;
   EnemyBehaviors.clearTransient(enemies, hazards);
+  resetHazardDamageRuntime();
+  clearIntroductionTransient();
 }
 document.getElementById("abandonButton").addEventListener("click", openAbandon);
 document.getElementById("continueButton").addEventListener("click", closeAbandon);
@@ -503,6 +556,9 @@ function resetGame() {
   enemies.length = 0;
   bullets.length = 0;
   EnemyBehaviors.clearTransient(enemies, hazards);
+  resetHazardDamageRuntime();
+  introducedEnemyTypes.clear();
+  clearIntroductionTransient();
   nextEnemyRuntimeId = 1;
   playerVelocity.x = 0;
   playerVelocity.y = 0;
@@ -562,6 +618,17 @@ function update(deltaTime) {
     else { runPhase = RUN_PHASES.RUN_VICTORY; isVictory = true; settleRun(RUN_END_REASONS.VICTORY); }
     return;
   }
+  if (runPhase === RUN_PHASES.ENEMY_INTRODUCTION) {
+    introductionTimer += deltaTime;
+    if (introductionTimer >= Encounters.COMBAT_VARIETY_V1.introductionDuration) {
+      if (!showNextEnemyIntroduction()) {
+        const waveIndex = pendingWaveIndex;
+        clearIntroductionTransient();
+        startWave(waveIndex);
+      }
+    }
+    return;
+  }
   let directionX = 0;
   let directionY = 0;
 
@@ -604,8 +671,10 @@ function update(deltaTime) {
     observeTelemetry("recordIntermission", () => ({ deltaTime }));
     intermissionTimer += deltaTime;
     if (intermissionTimer >= Encounters.CONFIG.intermission) {
-      if (stageRuntime.waveIndex + 1 < stageRuntime.definition.waveCount) startWave(stageRuntime.waveIndex + 1);
-      else startBossEncounter();
+      if (stageRuntime.waveIndex + 1 < stageRuntime.definition.waveCount) {
+        const nextWaveIndex = stageRuntime.waveIndex + 1;
+        if (!beginEnemyIntroductions(nextWaveIndex)) startWave(nextWaveIndex);
+      } else startBossEncounter();
     }
     return;
   }
@@ -614,9 +683,9 @@ function update(deltaTime) {
     Encounters.updateWaveRuntime(currentWave, waveRuntime, enemies, deltaTime, spawnEnemy);
     observeTelemetry("recordGroupRelease", () => ({ groupIndex: waveRuntime.nextSpawnGroupIndex - 1,
       elapsedTime: waveRuntime.elapsedTime, activeEnemyCount: waveRuntime.aliveEnemyCount, activeThreat: waveRuntime.activeThreat }));
-    handleHazardPlayerCollisions();
-    if (isGameOver) return;
     updateEnemies(deltaTime);
+    handleDenierHazardDamage(deltaTime);
+    if (isGameOver) return;
     handlePlayerEnemyCollisions();
     if (isGameOver) return;
   } else if (runPhase === RUN_PHASES.BOSS_ACTIVE) {
@@ -777,7 +846,7 @@ function handleBulletEnemyCollisions() {
         const projectileRemoved = consumeProjectileHit(bullet, bulletIndex, enemy);
 
         if (enemy.hp <= 0) {
-          EnemyBehaviors.recordEnemyDefeat(enemy, hazards, { emit: emitBehaviorTelemetry });
+          EnemyBehaviors.recordEnemyDefeat(enemy, hazards, { emit: emitBehaviorTelemetry, enemies });
           enemies.splice(enemyIndex, 1);
           Encounters.syncWaveRuntime(currentWave, waveRuntime, enemies);
           observeTelemetry("recordEnemyKill", () => ({ enemyType: enemy.type }));
@@ -925,7 +994,7 @@ function handlePlayerEnemyCollisions() {
       // This removal is guaranteed below; observe it before fatal damage can finish the report.
       observeTelemetry("recordEnemyRemoval", () => ({ enemyType: enemy.type, reason: "contact" }));
       EnemyBehaviors.recordEnemyContact(enemy, { emit: emitBehaviorTelemetry });
-      EnemyBehaviors.recordEnemyRemoval(enemy, hazards);
+      EnemyBehaviors.recordEnemyRemoval(enemy, hazards, enemies);
       takeDamage(enemy.damage ?? 1, enemy.type);
       enemies.splice(enemyIndex, 1);
       if (waveRuntime) Encounters.syncWaveRuntime(currentWave, waveRuntime, enemies);
@@ -950,11 +1019,18 @@ function handleBossPlayerCollision() {
   bossDamageCooldown = bossDamageCooldownDuration;
 }
 
-function handleHazardPlayerCollisions() {
-  for (const hazard of EnemyBehaviors.consumeHazardContacts(hazards, player, isOverlapping)) {
-    emitBehaviorTelemetry("recordDenierHazardContact", { hazardId: hazard.id });
-    takeDamage(hazard.damage, "denier-hazard");
-    if (isGameOver) return;
+function handleDenierHazardDamage(deltaTime) {
+  const result = EnemyBehaviors.updateHazardDamageRuntime(
+    denierHazardDamageRuntime, hazards, player, deltaTime, isOverlapping
+  );
+  if (result.entered) {
+    emitBehaviorTelemetry("recordDenierHazardContact", {
+      entryId: `${currentWave?.id}:${result.entryId}`, hazardId: result.hazardId
+    });
+  }
+  if (result.damage > 0) {
+    emitBehaviorTelemetry("recordDenierHazardDamage", { hazardId: result.hazardId });
+    takeDamage(result.damage, "denier-hazard");
   }
 }
 
@@ -1086,11 +1162,19 @@ function moveEnemyTowardPlayer(enemy, deltaTime) {
 }
 
 function moveEnemyCharge(enemy, directionX, directionY, speed, deltaTime) {
-  const movementX = directionX * speed * deltaTime;
-  const movementY = directionY * speed * deltaTime;
-  const movedX = tryMoveEnemy(enemy, movementX, 0);
-  const movedY = tryMoveEnemy(enemy, 0, movementY);
+  const startX = enemy.x;
+  const startY = enemy.y;
+  const desiredX = enemy.x + directionX * speed * deltaTime;
+  const desiredY = enemy.y + directionY * speed * deltaTime;
+  const targetX = Math.max(0, Math.min(desiredX, canvas.width - enemy.width));
+  const targetY = Math.max(0, Math.min(desiredY, canvas.height - enemy.height));
+  const movementX = targetX - enemy.x;
+  const movementY = targetY - enemy.y;
+  const movedX = Math.abs(movementX) <= COLLISION_EPSILON || tryMoveEnemy(enemy, movementX, 0);
+  const movedY = Math.abs(movementY) <= COLLISION_EPSILON || tryMoveEnemy(enemy, 0, movementY);
   if (!movedX && !movedY) recoverEnemyOverlap(enemy, speed * deltaTime);
+  return { distance: Math.hypot(enemy.x - startX, enemy.y - startY),
+    reachedBoundary: targetX !== desiredX || targetY !== desiredY };
 }
 
 function emitBehaviorTelemetry(method, details) {
@@ -1342,6 +1426,16 @@ function updateHud() {
 }
 
 function updateArenaPresentation() {
+  const showIntroduction = runPhase === RUN_PHASES.ENEMY_INTRODUCTION && currentEnemyIntroduction &&
+    !isGameOver && !isVictory && !isAbandoned;
+  enemyIntroduction.hidden = !showIntroduction;
+  if (showIntroduction) {
+    enemyIntroductionName.textContent = currentEnemyIntroduction.name;
+    enemyIntroductionRole.textContent = currentEnemyIntroduction.role;
+    enemyIntroductionDescription.textContent = currentEnemyIntroduction.description;
+    enemyIntroductionIcon.style.background = enemyColors[currentEnemyIntroduction.type];
+    enemyIntroductionIcon.style.color = enemyColors[currentEnemyIntroduction.type];
+  }
   const showIntermission = runPhase === RUN_PHASES.INTERMISSION &&
     !isGameOver && !isVictory && !isAbandoned;
   intermissionBanner.hidden = !showIntermission;
@@ -1399,7 +1493,7 @@ function initializePlaytestTelemetry() {
     const telemetry = PlaytestTelemetry.createTelemetry({ enabled,
       environment: { playtestMode: true, viewport: { width: globalThis.innerWidth || 0, height: globalThis.innerHeight || 0 },
         devicePixelRatio: globalThis.devicePixelRatio || 1 },
-      configuration: { reference: "stage-1-initial", threatCurve: Encounters.STAGES[0].threatCurve,
+      configuration: { reference: "combat-variety-v1.1", threatCurve: Encounters.STAGES[0].threatCurve,
         prototype: Encounters.isPrototypeEnabled(globalThis.location?.search || "") ? Encounters.COMBAT_VARIETY_V1.id : null,
         maxActiveThreatCurve: activeStages[0].maxActiveThreatCurve, enemies: Encounters.ENEMIES,
         clearTimeWeights: Encounters.CONFIG.clearTime, baseHandlingTime: Encounters.CONFIG.baseHandlingTime,

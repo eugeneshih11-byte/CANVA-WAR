@@ -31,12 +31,16 @@
       lockedTarget: null,
       chargeDirectionX: 0,
       chargeDirectionY: 0,
+      chargeDistanceTravelled: 0,
       chargeContact: false,
       attemptResolved: true,
       actionSequence: 0,
       currentActionId: null,
       castHazardId: null,
       affectedBySupport: false,
+      supportCooldownRate: 1,
+      linkedTargetId: null,
+      linkSequence: 0,
       supportedEnemyIds: []
     };
   }
@@ -67,6 +71,7 @@
     runtime.chargeDirectionX = length > 0 ? directionX / length : 1;
     runtime.chargeDirectionY = length > 0 ? directionY / length : 0;
     runtime.chargeContact = false;
+    runtime.chargeDistanceTravelled = 0;
     runtime.attemptResolved = false;
     runtime.currentActionId = `${enemy.runtimeId}:${++runtime.actionSequence}`;
     setState(runtime, STATES.TELEGRAPH);
@@ -89,7 +94,7 @@
     let remaining = deltaTime;
     for (let transitions = 0; remaining > EPSILON && transitions < 8; transitions++) {
       if (runtime.behaviorState === STATES.CHASE) {
-        const rate = runtime.affectedBySupport ? context.supportCooldownRate : 1;
+        const rate = runtime.affectedBySupport ? runtime.supportCooldownRate : 1;
         const untilReady = Math.max(0, runtime.cooldown) / rate;
         const step = Math.min(remaining, untilReady);
         if (step > 0) {
@@ -109,11 +114,21 @@
           emit(context, "recordInterceptorCommit", { enemyId: enemy.runtimeId, actionId: runtime.currentActionId });
         } else break;
       } else if (runtime.behaviorState === STATES.CHARGE) {
-        const step = Math.min(remaining, config.chargeDuration - runtime.stateElapsed);
-        context.moveCharge(enemy, runtime.chargeDirectionX, runtime.chargeDirectionY, config.chargeSpeed, step);
+        const distanceRemaining = Math.max(0, config.maxChargeDistance - runtime.chargeDistanceTravelled);
+        if (distanceRemaining <= EPSILON) {
+          finishInterceptorCharge(enemy, context);
+          continue;
+        }
+        const step = Math.min(remaining, config.chargeDuration - runtime.stateElapsed,
+          distanceRemaining / config.chargeSpeed);
+        const movement = context.moveCharge(enemy, runtime.chargeDirectionX, runtime.chargeDirectionY,
+          config.chargeSpeed, step) || {};
+        const travelled = Number.isFinite(movement.distance) ? movement.distance : config.chargeSpeed * step;
+        runtime.chargeDistanceTravelled += Math.max(0, travelled);
         runtime.stateElapsed += step;
         remaining -= step;
-        if (runtime.stateElapsed >= config.chargeDuration - EPSILON) finishInterceptorCharge(enemy, context);
+        if (movement.reachedBoundary || runtime.chargeDistanceTravelled >= config.maxChargeDistance - EPSILON ||
+            runtime.stateElapsed >= config.chargeDuration - EPSILON) finishInterceptorCharge(enemy, context);
         else break;
       } else {
         const step = Math.min(remaining, config.recoveryDuration - runtime.stateElapsed);
@@ -141,10 +156,10 @@
       y: runtime.lockedTarget.y,
       radius: config.hazardRadius,
       damage: config.hazardDamage,
+      damageInterval: config.hazardDamageInterval,
       activeDuration: config.hazardActiveDuration,
       remaining: config.hazardActiveDuration,
-      phase: STATES.TELEGRAPH,
-      damagedPlayer: false
+      phase: STATES.TELEGRAPH
     };
     context.hazards.push(hazard);
     runtime.castHazardId = hazard.id;
@@ -174,7 +189,7 @@
     let remaining = deltaTime;
     for (let transitions = 0; remaining > EPSILON && transitions < 8; transitions++) {
       if (runtime.behaviorState === STATES.CHASE) {
-        const rate = runtime.affectedBySupport ? context.supportCooldownRate : 1;
+        const rate = runtime.affectedBySupport ? runtime.supportCooldownRate : 1;
         const untilReady = Math.max(0, runtime.cooldown) / rate;
         const step = Math.min(remaining, untilReady);
         if (step > 0) {
@@ -199,28 +214,49 @@
     chase(enemy, definition, context, deltaTime) { context.moveChase(enemy, deltaTime); },
     interceptor: updateInterceptor,
     denier: updateDenier,
-    support(enemy, definition, context, deltaTime) { context.moveChase(enemy, deltaTime); }
+    support(enemy, definition, context, deltaTime) {
+      enemy.behaviorRuntime.stateElapsed += deltaTime;
+      context.moveChase(enemy, deltaTime);
+    }
   });
 
-  function applySupportEffects(living, definitions, deltaTime) {
+  function isEligibleSupportTarget(support, target, definitions) {
+    const config = definitions[support.type]?.behavior;
+    return target !== support && Boolean(config?.eligibleProfiles?.includes(
+      definitions[target.type]?.behavior.profile));
+  }
+
+  function applySupportLinks(living, definitions, deltaTime, context) {
     const supports = living.filter(enemy => definitions[enemy.type]?.behavior.profile === "support");
     for (const enemy of living) {
       enemy.behaviorRuntime.affectedBySupport = false;
+      enemy.behaviorRuntime.supportCooldownRate = 1;
       enemy.behaviorRuntime.supportedEnemyIds = [];
     }
     const affected = new Set();
     for (const support of supports) {
       const config = definitions[support.type].behavior;
-      for (const target of living) {
-        const profile = definitions[target.type]?.behavior.profile;
-        if (target === support || !config.eligibleProfiles.includes(profile) || distance(support, target) > config.radius) continue;
+      const eligible = target => isEligibleSupportTarget(support, target, definitions);
+      let target = living.find(candidate => candidate.runtimeId === support.behaviorRuntime.linkedTargetId && eligible(candidate));
+      if (!target) {
+        support.behaviorRuntime.linkedTargetId = null;
+        target = living.find(eligible) || null;
+        if (target) {
+          support.behaviorRuntime.linkedTargetId = target.runtimeId;
+          const linkId = `${support.runtimeId}:${++support.behaviorRuntime.linkSequence}`;
+          emit(context, "recordSupportLinkCreated", { supportId: support.runtimeId,
+            targetId: target.runtimeId, targetType: target.type, linkId });
+        }
+      }
+      if (target) {
         target.behaviorRuntime.affectedBySupport = true;
+        target.behaviorRuntime.supportCooldownRate = Math.max(target.behaviorRuntime.supportCooldownRate, config.cooldownRate);
         support.behaviorRuntime.supportedEnemyIds.push(target.runtimeId);
         affected.add(target);
       }
     }
     return { supportActiveTime: supports.length * deltaTime, affectedEnemyTime: affected.size * deltaTime,
-      cooldownRate: supports[0] ? definitions[supports[0].type].behavior.cooldownRate : 1 };
+      linkedEnemyCount: affected.size };
   }
 
   function updateActiveHazards(hazards, deltaTime) {
@@ -244,8 +280,8 @@
       enemy.behaviorRuntime ||= createRuntime(options.definitions[enemy.type]);
     }
     const activeHazardTime = updateActiveHazards(options.hazards, deltaTime);
-    const support = applySupportEffects(living, options.definitions, deltaTime);
-    const context = { ...options, supportCooldownRate: support.cooldownRate };
+    const context = { ...options };
+    const support = applySupportLinks(living, options.definitions, deltaTime, context);
     for (const enemy of living) {
       const definition = options.definitions[enemy.type];
       const handler = PROFILE_HANDLERS[definition?.behavior.profile];
@@ -256,22 +292,40 @@
       supportActiveTime: support.supportActiveTime, affectedEnemyTime: support.affectedEnemyTime });
   }
 
-  function consumeHazardContacts(hazards, player, overlaps) {
-    const contacts = [];
-    for (const hazard of hazards) {
-      if (hazard.phase !== "ACTIVE" || hazard.damagedPlayer) continue;
+  function getActiveHazardsContainingPlayer(hazards, player, overlaps) {
+    return hazards.filter(hazard => {
+      if (hazard.phase !== "ACTIVE") return false;
       const closestX = clamp(hazard.x, player.x, player.x + player.width);
       const closestY = clamp(hazard.y, player.y, player.y + player.height);
-      const touching = typeof overlaps === "function"
+      return typeof overlaps === "function"
         ? overlaps(player, { x: hazard.x - hazard.radius, y: hazard.y - hazard.radius,
           width: hazard.radius * 2, height: hazard.radius * 2 }) &&
           Math.hypot(hazard.x - closestX, hazard.y - closestY) <= hazard.radius
         : Math.hypot(hazard.x - closestX, hazard.y - closestY) <= hazard.radius;
-      if (!touching) continue;
-      hazard.damagedPlayer = true;
-      contacts.push(hazard);
+    });
+  }
+
+  function createHazardDamageRuntime() {
+    return { cooldown: 0, inside: false, entrySequence: 0 };
+  }
+
+  function updateHazardDamageRuntime(runtime, hazards, player, deltaTime, overlaps) {
+    const dt = Number.isFinite(deltaTime) ? Math.max(0, deltaTime) : 0;
+    runtime.cooldown = Math.max(0, runtime.cooldown - dt);
+    const containing = getActiveHazardsContainingPlayer(hazards, player, overlaps);
+    const inside = containing.length > 0;
+    const entered = inside && !runtime.inside;
+    const entryId = entered ? ++runtime.entrySequence : null;
+    let damage = 0;
+    let hazardId = null;
+    if (inside && runtime.cooldown <= EPSILON) {
+      const hazard = containing[0];
+      damage = hazard.damage;
+      hazardId = hazard.id;
+      runtime.cooldown = hazard.damageInterval;
     }
-    return contacts;
+    runtime.inside = inside;
+    return { entered, entryId, damage, hazardId, activeHazardCount: containing.length };
   }
 
   function recordEnemyContact(enemy, context) {
@@ -289,8 +343,28 @@
     if (index >= 0) hazards.splice(index, 1);
   }
 
-  function recordEnemyRemoval(enemy, hazards) {
+  function recordEnemyRemoval(enemy, hazards, enemies = []) {
     cancelPendingDenierHazard(enemy, hazards);
+    const runtime = enemy?.behaviorRuntime;
+    if (!runtime) return;
+    if (runtime.profile === "support" && runtime.linkedTargetId != null) {
+      const target = enemies.find(candidate => candidate.runtimeId === runtime.linkedTargetId);
+      if (target?.behaviorRuntime) {
+        target.behaviorRuntime.affectedBySupport = false;
+        target.behaviorRuntime.supportCooldownRate = 1;
+      }
+      runtime.linkedTargetId = null;
+      runtime.supportedEnemyIds = [];
+    }
+    for (const candidate of enemies) {
+      if (candidate.behaviorRuntime?.profile === "support" &&
+          candidate.behaviorRuntime.linkedTargetId === enemy.runtimeId) {
+        candidate.behaviorRuntime.linkedTargetId = null;
+        candidate.behaviorRuntime.supportedEnemyIds = [];
+      }
+    }
+    runtime.affectedBySupport = false;
+    runtime.supportCooldownRate = 1;
   }
 
   function recordEnemyDefeat(enemy, hazards, context) {
@@ -304,7 +378,7 @@
         emit(context, "recordInterceptorMiss", { enemyId: enemy.runtimeId, actionId: runtime.currentActionId });
       }
     }
-    cancelPendingDenierHazard(enemy, hazards);
+    recordEnemyRemoval(enemy, hazards, context.enemies);
   }
 
   function clearTransient(enemies, hazards) {
@@ -314,6 +388,8 @@
       enemy.behaviorRuntime.lockedTarget = null;
       enemy.behaviorRuntime.castHazardId = null;
       enemy.behaviorRuntime.affectedBySupport = false;
+      enemy.behaviorRuntime.supportCooldownRate = 1;
+      enemy.behaviorRuntime.linkedTargetId = null;
       enemy.behaviorRuntime.supportedEnemyIds = [];
     }
     nextHazardId = 1;
@@ -341,35 +417,53 @@
     for (const support of enemies) {
       if (definitions[support.type]?.behavior.profile !== "support" || !support.behaviorRuntime) continue;
       const supportCenter = center(support);
+      const pulse = 44 + Math.sin(support.behaviorRuntime.stateElapsed * 5) * 5;
       ctx.beginPath();
-      ctx.arc(supportCenter.x, supportCenter.y, definitions[support.type].behavior.radius, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(45, 212, 191, 0.04)";
-      ctx.strokeStyle = "rgba(45, 212, 191, 0.45)";
-      ctx.lineWidth = 2;
+      ctx.arc(supportCenter.x, supportCenter.y, pulse, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(45, 212, 191, 0.09)";
+      ctx.strokeStyle = "rgba(45, 212, 191, 0.75)";
+      ctx.lineWidth = 3;
       ctx.fill();
       ctx.stroke();
       for (const targetId of support.behaviorRuntime.supportedEnemyIds) {
         const target = enemies.find(enemy => enemy.runtimeId === targetId);
         if (!target) continue;
         const targetCenter = center(target);
-        ctx.strokeStyle = "rgba(94, 234, 212, 0.7)";
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(94, 234, 212, 0.9)";
+        ctx.lineWidth = 4;
         ctx.beginPath();
         ctx.moveTo(supportCenter.x, supportCenter.y);
         ctx.lineTo(targetCenter.x, targetCenter.y);
         ctx.stroke();
       }
     }
+    for (const target of enemies) {
+      if (!target.behaviorRuntime?.affectedBySupport) continue;
+      const targetCenter = center(target);
+      const pulse = 7 + Math.sin(target.behaviorRuntime.stateElapsed * 7) * 2;
+      ctx.strokeStyle = "rgba(153, 246, 228, 0.95)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(targetCenter.x, targetCenter.y, Math.max(target.width, target.height) / 2 + pulse, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     for (const enemy of enemies) {
       const runtime = enemy.behaviorRuntime;
       if (runtime?.profile !== "interceptor" || runtime.behaviorState !== STATES.TELEGRAPH || !runtime.lockedTarget) continue;
       const enemyCenter = center(enemy);
+      const config = definitions[enemy.type].behavior;
+      const axisDistance = (position, direction, maximum) => direction > 0
+        ? (maximum - position) / direction : direction < 0 ? -position / direction : Infinity;
+      const laneLength = Math.min(config.maxChargeDistance,
+        axisDistance(enemyCenter.x, runtime.chargeDirectionX, ctx.canvas.width),
+        axisDistance(enemyCenter.y, runtime.chargeDirectionY, ctx.canvas.height));
       ctx.strokeStyle = "rgba(253, 224, 71, 0.95)";
       ctx.lineWidth = 7;
       ctx.setLineDash([15, 10]);
       ctx.beginPath();
       ctx.moveTo(enemyCenter.x, enemyCenter.y);
-      ctx.lineTo(runtime.lockedTarget.x, runtime.lockedTarget.y);
+      ctx.lineTo(enemyCenter.x + runtime.chargeDirectionX * laneLength,
+        enemyCenter.y + runtime.chargeDirectionY * laneLength);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.beginPath();
@@ -380,6 +474,7 @@
   }
 
   global.EnemyBehaviors = Object.freeze({ STATES, PROFILE_HANDLERS, createRuntime, predictedTarget,
-    updateEnemies, consumeHazardContacts, recordEnemyContact, recordEnemyRemoval, recordEnemyDefeat,
-    clearTransient, drawArenaCues });
+    updateEnemies, isEligibleSupportTarget, getActiveHazardsContainingPlayer,
+    createHazardDamageRuntime, updateHazardDamageRuntime,
+    recordEnemyContact, recordEnemyRemoval, recordEnemyDefeat, clearTransient, drawArenaCues });
 })(globalThis);

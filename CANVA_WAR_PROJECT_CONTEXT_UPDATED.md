@@ -1,12 +1,12 @@
 # CANVA WAR --- Project Context & Design Notes
 
-## Experimental checkpoint: Combat Variety Foundation v1
+## Experimental checkpoint: Combat Variety v1.1 correction pass
 
 The query `prototype=combat-variety-v1` selects a separate Stage 1 experiment; normal URLs and `?playtest=1` alone continue to use Calibration A. The prototype is not final Stage 1 content. It preserves all established Threat, concurrency, Wave, Boss, Weapon, Build, XP, Score, Settlement, save and progression calibration.
 
-`behaviors.js` is the extensible regular-Enemy behavior boundary. Immutable definitions live in `encounters.js`; mutable per-spawn behavior state lives on Enemy runtimes. Interceptor provides a locked predictive charge for Direction/Timing decisions, Denier provides a fixed predicted route hazard for Route decisions, and Support dynamically accelerates nearby eligible special cooldowns for Target-priority decisions. Telegraph, committed consequence, recovery, cleanup and telemetry are explicit. Boss 1 remains on its existing curated state machine.
+`behaviors.js` is the extensible regular-Enemy behavior boundary. Immutable definitions live in `encounters.js`; mutable per-spawn behavior state lives on Enemy runtimes. Interceptor takes its first special action near 0.9 seconds and commits to a locked predictive charge lane up to 520 logical pixels. Denier casts near 0.9 seconds and creates a telegraphed fixed zone that remains active for 3 seconds, deals periodic one-second damage ticks, and shares one Player-side damage cooldown across overlapping zones. Support maintains one distance-independent Link to an eligible Interceptor or Denier, multiplying linked cooldown recovery by x1.75 and relinking after target removal. Telegraph, committed consequence, recovery, cleanup and telemetry are explicit. Boss 1 remains on its existing curated state machine.
 
-Prototype exposure is Wave 3 = one Interceptor, Wave 4 = one Denier, and Wave 5 = one Support plus one Interceptor. Requirements pass through the existing generator, allocator, Threat/cap/count validation and bounded fallback. Test locally at `http://localhost:8080/?playtest=1&prototype=combat-variety-v1`.
+Prototype exposure is Wave 3 = one Interceptor, Wave 4 = one Denier, and Wave 5 = one Support plus one Interceptor in the same primary spawn group. A noncombat introduction card appears once per special per Run before its first Wave. Requirements pass through the existing generator, allocator, Threat/cap/count validation and bounded fallback. Telemetry distinguishes Denier zone entries from periodic damage ticks and records Support Links and introductions. Test locally at `http://localhost:8080/?playtest=1&prototype=combat-variety-v1`.
 
 > 用途：在新的 ChatGPT / Codex 聊天室中快速恢復 CANVA WAR 專案上下文。\
 > 專案路徑：`C:\Game01`\

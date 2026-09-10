@@ -54,16 +54,25 @@ test("behavior telemetry records interpretable metrics once per action or hazard
   telemetry.recordDenierCast({ enemyId: 4, actionId: "4:1" });
   telemetry.recordDenierHazardCreated({ hazardId: 10 });
   telemetry.recordDenierHazardCreated({ hazardId: 10 });
-  telemetry.recordDenierHazardContact({ hazardId: 10 });
-  telemetry.recordDenierHazardContact({ hazardId: 10 });
+  telemetry.recordDenierHazardContact({ hazardId: 10, entryId: "entry-1" });
+  telemetry.recordDenierHazardContact({ hazardId: 10, entryId: "entry-1" });
+  telemetry.recordDenierHazardDamage({ hazardId: 10 });
+  telemetry.recordDenierHazardDamage({ hazardId: 10 });
   telemetry.recordBehaviorFrame({ activeHazardTime: 0.5, supportActiveTime: 1, affectedEnemyTime: 2 });
   telemetry.recordBehaviorFrame({ activeHazardTime: 0.25, supportActiveTime: 0.5, affectedEnemyTime: 0.75 });
   telemetry.recordSupportAffectedAction();
+  telemetry.recordSupportLinkCreated({ linkId: "support-1:1" });
+  telemetry.recordSupportLinkCreated({ linkId: "support-1:1" });
+  telemetry.recordEnemyIntroduction({ enemyType: "interceptor" });
+  telemetry.recordEnemyIntroduction({ enemyType: "interceptor" });
   const encounter = currentEncounter(telemetry);
   assert.deepEqual(encounter.interceptor, { attempts: 1, chargeCommits: 1, chargeContacts: 1,
     missedCharges: 1, interruptedTelegraphs: 1 });
-  assert.deepEqual(encounter.denier, { casts: 1, hazardsCreated: 1, hazardContacts: 1, activeHazardTime: 0.75 });
-  assert.deepEqual(encounter.support, { activeTime: 1.5, affectedEnemyTime: 2.75, affectedSpecialActions: 1 });
+  assert.deepEqual(encounter.denier, { casts: 1, hazardsCreated: 1, hazardContacts: 1,
+    hazardDamageEvents: 2, activeHazardTime: 0.75 });
+  assert.deepEqual(encounter.support, { activeTime: 1.5, affectedEnemyTime: 2.75,
+    affectedSpecialActions: 1, linksCreated: 1 });
+  assert.deepEqual(telemetry.getCurrentRun().enemyIntroductionsShown, ["interceptor"]);
 });
 test("disabled telemetry performs no recording, input copying or diagnostics", () => {
   const poison = new Proxy({}, { get() { throw new Error("input read"); } });

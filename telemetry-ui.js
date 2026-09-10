@@ -68,8 +68,8 @@
             format(encounter.pressureBlockedTime),
             encounter.type === "boss" ? "—" :
               `I ${format(encounter.interceptor?.attempts)}/${format(encounter.interceptor?.chargeContacts)}/${format(encounter.interceptor?.missedCharges)} · ` +
-              `D ${format(encounter.denier?.hazardsCreated)}/${format(encounter.denier?.hazardContacts)} · ` +
-              `S ${seconds(encounter.support?.affectedEnemyTime)}/${format(encounter.support?.affectedSpecialActions)}`,
+              `D ${format(encounter.denier?.hazardsCreated)}/${format(encounter.denier?.hazardContacts)}/${format(encounter.denier?.hazardDamageEvents)} · ` +
+              `S ${seconds(encounter.support?.affectedEnemyTime)}/${format(encounter.support?.affectedSpecialActions)}/${format(encounter.support?.linksCreated)}`,
             encounter.outcome];
           values.forEach(value => row.append(element("td", String(value))));
           body.append(row);

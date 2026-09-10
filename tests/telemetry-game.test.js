@@ -46,7 +46,8 @@ function loadGame(search = "", options = {}) {
     getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; }
   };
   for (const id of ["arenaRegion", "canvasStage", "intermissionBanner",
-    "intermissionTitle", "intermissionDetail", "intermissionCountdown"]) {
+    "intermissionTitle", "intermissionDetail", "intermissionCountdown", "enemyIntroduction",
+    "enemyIntroductionIcon", "enemyIntroductionName", "enemyIntroductionRole", "enemyIntroductionDescription"]) {
     elements[id] = element(id);
   }
   elements.arenaRegion.clientWidth = 1000;
@@ -92,7 +93,8 @@ function loadGame(search = "", options = {}) {
     globalThis.__testGame = {
       player, enemies, bullets, hazards, keys,
       resetGame, update, startWave, startBossEncounter, completeBossEncounter,
-      spawnEnemy, updateEnemies, handleHazardPlayerCollisions,
+      spawnEnemy, updateEnemies, handleDenierHazardDamage,
+      beginEnemyIntroductions, showNextEnemyIntroduction, updateArenaPresentation,
       enterIntermission, openAbandon, closeAbandon, abandonRun,
       handleBulletEnemyCollisions, handlePlayerEnemyCollisions,
       handleBulletBossCollisions, handleBossPlayerCollision,
@@ -107,6 +109,8 @@ function loadGame(search = "", options = {}) {
         return { score, level, xp, isChoosingUpgrade, isGameOver, isVictory,
           isAbandoned, runPhase, stageIndex, stageRuntime, currentWave,
           waveRuntime, bossRuntime, boss, intermissionTimer, stageClearTimer,
+          currentEnemyIntroduction, introductionTimer, pendingWaveIndex,
+          introducedEnemyTypes: [...introducedEnemyTypes], denierHazardDamageRuntime,
           runSettlementState, lastSettlement, saveData, xpToNextLevel };
       },
       setState(values) {
@@ -114,6 +118,9 @@ function loadGame(search = "", options = {}) {
         if ("level" in values) level = values.level;
         if ("isChoosingUpgrade" in values) isChoosingUpgrade = values.isChoosingUpgrade;
         if ("boss" in values) boss = values.boss;
+        if ("runPhase" in values) runPhase = values.runPhase;
+        if ("currentWave" in values) currentWave = values.currentWave;
+        if ("waveRuntime" in values) waveRuntime = values.waveRuntime;
       },
       presentUpgradeChoices(ids) {
         currentUpgradeChoices = ids.map(id => RunBuild.UPGRADES[id]);
@@ -196,7 +203,7 @@ test("production behavior hooks pause with gameplay and feed exact encounter tel
   interceptor.x = 100;
   interceptor.y = 100;
   interceptor.speed = 0;
-  game.updateEnemies(2);
+  game.updateEnemies(0.9);
   assert.equal(interceptor.behaviorRuntime.behaviorState, "TELEGRAPH");
   const frozen = JSON.stringify(interceptor.behaviorRuntime);
   game.setState({ isChoosingUpgrade: true });
@@ -211,6 +218,89 @@ test("production behavior hooks pause with gameplay and feed exact encounter tel
   const metrics = currentEncounter(game).interceptor;
   assert.deepEqual(plain(metrics), { attempts: 1, chargeCommits: 1, chargeContacts: 1,
     missedCharges: 0, interruptedTelegraphs: 0 });
+});
+
+test("prototype enemy introductions appear once per Run and freeze combat state", () => {
+  const game = loadGame("?playtest=1&prototype=combat-variety-v1");
+  const intermission = game.context.Encounters.CONFIG.intermission;
+  const introduction = game.context.Encounters.COMBAT_VARIETY_V1.introductionDuration;
+  game.start();
+
+  finishWave(game);
+  game.update(intermission);
+  assert.equal(game.state.currentWave.waveIndex, 1);
+  finishWave(game);
+  const frozenElapsed = game.state.waveRuntime.elapsedTime;
+  game.update(intermission);
+  assert.equal(game.state.runPhase, "ENEMY_INTRODUCTION");
+  assert.equal(game.state.currentEnemyIntroduction.type, "interceptor");
+  game.updateArenaPresentation();
+  assert.equal(game.elements.enemyIntroduction.hidden, false);
+  assert.equal(game.elements.enemyIntroductionName.textContent, "INTERCEPTOR");
+  game.update(introduction / 2);
+  assert.equal(game.state.waveRuntime.elapsedTime, frozenElapsed);
+  game.update(introduction / 2);
+  assert.equal(game.state.runPhase, "WAVE_ACTIVE");
+  assert.equal(game.state.currentWave.waveIndex, 2);
+
+  finishWave(game);
+  game.update(intermission);
+  assert.equal(game.state.currentEnemyIntroduction.type, "denier");
+  game.update(introduction);
+  finishWave(game);
+  game.update(intermission);
+  assert.equal(game.state.currentEnemyIntroduction.type, "support");
+  game.update(introduction);
+  assert.deepEqual(plain(game.state.introducedEnemyTypes), ["interceptor", "denier", "support"]);
+  assert.deepEqual(plain(game.telemetry.getCurrentRun().enemyIntroductionsShown),
+    ["interceptor", "denier", "support"]);
+
+  assert.equal(game.beginEnemyIntroductions(2), false);
+  assert.equal(game.state.runPhase, "WAVE_ACTIVE");
+  game.resetGame();
+  assert.deepEqual(plain(game.state.introducedEnemyTypes), []);
+  assert.equal(game.state.currentEnemyIntroduction, null);
+  assert.equal(game.elements.enemyIntroduction.hidden, true);
+});
+
+test("Denier hazard damage repeats periodically, never bursts on overlap, and clears on teardown", () => {
+  const game = loadGame("?playtest=1&prototype=combat-variety-v1");
+  game.start();
+  game.player.x = 100;
+  game.player.y = 100;
+  game.hazards.push(
+    { id: 1, phase: "ACTIVE", x: 120, y: 120, radius: 55, damage: 1, damageInterval: 1, remaining: 3 },
+    { id: 2, phase: "ACTIVE", x: 120, y: 120, radius: 55, damage: 1, damageInterval: 1, remaining: 3 }
+  );
+  game.handleDenierHazardDamage(0);
+  assert.equal(game.player.hp, 4);
+  game.handleDenierHazardDamage(0.25);
+  assert.equal(game.player.hp, 4);
+  game.handleDenierHazardDamage(0.75);
+  assert.equal(game.player.hp, 3);
+  const metrics = currentEncounter(game).denier;
+  assert.equal(metrics.hazardContacts, 1);
+  assert.equal(metrics.hazardDamageEvents, 2);
+  game.enterIntermission();
+  assert.equal(game.hazards.length, 0);
+  assert.deepEqual(plain(game.state.denierHazardDamageRuntime), { cooldown: 0, inside: false, entrySequence: 0 });
+});
+
+test("death clears Denier and introduction transients; restart begins clean", () => {
+  const game = loadGame("?prototype=combat-variety-v1");
+  game.start();
+  game.hazards.push({ id: 1, phase: "ACTIVE", x: 120, y: 120, radius: 55,
+    damage: 1, damageInterval: 1, remaining: 3 });
+  game.beginEnemyIntroductions(2);
+  assert.equal(game.state.runPhase, "ENEMY_INTRODUCTION");
+  game.takeDamage(game.player.hp, "denier-hazard");
+  assert.equal(game.state.runPhase, "RUN_DEAD");
+  assert.equal(game.hazards.length, 0);
+  assert.equal(game.state.currentEnemyIntroduction, null);
+  game.resetGame();
+  assert.equal(game.state.runPhase, "WAVE_ACTIVE");
+  assert.deepEqual(plain(game.state.introducedEnemyTypes), []);
+  assert.deepEqual(plain(game.state.denierHazardDamageRuntime), { cooldown: 0, inside: false, entrySequence: 0 });
 });
 
 test("game telemetry is opt-in, does not initialize a Run on page load, and consumes no RNG", () => {
