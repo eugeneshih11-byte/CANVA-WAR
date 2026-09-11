@@ -60,7 +60,9 @@ function createDefaultSaveData() {
     },
     unlocks: {
       weapons: ["starter"],
-      equipment: []
+      equipment: [],
+      deployables: [],
+      summons: []
     },
     statistics: {
       totalRuns: 0,
@@ -81,6 +83,8 @@ function isValidSaveData(data) {
     data.unlocks &&
     Array.isArray(data.unlocks.weapons) &&
     Array.isArray(data.unlocks.equipment) &&
+    Array.isArray(data.unlocks.deployables) &&
+    Array.isArray(data.unlocks.summons) &&
     data.statistics &&
     typeof data.statistics.totalRuns === "number" &&
     typeof data.statistics.totalKills === "number"
@@ -94,7 +98,24 @@ function migrateSaveData(data) {
       version: 2,
       progression: {
         ...data.progression,
-        points: 0
+        points: Number.isFinite(data.progression?.points) ? data.progression.points : 0
+      },
+      unlocks: {
+        ...data.unlocks,
+        deployables: [],
+        summons: []
+      }
+    };
+  }
+
+  if (data && typeof data === "object" && data.version === 2 && data.unlocks &&
+      (!Array.isArray(data.unlocks.deployables) || !Array.isArray(data.unlocks.summons))) {
+    return {
+      ...data,
+      unlocks: {
+        ...data.unlocks,
+        deployables: Array.isArray(data.unlocks.deployables) ? data.unlocks.deployables : [],
+        summons: Array.isArray(data.unlocks.summons) ? data.unlocks.summons : []
       }
     };
   }
@@ -145,6 +166,7 @@ const player = {
 const enemies = [];
 const bullets = [];
 const hazards = [];
+let battlefieldRuntime = null;
 const denierHazardDamageRuntime = EnemyBehaviors.createHazardDamageRuntime();
 const playerVelocity = { x: 0, y: 0 };
 let nextEnemyRuntimeId = 1;
@@ -264,6 +286,26 @@ function dismissEnemyIntroduction() {
   startWave(waveIndex);
   return true;
 }
+function initializeBattlefield(stage, placePlayer = false) {
+  battlefieldRuntime = Battlefields.createRuntime(stage.battlefieldId);
+  if (placePlayer) {
+    player.x = battlefieldRuntime.definition.playerSpawn.x;
+    player.y = battlefieldRuntime.definition.playerSpawn.y;
+  }
+  return battlefieldRuntime;
+}
+function clearBattlefieldRuntime() {
+  battlefieldRuntime = null;
+  enemies.length = 0;
+  bullets.length = 0;
+  EnemyBehaviors.clearTransient(enemies, hazards);
+  resetHazardDamageRuntime();
+  boss = null;
+  stageRuntime = null;
+  currentWave = null;
+  waveRuntime = null;
+  bossRuntime = null;
+}
 function startWave(index) {
   currentEnemyIntroduction = null;
   introductionQueue = [];
@@ -275,11 +317,14 @@ function startWave(index) {
   runSettlementState.progress.currentEncounter = { id: currentWave.id, type: "wave" };
   runPhase = RUN_PHASES.WAVE_ACTIVE;
   clearInput({ weaponReady: true });
-  observeTelemetry("startEncounter", () => ({ type: "wave", definition: currentWave, player: telemetryPlayer() }));
+  observeTelemetry("startEncounter", () => ({ type: "wave", definition: currentWave,
+    battlefieldId: battlefieldRuntime?.id, player: telemetryPlayer() }));
 }
 function enterStage() {
   runPhase = RUN_PHASES.STAGE_ENTER;
-  stageRuntime = { definition: activeStages[stageIndex], waveIndex: 0, recentTemplates: [], completed: false };
+  const definition = activeStages[stageIndex];
+  if (battlefieldRuntime?.id !== definition.battlefieldId) initializeBattlefield(definition, true);
+  stageRuntime = { definition, waveIndex: 0, recentTemplates: [], completed: false };
   runSettlementState.progress.stage = stageIndex + 1;
   startWave(0);
 }
@@ -307,7 +352,8 @@ function startBossEncounter() {
   bossRuntime = { encounterId: definition.id, elapsedTime: 0, damageTaken: 0,
     analysis: definition.analysis, isComplete: false, phase: BOSS_PHASES.CHASE,
     phaseElapsed: 0, chaseDuration: definition.chargeCycle.initialChaseDuration,
-    chargeDirectionX: 0, chargeDirectionY: 0, collisionPhase: BOSS_PHASES.CHASE };
+    chargeDirectionX: 0, chargeDirectionY: 0, collisionPhase: BOSS_PHASES.CHASE,
+    navigationRuntime: Battlefields.createNavigationRuntime(0) };
   runSettlementState.progress.currentEncounter = { id: definition.id, type: "boss" };
   spawnBoss();
   EnemyBehaviors.clearTransient(enemies, hazards);
@@ -315,6 +361,7 @@ function startBossEncounter() {
   runPhase = RUN_PHASES.BOSS_ACTIVE;
   clearInput({ weaponReady: true });
   observeTelemetry("startEncounter", () => ({ type: "boss", definition,
+    battlefieldId: battlefieldRuntime?.id,
     stageId: stageRuntime.definition.id, waveIndex: stageRuntime.waveIndex, player: telemetryPlayer() }));
 }
 function completeBossEncounter() {
@@ -433,7 +480,10 @@ function showView(view) {
   Object.entries(appViews).forEach(([id, element]) => { element.hidden = id !== view; });
   currentView = view;
   renderMetaView(view);
-  if (view === APP_VIEWS.HUB) isGameStarted = false;
+  if (view === APP_VIEWS.HUB) {
+    isGameStarted = false;
+    clearBattlefieldRuntime();
+  }
   if (view === APP_VIEWS.GAME) resizeCanvasDisplay();
   return true;
 }
@@ -652,8 +702,8 @@ function resetGame() {
   buildState = RunBuild.createBuildState();
   weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
   playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
-  player.x = 380;
-  player.y = 280;
+  battlefieldRuntime = null;
+  initializeBattlefield(activeStages[0], true);
   player.speed = playerStats.speed;
   player.maxHp = playerStats.maxHp;
   player.hp = playerStats.maxHp;
@@ -706,6 +756,31 @@ function resetGame() {
   enterStage();
 }
 
+function movePlayerAxis(amount, axis) {
+  let remaining = amount;
+  let obstacleContact = false;
+  for (let stepIndex = 0; Math.abs(remaining) > COLLISION_EPSILON && stepIndex < 256; stepIndex++) {
+    const step = Math.sign(remaining) * Math.min(Math.abs(remaining), 4);
+    const beforeX = player.x;
+    const beforeY = player.y;
+    const movement = Battlefields.moveAxis(player, step, axis, battlefieldRuntime);
+    player.x = movement.x;
+    player.y = movement.y;
+    const actualX = player.x - beforeX;
+    const actualY = player.y - beforeY;
+    const enemy = getPlayerCollision();
+    if (enemy && !pushEnemy(enemy, actualX, actualY)) {
+      player.x = beforeX;
+      player.y = beforeY;
+      break;
+    }
+    remaining -= axis === "x" ? actualX : actualY;
+    if (movement.collision) obstacleContact = true;
+    if (movement.collided || Math.hypot(actualX, actualY) <= COLLISION_EPSILON) break;
+  }
+  if (obstacleContact) observeTelemetry("recordPlayerObstacleContact");
+}
+
 function update(deltaTime) {
   if (currentView !== APP_VIEWS.GAME || !isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandonConfirmOpen || isAbandoned) {
     return;
@@ -756,23 +831,9 @@ function update(deltaTime) {
     const movementX = directionX * player.speed * deltaTime;
     const movementY = directionY * player.speed * deltaTime;
 
-    player.x += movementX;
-    const enemyOnX = getPlayerCollision();
-
-    if (enemyOnX && !pushEnemy(enemyOnX, movementX, 0)) {
-      player.x -= movementX;
-    }
-
-    player.y += movementY;
-    const enemyOnY = getPlayerCollision();
-
-    if (enemyOnY && !pushEnemy(enemyOnY, 0, movementY)) {
-      player.y -= movementY;
-    }
+    movePlayerAxis(movementX, "x");
+    movePlayerAxis(movementY, "y");
   }
-
-  player.x = Math.max(0, Math.min(player.x, canvas.width - player.width));
-  player.y = Math.max(0, Math.min(player.y, canvas.height - player.height));
   playerVelocity.x = deltaTime > 0 ? (player.x - playerStartX) / deltaTime : 0;
   playerVelocity.y = deltaTime > 0 ? (player.y - playerStartY) / deltaTime : 0;
 
@@ -822,9 +883,18 @@ function update(deltaTime) {
 function updateBullets(deltaTime) {
   for (let index = bullets.length - 1; index >= 0; index--) {
     const bullet = bullets[index];
+    const movement = Battlefields.traceMovement(bullet,
+      bullet.directionX * bullet.speed * deltaTime,
+      bullet.directionY * bullet.speed * deltaTime,
+      battlefieldRuntime);
+    bullet.x = movement.x;
+    bullet.y = movement.y;
 
-    bullet.x += bullet.directionX * bullet.speed * deltaTime;
-    bullet.y += bullet.directionY * bullet.speed * deltaTime;
+    if (movement.reachedBoundary ||
+        (movement.collision?.blocksProjectiles && projectileTerrainResponse(bullet, movement.collision) === "remove")) {
+      bullets.splice(index, 1);
+      continue;
+    }
 
     const isOutsideCanvas =
       bullet.x + bullet.width < 0 ||
@@ -841,12 +911,15 @@ function updateBullets(deltaTime) {
 function spawnEnemy(type = "normal", waveId = currentWave?.id) {
   const stats = Encounters.getScaledEnemyStats(enemyStats[type], stageRuntime.definition.enemyScaling);
   const enemy = { type, waveId, runtimeId: nextEnemyRuntimeId++, x: 0, y: 0, ...stats,
-    behaviorRuntime: EnemyBehaviors.createRuntime(Encounters.ENEMIES[type]) };
+    behaviorRuntime: EnemyBehaviors.createRuntime(Encounters.ENEMIES[type]),
+    navigationRuntime: Battlefields.createNavigationRuntime(nextEnemyRuntimeId - 1) };
   const edge = Math.floor(Math.random() * 4);
   const edgeOffset = Math.random();
-  positionEnemyForSpawn(enemy, edge, edgeOffset);
-
-  enemies.push(enemy);
+  if (positionEnemyForSpawn(enemy, edge, edgeOffset)) enemies.push(enemy);
+  else {
+    observeTelemetry("recordPathFailure");
+    observeTelemetry("recordNavigationFallback");
+  }
 }
 
 function setEntityOnCanvasEdge(entity, edge, offsetRatio) {
@@ -866,39 +939,47 @@ function setEntityOnCanvasEdge(entity, edge, offsetRatio) {
   }
 }
 
+function projectileTerrainResponse(bullet, obstacle) {
+  return obstacle?.blocksProjectiles ? "remove" : "continue";
+}
+
 function positionEnemyForSpawn(enemy, initialEdge, initialOffset) {
   const offsetSteps = [0, 0.5, 0.25, 0.75];
-  let originalPosition = null;
   for (let attempt = 0; attempt < SPAWN_PLACEMENT_ATTEMPTS; attempt++) {
     const edge = (initialEdge + attempt) % 4;
     const offsetStep = offsetSteps[Math.floor(attempt / 4)];
     setEntityOnCanvasEdge(enemy, edge, initialOffset + offsetStep);
-    if (attempt === 0) originalPosition = { x: enemy.x, y: enemy.y };
-    if (!hasOtherEnemyCollision(enemy)) return true;
+    if (isValidSpawnPosition(enemy)) return true;
   }
 
-  // Dense or malformed runtime state can exhaust the bounded search. Movement
-  // recovery below can still depenetrate this deterministic fallback safely.
-  enemy.x = originalPosition.x;
-  enemy.y = originalPosition.y;
+  const bounds = battlefieldRuntime.definition.bounds;
+  const perimeterStep = Battlefields.GRID_CELL_SIZE;
+  const candidates = [];
+  for (let x = 0; x <= bounds.width - enemy.width; x += perimeterStep) {
+    candidates.push({ x, y: 0 }, { x, y: bounds.height - enemy.height });
+  }
+  for (let y = perimeterStep; y < bounds.height - enemy.height; y += perimeterStep) {
+    candidates.push({ x: 0, y }, { x: bounds.width - enemy.width, y });
+  }
+  const rotation = Math.abs(enemy.runtimeId || 0) % Math.max(1, candidates.length);
+  for (let index = 0; index < candidates.length; index++) {
+    Object.assign(enemy, candidates[(index + rotation) % candidates.length]);
+    if (isValidSpawnPosition(enemy)) return true;
+  }
   return false;
+}
+
+function isValidSpawnPosition(enemy) {
+  return Battlefields.isStaticPositionValid(enemy, battlefieldRuntime) &&
+    !hasOtherEnemyCollision(enemy) &&
+    Boolean(Battlefields.findPath(enemy, player, battlefieldRuntime));
 }
 
 function spawnBoss() {
   boss = { x: 0, y: 0, ...Encounters.BOSSES[stageRuntime.definition.boss].stats };
   const edge = Math.floor(Math.random() * 4);
-
-  if (edge === 0) {
-    boss.x = Math.random() * (canvas.width - boss.width);
-  } else if (edge === 1) {
-    boss.x = canvas.width - boss.width;
-    boss.y = Math.random() * (canvas.height - boss.height);
-  } else if (edge === 2) {
-    boss.x = Math.random() * (canvas.width - boss.width);
-    boss.y = canvas.height - boss.height;
-  } else {
-    boss.y = Math.random() * (canvas.height - boss.height);
-  }
+  const edgeOffset = Math.random();
+  positionEnemyForSpawn(boss, edge, edgeOffset);
 
   hasBossSpawned = true;
 }
@@ -1158,12 +1239,10 @@ function getPlayerCollision() {
 }
 
 function isInsideCanvas(rectangle) {
-  return (
-    rectangle.x >= 0 &&
-    rectangle.x + rectangle.width <= canvas.width &&
-    rectangle.y >= 0 &&
-    rectangle.y + rectangle.height <= canvas.height
-  );
+  return battlefieldRuntime
+    ? Battlefields.isInsideBounds(rectangle, battlefieldRuntime)
+    : rectangle.x >= 0 && rectangle.x + rectangle.width <= canvas.width &&
+      rectangle.y >= 0 && rectangle.y + rectangle.height <= canvas.height;
 }
 
 function pushEnemy(enemy, movementX, movementY) {
@@ -1217,10 +1296,10 @@ function isCollisionRecoveryMove(before, after) {
 
 function tryMoveEnemy(enemy, movementX, movementY) {
   if (!isCurrentEncounterEnemy(enemy)) return false;
-  const nextX = enemy.x + movementX;
-  const nextY = enemy.y + movementY;
-  const candidate = { x: nextX, y: nextY, width: enemy.width, height: enemy.height };
-  if (!isInsideCanvas(candidate)) return false;
+  const movement = Battlefields.traceMovement(enemy, movementX, movementY, battlefieldRuntime);
+  const nextX = movement.x;
+  const nextY = movement.y;
+  if (Math.hypot(nextX - enemy.x, nextY - enemy.y) <= COLLISION_EPSILON) return false;
 
   const before = getEnemyCollisionState(enemy);
   const after = getEnemyCollisionState(enemy, nextX, nextY);
@@ -1243,7 +1322,7 @@ function recoverEnemyOverlap(enemy, distance) {
     const nextX = enemy.x + movementX;
     const nextY = enemy.y + movementY;
     const candidate = { x: nextX, y: nextY, width: enemy.width, height: enemy.height };
-    if (!isInsideCanvas(candidate)) continue;
+    if (!Battlefields.isStaticPositionValid(candidate, battlefieldRuntime)) continue;
     const after = getEnemyCollisionState(enemy, nextX, nextY);
     if (!isCollisionRecoveryMove(before, after)) continue;
     if (!best || after.totalPenetration < best.totalPenetration - COLLISION_EPSILON) {
@@ -1257,17 +1336,30 @@ function recoverEnemyOverlap(enemy, distance) {
 }
 
 function moveEnemyTowardPlayer(enemy, deltaTime) {
-  let directionX = player.x - enemy.x;
-  let directionY = player.y - enemy.y;
+  enemy.navigationRuntime ||= Battlefields.createNavigationRuntime(enemy.runtimeId);
+  const intent = Battlefields.navigationIntent(enemy, player, battlefieldRuntime,
+    enemy.navigationRuntime, deltaTime);
+  if (intent.requested) observeTelemetry("recordPathRequest");
+  if (intent.failed) observeTelemetry("recordPathFailure");
+  if (intent.fallback) observeTelemetry("recordNavigationFallback");
+  let directionX = intent.destination.x - enemy.x;
+  let directionY = intent.destination.y - enemy.y;
   const directionLength = Math.hypot(directionX, directionY);
   if (directionLength <= 0) return;
   directionX /= directionLength;
   directionY /= directionLength;
   const movementX = directionX * enemy.speed * deltaTime;
   const movementY = directionY * enemy.speed * deltaTime;
+  const startX = enemy.x;
+  const startY = enemy.y;
   const movedX = tryMoveEnemy(enemy, movementX, 0);
   const movedY = tryMoveEnemy(enemy, 0, movementY);
-  if (!movedX && !movedY) recoverEnemyOverlap(enemy, enemy.speed * deltaTime);
+  if (!movedX && !movedY && recoverEnemyOverlap(enemy, enemy.speed * deltaTime)) {
+    observeTelemetry("recordNavigationFallback");
+  }
+  const movedDistance = Math.hypot(enemy.x - startX, enemy.y - startY);
+  Battlefields.recordNavigationProgress(enemy.navigationRuntime,
+    Math.min(enemy.speed * deltaTime, directionLength), movedDistance, deltaTime);
 }
 
 function moveEnemyCharge(enemy, directionX, directionY, speed, deltaTime) {
@@ -1277,13 +1369,13 @@ function moveEnemyCharge(enemy, directionX, directionY, speed, deltaTime) {
   const desiredY = enemy.y + directionY * speed * deltaTime;
   const targetX = Math.max(0, Math.min(desiredX, canvas.width - enemy.width));
   const targetY = Math.max(0, Math.min(desiredY, canvas.height - enemy.height));
-  const movementX = targetX - enemy.x;
-  const movementY = targetY - enemy.y;
-  const movedX = Math.abs(movementX) <= COLLISION_EPSILON || tryMoveEnemy(enemy, movementX, 0);
-  const movedY = Math.abs(movementY) <= COLLISION_EPSILON || tryMoveEnemy(enemy, 0, movementY);
-  if (!movedX && !movedY) recoverEnemyOverlap(enemy, speed * deltaTime);
+  const staticMovement = Battlefields.traceMovement(enemy, targetX - enemy.x,
+    targetY - enemy.y, battlefieldRuntime);
+  if (Math.hypot(staticMovement.movementX, staticMovement.movementY) > COLLISION_EPSILON) {
+    tryMoveEnemy(enemy, staticMovement.movementX, staticMovement.movementY);
+  }
   return { distance: Math.hypot(enemy.x - startX, enemy.y - startY),
-    reachedBoundary: targetX !== desiredX || targetY !== desiredY };
+    reachedBoundary: targetX !== desiredX || targetY !== desiredY || Boolean(staticMovement.collision) };
 }
 
 function emitBehaviorTelemetry(method, details) {
@@ -1294,7 +1386,9 @@ function updateEnemies(deltaTime) {
   EnemyBehaviors.updateEnemies({ enemies, definitions: Encounters.ENEMIES, hazards,
     player, playerVelocity, deltaTime, arena: { width: canvas.width, height: canvas.height },
     isActive: isCurrentEncounterEnemy, moveChase: moveEnemyTowardPlayer,
-    moveCharge: moveEnemyCharge, emit: emitBehaviorTelemetry });
+    moveCharge: moveEnemyCharge,
+    resolvePlayablePoint: point => Battlefields.nearestPlayablePoint(point, battlefieldRuntime),
+    emit: emitBehaviorTelemetry });
 }
 
 function lockBossChargeDirection() {
@@ -1330,16 +1424,25 @@ function advanceBossPhase() {
 }
 
 function moveBossTowardPlayer(deltaTime) {
-  let directionX = player.x + player.width / 2 - (boss.x + boss.width / 2);
-  let directionY = player.y + player.height / 2 - (boss.y + boss.height / 2);
+  bossRuntime.navigationRuntime ||= Battlefields.createNavigationRuntime(0);
+  const intent = Battlefields.navigationIntent(boss, player, battlefieldRuntime,
+    bossRuntime.navigationRuntime, deltaTime);
+  if (intent.requested) observeTelemetry("recordPathRequest");
+  if (intent.failed) observeTelemetry("recordPathFailure");
+  if (intent.fallback) observeTelemetry("recordNavigationFallback");
+  let directionX = intent.destination.x - boss.x;
+  let directionY = intent.destination.y - boss.y;
   const directionLength = Math.hypot(directionX, directionY);
   if (directionLength <= 0) return;
   directionX /= directionLength;
   directionY /= directionLength;
-  boss.x += directionX * boss.speed * deltaTime;
-  boss.y += directionY * boss.speed * deltaTime;
-  boss.x = Math.max(0, Math.min(boss.x, canvas.width - boss.width));
-  boss.y = Math.max(0, Math.min(boss.y, canvas.height - boss.height));
+  const attemptedDistance = Math.min(boss.speed * deltaTime, directionLength);
+  const movement = Battlefields.traceMovement(boss,
+    directionX * attemptedDistance, directionY * attemptedDistance, battlefieldRuntime);
+  boss.x = movement.x;
+  boss.y = movement.y;
+  Battlefields.recordNavigationProgress(bossRuntime.navigationRuntime, attemptedDistance,
+    Math.hypot(movement.movementX, movement.movementY), deltaTime);
   bossRuntime.collisionPhase = BOSS_PHASES.CHASE;
 }
 
@@ -1349,10 +1452,14 @@ function moveBossCharge(deltaTime) {
   const nextY = boss.y + bossRuntime.chargeDirectionY * cycle.chargeSpeed * deltaTime;
   const maxX = canvas.width - boss.width;
   const maxY = canvas.height - boss.height;
-  boss.x = Math.max(0, Math.min(nextX, maxX));
-  boss.y = Math.max(0, Math.min(nextY, maxY));
+  const targetX = Math.max(0, Math.min(nextX, maxX));
+  const targetY = Math.max(0, Math.min(nextY, maxY));
+  const movement = Battlefields.traceMovement(boss, targetX - boss.x,
+    targetY - boss.y, battlefieldRuntime);
+  boss.x = movement.x;
+  boss.y = movement.y;
   bossRuntime.collisionPhase = BOSS_PHASES.CHARGE;
-  return boss.x !== nextX || boss.y !== nextY ||
+  return Boolean(movement.collision) || targetX !== nextX || targetY !== nextY ||
     (bossRuntime.chargeDirectionX < 0 && boss.x === 0) ||
     (bossRuntime.chargeDirectionX > 0 && boss.x === maxX) ||
     (bossRuntime.chargeDirectionY < 0 && boss.y === 0) ||
@@ -1453,6 +1560,19 @@ function drawWeaponDamage() {
   ctx.textAlign = "right";
   ctx.fillText(`Damage: ${formatNumber(weapon.damage)}`, canvas.width - 15, 30);
   ctx.restore();
+}
+
+function drawBattlefield() {
+  if (!battlefieldRuntime) return;
+  for (const obstacle of battlefieldRuntime.definition.obstacles) {
+    ctx.fillStyle = "#1f2937";
+    ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+    ctx.fillStyle = "#475569";
+    ctx.fillRect(obstacle.x + 5, obstacle.y + 5,
+      Math.max(0, obstacle.width - 10), Math.max(0, obstacle.height - 10));
+    ctx.fillStyle = "rgba(148, 163, 184, 0.38)";
+    ctx.fillRect(obstacle.x + 5, obstacle.y + 5, Math.max(0, obstacle.width - 10), 5);
+  }
 }
 
 function drawBehaviorArena() {
@@ -1671,6 +1791,7 @@ function gameLoop(timestamp) {
   if (currentView === APP_VIEWS.GAME) {
     update(deltaTime);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawBattlefield();
     drawBehaviorArena();
     drawPlayer();
     drawEnemies();

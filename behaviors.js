@@ -148,6 +148,9 @@
     const config = definition.behavior;
     runtime.lockedTarget = predictedTarget(enemy, context.player, context.playerVelocity,
       config.predictionLeadTime, context.arena);
+    if (typeof context.resolvePlayablePoint === "function") {
+      runtime.lockedTarget = context.resolvePlayablePoint(runtime.lockedTarget);
+    }
     const hazard = {
       id: nextHazardId++,
       sourceEnemyId: enemy.runtimeId,

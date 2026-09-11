@@ -15,11 +15,23 @@ APP
 
 PLAY is the only action that creates a fresh active Run. Loading the application can remain in the Hub indefinitely without generating a Wave, advancing combat/encounter timers, incrementing `totalRuns`, or initializing a playtest telemetry session. Existing `playtest` and `prototype` query configuration is retained across Hub → PLAY and remains independent.
 
-Shop, Armory, and Equipment are standalone meta-progression locations, not panels beside combat. Shop currently says Coming Soon and presents existing Points, Armory presents the owned Starter from the immutable Weapon definition, and Equipment reflects the existing empty owned-equipment Save list. No prices, purchases, rerolls, inventory generation, new Weapons, fake Equipment, Equipment stats, loadout switching, or save-schema migration exists in this foundation. View state is not persistent progression.
+Shop, Armory, and Equipment are standalone meta-progression locations, not panels beside combat. Shop currently says Coming Soon and presents existing Points, Armory presents the owned Starter from the immutable Weapon definition, and Equipment reflects the existing empty owned-equipment Save list. No prices, purchases, rerolls, inventory generation, new Weapons, fake Equipment, Equipment stats, or loadout switching exists in this foundation. Save v2 only adds empty future unlock categories for Deployables and Summons. View state is not persistent progression.
 
 Gameplay input is isolated to GAME_VIEW, and held movement/firing clears on every view transition. Back to Hub during an active Run opens the existing Abandon confirmation and reaches the Hub only after the established secured-checkpoint Settlement path completes. Cancelling resumes the same Run. Death and Victory already use their existing Settlement paths and can return to Hub directly; R still restarts inside gameplay. Enemy Introduction and Level Up retain their input/pause protections.
 
-This establishes information architecture for the roguelite product while leaving the broader **Core Direction Realignment** in progress. Detailed Shop, Armory, and Equipment mechanics are intentionally not designed here, and Battlefield/Navigation implementation has not begun.
+This establishes information architecture for the roguelite product while leaving the broader **Core Direction Realignment** in progress. Detailed Shop, Armory, Equipment, Deployable and Summon mechanics are intentionally not designed here.
+
+## Battlefield, navigation, and data foundation v1
+
+Stage 1 now references the immutable `stage-1-field-a` definition in `battlefields.js` for all five Waves and Boss 1. The 800 x 600 map has four solid structures: northwest and southeast cover plus northeast and southwest walls. The center Player spawn is clear, broad routes remain available to the 60 x 60 Tank and 100 x 100 Boss, and the playable region remains connected. Battlefield definitions are source content; the active Battlefield instance and paths are transient Run runtime created only after PLAY and cleared when returning to Hub after an abandoned or completed Run.
+
+Static geometry is shared by Player, Enemy, Boss, charge, projectile and spawn systems. Player movement resolves axes independently for wall sliding and uses swept substeps. Standard bullets stop on terrain even when they retain Enemy Pierce. Normal, Fast, Tank and ordinary Interceptor chase use direct steering when clear, otherwise deterministic approximately 20-pixel footprint-aware A* with safe smoothing, cached bounded repaths and stuck invalidation. Navigation does not consume gameplay RNG, and dynamic Enemies are not A* walls. Player pushes and overlap recovery cannot place Enemies in terrain.
+
+Regular/Boss spawns retain the existing two random samples, then reject terrain, boundary, active-Enemy overlap and unreachable-component candidates before a bounded deterministic perimeter fallback. Interceptor and Boss committed charges remain straight and non-retargeting, stop at first solid collision and continue through existing Recovery. Denier centers predicted inside terrain project deterministically to a playable edge. Support Links remain distance- and line-of-sight-independent.
+
+Persistent Save is schema v2. Existing `highestStage`, defeated Boss IDs, Points, Weapon/Equipment unlocks and statistics are preserved; `unlocks.deployables` and `unlocks.summons` default to empty arrays. The explicit v1 -> v2 migration is deterministic and idempotent, normalizes missing new arrays and does not add Run persistence. Battlefield instances, navigation paths, active Deployables/Summons and every other active Run field remain memory-only. Playtest encounters now include `battlefieldId`, `pathRequests`, `pathFailures`, `navigationFallbacks` and `playerObstacleContacts` without path arrays or per-frame positions.
+
+Calibration A Threat, concurrency, Enemy, Wave, Boss, Weapon, Upgrade, XP, Score, Points and Settlement numbers are unchanged. Its clear-time values were measured in the pre-Battlefield empty arena and remain operational analysis references, not final post-geometry calibration evidence.
 
 ## Experimental checkpoint: Combat Variety v1.1 correction pass
 
@@ -750,16 +762,19 @@ Storage key：
 
 ``` js
 {
-  version: 1,
+  version: 2,
 
   progression: {
     highestStage: 1,
-    defeatedBosses: []
+    defeatedBosses: [],
+    points: 0
   },
 
   unlocks: {
     weapons: ["starter"],
-    equipment: []
+    equipment: [],
+    deployables: [],
+    summons: []
   },
 
   statistics: {
@@ -794,8 +809,12 @@ Storage key：
 -   Current build
 -   Enemies
 -   Bullets
+-   Hazards
 -   Boss HP
 -   Spawn timers
+-   Battlefield runtime
+-   Navigation paths
+-   Active Deployables / Summons
 -   Temporary buffs
 -   Input state
 
@@ -822,10 +841,10 @@ Meta Progress retained
 Save 已有：
 
 ``` text
-version: 1
+version: 2
 ```
 
-未來 schema 改變需要 migrations。
+已有明確、可重複安全執行的 v1 → v2 migration；缺少的新 unlock arrays 會安全正規化為空陣列。
 
 ------------------------------------------------------------------------
 
@@ -1077,6 +1096,7 @@ Phase 1 Core                   COMPLETE
 Phase 2.1 State audit/tests    COMPLETE
 Phase 2.2 Interface/content    COMPLETE
 Phase 2.3 Rename + Save        COMPLETE
+Battlefield/Nav/Data v1       COMPLETE
 ```
 
 Phase 2.3 已 Commit。

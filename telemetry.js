@@ -94,7 +94,7 @@
         totalActiveCombatTime: 0, totalIntermissionTime: 0, encounters: [], upgradeHistory: [],
         upgradeChoiceHistory: [], enemyIntroductionsShown: [], settlement: null };
     }
-    function startEncounter({ type, definition, stageId, waveIndex, player }) {
+    function startEncounter({ type, definition, stageId, waveIndex, battlefieldId, player }) {
       if (!run) return;
       const source = copy(definition), playerStart = copy(player);
       const enemyComposition = {};
@@ -109,6 +109,7 @@
       });
       if (encounter) finishEncounter({ outcome: "run-ended-other", player: playerStart });
       const data = { type, stageId: source.stageId ?? stageId, waveIndex: source.waveIndex ?? waveIndex,
+        battlefieldId: source.battlefieldId ?? battlefieldId ?? null,
         ...(type === "boss" ? { bossId: source.id, chargeAttempts: 0, chargeContacts: 0 } :
           { waveId: source.id, templateId: source.templateId,
           threatBudget: source.threatBudget, generatedThreat: source.analysis.threat,
@@ -128,7 +129,9 @@
         support: { activeTime: 0, affectedEnemyTime: 0, affectedSpecialActions: 0, linksCreated: 0 },
         peakActiveEnemyCount: 0, peakActiveThreat: 0, configuredSpawnFloor: spawnGroups.reduce((sum, g) => sum + g.delay, 0),
         groupReleaseTimes: [], lastSpawnGroupReleaseTime: null, actualLastGroupReleaseTime: null,
-        pressureBlockedTime: 0, pressureBlockedEvents: 0, threatBlockedTime: 0, enemyCountBlockedTime: 0, outcome: null };
+        pressureBlockedTime: 0, pressureBlockedEvents: 0, threatBlockedTime: 0, enemyCountBlockedTime: 0,
+        pathRequests: 0, pathFailures: 0, navigationFallbacks: 0, playerObstacleContacts: 0,
+        outcome: null };
       encounter = { data, enemyIntegral: 0, threatIntegral: 0, pressureBlocked: false, released: new Set(),
         behaviorEvents: {
           interceptorAttempts: new Set(), interceptorCommits: new Set(), interceptorContacts: new Set(),
@@ -224,6 +227,18 @@
       startRun: safe("start run", startRun), startEncounter: safe("start encounter", startEncounter),
       recordEncounterFrame: safe("record frame", recordEncounterFrame),
       recordGroupRelease: safe("record group release", recordGroupRelease),
+      recordPathRequest: safe("record path request", () => {
+        if (encounter) encounter.data.pathRequests++;
+      }),
+      recordPathFailure: safe("record path failure", () => {
+        if (encounter) encounter.data.pathFailures++;
+      }),
+      recordNavigationFallback: safe("record navigation fallback", () => {
+        if (encounter) encounter.data.navigationFallbacks++;
+      }),
+      recordPlayerObstacleContact: safe("record Player obstacle contact", () => {
+        if (encounter) encounter.data.playerObstacleContacts++;
+      }),
       recordIntermission: safe("record intermission", ({ deltaTime }) => {
         if (run) run.totalIntermissionTime += nonNegative(deltaTime);
       }),

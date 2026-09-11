@@ -77,7 +77,7 @@
     mixed: { shares: [0.34, 0.33, 0.33], delays: [0, 2, 2.2], bias: {}, required: ["frontline", "pressure"] }
   });
   const STAGES = freeze([{
-    id: "stage-1", waveCount: 5, enemyPool: ["normal", "fast", "tank"],
+    id: "stage-1", battlefieldId: "stage-1-field-a", waveCount: 5, enemyPool: ["normal", "fast", "tank"],
     templatePool: Object.keys(TEMPLATES), threatCurve: [8, 10, 12, 14, 17],
     maxActiveThreatCurve: [6, 7, 8.5, 10, 12],
     availability: [["normal"], ["normal", "fast"], ["normal", "fast", "tank"],

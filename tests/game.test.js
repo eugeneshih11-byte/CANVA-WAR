@@ -2,10 +2,12 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const Battlefields = require("../battlefields.js");
 
 const gamePath = path.join(__dirname, "..", "game.js");
 const gameSource = fs.readFileSync(gamePath, "utf8");
 const settlementSource = fs.readFileSync(path.join(__dirname, "..", "settlement.js"), "utf8");
+const battlefieldsSource = fs.readFileSync(path.join(__dirname, "..", "battlefields.js"), "utf8");
 const weaponsSource = fs.readFileSync(path.join(__dirname, "..", "weapons.js"), "utf8");
 const buildSource = fs.readFileSync(path.join(__dirname, "..", "build.js"), "utf8");
 const layoutPath = path.join(__dirname, "..", "layout.js");
@@ -29,11 +31,14 @@ globalThis.__gameTest = {
   resetGame,
   startGameplay, showView, requestHub,
   startWave, startBossEncounter, completeBossEncounter, updateLevel, openAbandon, closeAbandon, abandonRun,
+  updateBullets, positionEnemyForSpawn, isValidSpawnPosition, tryMoveEnemy,
+  recoverEnemyOverlap, moveEnemyCharge, moveBossCharge,
   encounters: Encounters,
   setAwards(hook) { getEncounterAwards = hook; },
   setReward(hook) { handleStageReward = hook; },
   update,
   createDefaultSaveData,
+  migrateSaveData,
   loadSave,
   saveGame,
   handleBulletEnemyCollisions,
@@ -92,6 +97,12 @@ globalThis.__gameTest = {
   },
   getLastSettlement() {
     return lastSettlement;
+  },
+  getBattlefieldRuntime() {
+    return battlefieldRuntime;
+  },
+  setBattlefieldRuntime(value) {
+    battlefieldRuntime = value;
   },
   getCurrentView() {
     return currentView;
@@ -331,6 +342,8 @@ function loadGame(initialStorage = {}, options = {}) {
     innerWidth: options.innerWidth ?? 1280,
     innerHeight: options.innerHeight ?? 800,
     devicePixelRatio: options.devicePixelRatio ?? 1,
+    location: { search: options.search || "" },
+    URLSearchParams,
     ResizeObserver: class ResizeObserver {
       constructor(callback) { this.callback = callback; resizeObservers.push(this); }
       observe(target) { this.target = target; }
@@ -355,6 +368,7 @@ function loadGame(initialStorage = {}, options = {}) {
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(settlementSource, context, { filename: "settlement.js" });
+  vm.runInContext(battlefieldsSource, context, { filename: "battlefields.js" });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "encounters.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "behaviors.js"), "utf8"), context);
   vm.runInContext(weaponsSource, context, { filename: "weapons.js" });
@@ -727,6 +741,10 @@ function testTerminalStatesReturnToHubAfterSettlement() {
     game.listeners["backToHubButton:click"]();
     assert.equal(game.getCurrentView(), "hub");
     assert.equal(game.getLastSettlement(), settlement);
+    assert.equal(game.getBattlefieldRuntime(), null);
+    assert.equal(game.enemies.length, 0);
+    assert.equal(game.bullets.length, 0);
+    assert.equal(game.hazards.length, 0);
   }
 }
 
@@ -736,7 +754,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="armoryView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="equipmentView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="gameView" class="app-view game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=20260911-main-hub"/);
+  assert.match(indexSource, /href="style\.css\?v=20260911-battlefield-navigation-v1"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1 id="hubTitle">CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
@@ -753,10 +771,10 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="enemyIntroductionCounterplay"/);
   assert.match(indexSource, /id="enemyIntroductionContinue"/);
   assert.match(indexSource, /aria-modal="true"/);
-  const scriptVersion = "20260911-main-hub";
+  const scriptVersion = "20260911-battlefield-navigation-v1";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
-  assert.deepEqual(scriptSources, ["settlement.js", "encounters.js", "behaviors.js", "weapons.js", "build.js",
+  assert.deepEqual(scriptSources, ["settlement.js", "battlefields.js", "encounters.js", "behaviors.js", "weapons.js", "build.js",
     "layout.js", "telemetry.js", "telemetry-ui.js", "game.js"]
     .map(source => `${source}?v=${scriptVersion}`));
 }
@@ -767,7 +785,7 @@ function testSaveDefaultsAndRoundTrip() {
   assert.deepEqual(JSON.parse(JSON.stringify(defaultSave)), {
     version: 2,
     progression: { highestStage: 1, defeatedBosses: [], points: 0 },
-    unlocks: { weapons: ["starter"], equipment: [] },
+    unlocks: { weapons: ["starter"], equipment: [], deployables: [], summons: [] },
     statistics: { totalRuns: 0, totalKills: 0 }
   });
   assert.equal(game.getSaveData().version, 2);
@@ -784,15 +802,16 @@ function testSaveDefaultsAndRoundTrip() {
 function testVersionOneSaveMigratesPoints() {
   const legacySave = {
     version: 1,
-    progression: { highestStage: 1, defeatedBosses: [] },
-    unlocks: { weapons: ["starter"], equipment: [] },
+    progression: { highestStage: 2, defeatedBosses: ["boss-1"] },
+    unlocks: { weapons: ["starter", "legacy-weapon"], equipment: ["legacy-equipment"] },
     statistics: { totalRuns: 2, totalKills: 3 }
   };
   const game = loadGame({ "canva-war-save": JSON.stringify(legacySave) });
   assert.deepEqual(JSON.parse(JSON.stringify(game.getSaveData())), {
     ...legacySave,
     version: 2,
-    progression: { ...legacySave.progression, points: 0 }
+    progression: { ...legacySave.progression, points: 0 },
+    unlocks: { ...legacySave.unlocks, deployables: [], summons: [] }
   });
 }
 
@@ -1601,8 +1620,8 @@ test("two living enemies that start overlapped deterministically separate", () =
   game.enemies.length = 0;
   game.player.x = 650;
   game.player.y = 450;
-  const first = makeEnemy(game, "normal", { x: 100, y: 100 });
-  const second = makeEnemy(game, "normal", { x: 100, y: 100 });
+  const first = makeEnemy(game, "normal", { x: 40, y: 40 });
+  const second = makeEnemy(game, "normal", { x: 40, y: 40 });
   game.enemies.push(first, second);
   const origins = game.enemies.map(enemy => ({ x: enemy.x, y: enemy.y }));
 
@@ -1680,6 +1699,8 @@ test("spawn overlap recovery is bounded, deterministic, and consumes no extra RN
     return {
       calls: calls - before,
       positions: game.enemies.map(enemy => ({ x: enemy.x, y: enemy.y })),
+      terrainOverlap: game.enemies.some(enemy =>
+        Battlefields.firstSolidCollision(enemy, game.getBattlefieldRuntime())),
       overlap: game.enemies.some((enemy, index) =>
         game.enemies.slice(index + 1).some(other => rectanglesOverlap(enemy, other)))
     };
@@ -1689,8 +1710,33 @@ test("spawn overlap recovery is bounded, deterministic, and consumes no extra RN
   const second = spawnSnapshot();
   assert.equal(first.calls, 8);
   assert.equal(first.overlap, false);
+  assert.equal(first.terrainOverlap, false);
   assert.deepEqual(Array.from(first.positions, point => ({ ...point })),
     Array.from(second.positions, point => ({ ...point })));
+});
+
+test("spawn rejects unreachable components and finds a deterministic reachable perimeter fallback", () => {
+  let calls = 0;
+  const game = loadGame({}, { random() { calls++; return 0; } }); startGame(game);
+  game.enemies.length = 0;
+  const definition = {
+    id: "partitioned-test-field",
+    bounds: { width: 800, height: 600 },
+    playerSpawn: { x: 380, y: 500 },
+    obstacles: [{ id: "barrier", x: 0, y: 280, width: 800, height: 40,
+      solid: true, blocksProjectiles: true }]
+  };
+  game.setBattlefieldRuntime({ id: definition.id, definition });
+  game.player.x = 380;
+  game.player.y = 500;
+  const before = calls;
+  game.spawnEnemy("normal");
+  assert.equal(calls - before, 2);
+  assert.equal(game.enemies.length, 1);
+  const spawned = game.enemies[0];
+  assert.ok(spawned.y >= 320);
+  assert.equal(Battlefields.isStaticPositionValid(spawned, definition), true);
+  assert.ok(Battlefields.findPath(spawned, game.player, definition));
 });
 
 test("Player pushing still moves a valid active Enemy", () => {
@@ -1955,4 +2001,205 @@ test("arena resizing and presentation cannot disturb modal UI or fire attacks", 
   assert.equal(abandonGame.getState().isAbandonConfirmOpen, true);
   assert.equal(abandonGame.bullets.length, 0);
   assert.equal(abandonGame.weaponRuntime.attackHeld, false);
+});
+
+test("Battlefield lifetime follows the Run and Hub cleanup removes transient world state", () => {
+  const game = loadGame();
+  assert.equal(game.getBattlefieldRuntime(), null);
+  startGame(game);
+  assert.equal(game.getBattlefieldRuntime().id, "stage-1-field-a");
+  assert.equal(game.getState().stageRuntime.definition.battlefieldId, "stage-1-field-a");
+  game.enemies.push(makeEnemy(game, "normal", { runtimeId: 901, x: 40, y: 40 }));
+  game.bullets.push(makeBullet());
+  game.hazards.push({ id: 1, phase: "ACTIVE", remaining: 2 });
+
+  game.listeners["backToHubButton:click"]();
+  game.listeners["confirmAbandonButton:click"]();
+
+  assert.equal(game.getCurrentView(), "hub");
+  assert.equal(game.getBattlefieldRuntime(), null);
+  assert.equal(game.enemies.length, 0);
+  assert.equal(game.bullets.length, 0);
+  assert.equal(game.hazards.length, 0);
+  assert.equal(game.getState().boss, null);
+  assert.equal(game.getState().stageRuntime, null);
+});
+
+test("Player sweep cannot tunnel through cover and diagonal movement slides along it", () => {
+  const game = loadGame(); startGame(game);
+  game.setState({ runPhase: "INTERMISSION", intermissionTimer: 0 });
+  game.player.x = 20;
+  game.player.y = 130;
+  game.keys.d = true;
+  game.update(5);
+  assert.ok(game.player.x + game.player.width <= 110);
+  assert.equal(Battlefields.firstSolidCollision(game.player, game.getBattlefieldRuntime()), null);
+
+  game.keys.d = true;
+  game.keys.s = true;
+  game.player.x = 60;
+  game.player.y = 100;
+  game.update(0.5);
+  assert.ok(game.player.x + game.player.width <= 110);
+  assert.ok(game.player.y > 150);
+  assert.equal(Battlefields.firstSolidCollision(game.player, game.getBattlefieldRuntime()), null);
+});
+
+test("terrain removes ordinary and Piercing bullets before they can pass through", () => {
+  for (const pierceRemaining of [0, 5]) {
+    const game = loadGame(); startGame(game);
+    game.bullets.push(makeBullet({ x: 20, y: 140, speed: 1000,
+      directionX: 1, directionY: 0, pierceRemaining }));
+    game.updateBullets(1);
+    assert.equal(game.bullets.length, 0);
+  }
+});
+
+test("Normal, Fast, and Tank chase around static cover without entering terrain", () => {
+  for (const [index, type] of ["normal", "fast", "tank"].entries()) {
+    const game = loadGame(); startGame(game);
+    game.enemies.length = 0;
+    game.player.x = 200;
+    game.player.y = 240;
+    const dimensions = ENEMY_TEST_STATS[type];
+    const enemy = makeEnemy(game, type, { runtimeId: index + 1,
+      x: 200, y: type === "tank" ? 20 : 40, ...dimensions });
+    game.enemies.push(enemy);
+    let crossedCover = false;
+    for (let frame = 0; frame < 720; frame++) {
+      game.updateEnemies(1 / 60);
+      assert.equal(Battlefields.firstSolidCollision(enemy, game.getBattlefieldRuntime()), null);
+      if (enemy.y >= 180) { crossedCover = true; break; }
+    }
+    assert.equal(crossedCover, true,
+      `${type} did not route around cover: ${JSON.stringify({ x: enemy.x, y: enemy.y, navigation: enemy.navigationRuntime })}`);
+    assert.ok(enemy.navigationRuntime);
+  }
+});
+
+test("enemy overlap recovery never resolves one stack into static terrain", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  const first = makeEnemy(game, "normal", { runtimeId: 1, x: 70, y: 180 });
+  const second = makeEnemy(game, "normal", { runtimeId: 2, x: 70, y: 180 });
+  game.enemies.push(first, second);
+  for (let frame = 0; frame < 180 && rectanglesOverlap(first, second); frame++) {
+    game.recoverEnemyOverlap(first, 2);
+    game.recoverEnemyOverlap(second, 2);
+  }
+  assert.equal(rectanglesOverlap(first, second), false);
+  assert.equal(Battlefields.firstSolidCollision(first, game.getBattlefieldRuntime()), null);
+  assert.equal(Battlefields.firstSolidCollision(second, game.getBattlefieldRuntime()), null);
+});
+
+test("Interceptor committed charge stops at terrain and enters Recovery", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  const interceptor = makeEnemy(game, "interceptor", { runtimeId: 1,
+    x: 500, y: 100, width: 34, height: 34, speed: 105, hp: 3, maxHp: 3 });
+  game.enemies.push(interceptor);
+  game.updateEnemies(0);
+  Object.assign(interceptor.behaviorRuntime, {
+    behaviorState: "CHARGE", stateElapsed: 0, chargeDirectionX: 1, chargeDirectionY: 0,
+    chargeDistanceTravelled: 0, attemptResolved: false
+  });
+  game.updateEnemies(0.3);
+  assert.equal(interceptor.behaviorRuntime.behaviorState, "RECOVERY");
+  assert.ok(interceptor.x + interceptor.width <= 560);
+  assert.equal(interceptor.behaviorRuntime.chargeDirectionX, 1);
+  assert.equal(interceptor.behaviorRuntime.chargeDirectionY, 0);
+});
+
+test("Denier telegraph target is projected out of solid terrain", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  game.player.x = 180;
+  game.player.y = 130;
+  const denier = makeEnemy(game, "denier", { runtimeId: 1,
+    x: 400, y: 280, width: 40, height: 40, speed: 85, hp: 3, maxHp: 3 });
+  game.enemies.push(denier);
+  game.updateEnemies(0);
+  denier.behaviorRuntime.cooldown = 0;
+  game.updateEnemies(0.01);
+  assert.equal(game.hazards.length, 1);
+  const hazard = game.hazards[0];
+  assert.equal(Battlefields.firstSolidCollision(
+    { x: hazard.x, y: hazard.y, width: 1, height: 1 }, game.getBattlefieldRuntime()), null);
+});
+
+test("Support keeps its distance-independent Link across terrain", () => {
+  const game = loadGame({}, { search: "?prototype=combat-variety-v1" }); startGame(game);
+  game.enemies.length = 0;
+  const support = makeEnemy(game, "support", { runtimeId: 1,
+    x: 40, y: 40, width: 38, height: 38, speed: 80, hp: 3, maxHp: 3 });
+  const interceptor = makeEnemy(game, "interceptor", { runtimeId: 2,
+    x: 720, y: 520, width: 34, height: 34, speed: 105, hp: 3, maxHp: 3 });
+  game.enemies.push(support, interceptor);
+  game.updateEnemies(0);
+  assert.equal(support.behaviorRuntime.linkedTargetId, interceptor.runtimeId);
+  assert.equal(interceptor.behaviorRuntime.affectedBySupport, true);
+  assert.deepEqual(Array.from(support.behaviorRuntime.supportedEnemyIds), [interceptor.runtimeId]);
+});
+
+test("Boss chase uses navigation and Boss charge stops at terrain for full Recovery", () => {
+  const game = loadGame(); startGame(game);
+  game.startBossEncounter();
+  const state = game.getState();
+  Object.assign(state.boss, { x: 400, y: 100 });
+  Object.assign(state.bossRuntime, {
+    phase: "CHASE", phaseElapsed: 0, chaseDuration: 1,
+    navigationRuntime: null
+  });
+  game.player.x = 700;
+  game.player.y = 100;
+  game.updateBoss(0.1);
+  assert.ok(state.bossRuntime.navigationRuntime);
+
+  Object.assign(state.boss, { x: 400, y: 100 });
+  Object.assign(state.bossRuntime, {
+    phase: "CHARGE", phaseElapsed: 0, chargeDirectionX: 1, chargeDirectionY: 0
+  });
+  game.updateBoss(0.3);
+  assert.equal(state.bossRuntime.phase, "RECOVERY");
+  assert.ok(state.boss.x + state.boss.width <= 560);
+});
+
+test("Enemy Introduction pause freezes position and navigation runtime", () => {
+  const game = loadGame({}, { search: "?prototype=combat-variety-v1" }); startGame(game);
+  game.enemies.length = 0;
+  const enemy = makeEnemy(game, "normal", { runtimeId: 1, x: 40, y: 40 });
+  game.enemies.push(enemy);
+  game.updateEnemies(0.1);
+  const before = { x: enemy.x, y: enemy.y, navigation: JSON.stringify(enemy.navigationRuntime) };
+  assert.equal(game.beginEnemyIntroductions(2), true);
+  game.update(0.5);
+  game.update(1);
+  assert.deepEqual({ x: enemy.x, y: enemy.y, navigation: JSON.stringify(enemy.navigationRuntime) }, before);
+});
+
+test("Save v2 migration normalizes future arrays idempotently and never persists active Run state", () => {
+  const game = loadGame();
+  const legacyV2 = {
+    version: 2,
+    progression: { highestStage: 2, defeatedBosses: ["boss-1"], points: 37 },
+    unlocks: { weapons: ["starter"], equipment: ["boots"] },
+    statistics: { totalRuns: 4, totalKills: 12 }
+  };
+  const migrated = game.migrateSaveData(legacyV2);
+  assert.equal(migrated.unlocks.deployables.length, 0);
+  assert.equal(migrated.unlocks.summons.length, 0);
+  assert.equal(migrated.progression.points, 37);
+  assert.equal(JSON.stringify(game.migrateSaveData(migrated)), JSON.stringify(migrated));
+  assert.equal(game.migrateSaveData(migrated), migrated);
+  const storedV2 = JSON.stringify(migrated);
+  const reloaded = loadGame({ "canva-war-save": storedV2 });
+  assert.equal(JSON.stringify(reloaded.getSaveData()), storedV2);
+
+  game.setSaveData(migrated);
+  startGame(game);
+  const stored = JSON.parse(game.storage.get("canva-war-save"));
+  assert.deepEqual(Object.keys(stored).sort(), ["progression", "statistics", "unlocks", "version"]);
+  assert.equal("runPhase" in stored, false);
+  assert.equal("battlefieldId" in stored, false);
+  assert.equal("player" in stored, false);
 });

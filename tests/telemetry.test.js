@@ -13,7 +13,8 @@ const player = { playerHp: 10, playerMaxHp: 10, playerSpeed: 240, playerLevel: 2
   build: { upgrades: { "rapid-fire": 0, "split-shot": 0 } } };
 const configuration = { enemies: E.ENEMIES, maxActiveEnemies: E.CONFIG.maxActiveEnemies,
   threatCurve: E.STAGES[0].threatCurve, clearTime: E.CONFIG.clearTime };
-const wave = { id: "stage-1-wave-1", stageId: "stage-1", waveIndex: 0, templateId: "basic",
+const wave = { id: "stage-1-wave-1", stageId: "stage-1", battlefieldId: "stage-1-field-a",
+  waveIndex: 0, templateId: "basic",
   threatBudget: 8, maxActiveThreat: 4.5,
   spawnGroups: [
     { delay: 0, enemies: [{ type: "normal", count: 3 }] },
@@ -73,6 +74,20 @@ test("behavior telemetry records interpretable metrics once per action or hazard
   assert.deepEqual(encounter.support, { activeTime: 1.5, affectedEnemyTime: 2.75,
     affectedSpecialActions: 1, linksCreated: 1 });
   assert.deepEqual(telemetry.getCurrentRun().enemyIntroductionsShown, ["interceptor"]);
+});
+test("Battlefield navigation diagnostics are encounter-scoped counters", () => {
+  const telemetry = start();
+  telemetry.recordPathRequest();
+  telemetry.recordPathRequest();
+  telemetry.recordPathFailure();
+  telemetry.recordNavigationFallback();
+  telemetry.recordPlayerObstacleContact();
+  const encounter = currentEncounter(telemetry);
+  assert.equal(encounter.battlefieldId, "stage-1-field-a");
+  assert.equal(encounter.pathRequests, 2);
+  assert.equal(encounter.pathFailures, 1);
+  assert.equal(encounter.navigationFallbacks, 1);
+  assert.equal(encounter.playerObstacleContacts, 1);
 });
 test("disabled telemetry performs no recording, input copying or diagnostics", () => {
   const poison = new Proxy({}, { get() { throw new Error("input read"); } });

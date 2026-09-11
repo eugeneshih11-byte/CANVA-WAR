@@ -86,7 +86,7 @@ function loadGame(search = "", options = {}) {
   context.globalThis = context;
   context.window = context;
   vm.createContext(context);
-  for (const file of ["settlement.js", "encounters.js", "behaviors.js", "weapons.js", "build.js", "layout.js", "telemetry.js"]) {
+  for (const file of ["settlement.js", "battlefields.js", "encounters.js", "behaviors.js", "weapons.js", "build.js", "layout.js", "telemetry.js"]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context, { filename: file });
   }
   options.beforeGame?.(context);
@@ -411,6 +411,7 @@ test("Wave start snapshots exact definition, analysis, resolved Player and full 
   const game = loadGame("?playtest=1"); game.start();
   const encounter = currentEncounter(game), wave = game.state.currentWave;
   assert.equal(encounter.type, "wave");
+  assert.equal(encounter.battlefieldId, "stage-1-field-a");
   for (const key of ["stageId", "waveIndex", "templateId", "threatBudget", "maxActiveThreat"]) {
     assert.equal(encounter[key], wave[key]);
   }
@@ -433,6 +434,25 @@ test("Wave start snapshots exact definition, analysis, resolved Player and full 
   assert.equal(encounter.spawnGroups.length, wave.spawnGroups.length);
   assert.equal(encounter.configuredSpawnFloor, wave.spawnGroups.reduce((sum, group) => sum + group.delay, 0));
   assert.equal(Object.isFrozen(wave), true);
+});
+
+test("production movement reports path requests and Player obstacle contacts", () => {
+  const game = loadGame("?playtest=1"); game.start();
+  game.enemies.length = 0;
+  game.player.x = 200;
+  game.player.y = 240;
+  game.enemies.push(enemy(game, { runtimeId: 1, x: 200, y: 40,
+    width: 40, height: 40, speed: 120, hp: 3, maxHp: 3 }));
+  game.updateEnemies(0.1);
+  assert.equal(currentEncounter(game).pathRequests, 1);
+  assert.equal(currentEncounter(game).pathFailures, 0);
+
+  game.enemies.length = 0;
+  game.player.x = 20;
+  game.player.y = 130;
+  game.keys.d = true;
+  game.update(5);
+  assert.ok(currentEncounter(game).playerObstacleContacts >= 1);
 });
 
 test("telemetry configuration snapshots immutable Weapon, Upgrade and Player balance data as plain JSON", () => {
@@ -774,6 +794,7 @@ test("Boss has a separate encounter, preserves the 15-second reference, and paus
   game.completeBossEncounter(); game.completeBossEncounter();
   const encounter = currentEncounter(game);
   assert.equal(encounter.type, "boss");
+  assert.equal(encounter.battlefieldId, "stage-1-field-a");
   assert.equal(encounter.bossId, "boss-1");
   assert.equal(encounter.templateId, undefined);
   assert.equal(encounter.analysis.expectedClearTime, 15);
