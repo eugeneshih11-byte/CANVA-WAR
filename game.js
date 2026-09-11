@@ -167,6 +167,8 @@ const enemies = [];
 const bullets = [];
 const hazards = [];
 let battlefieldRuntime = null;
+let cameraRuntime = null;
+let fallbackBattlefieldSeed = 0x43414e56;
 const denierHazardDamageRuntime = EnemyBehaviors.createHazardDamageRuntime();
 const playerVelocity = { x: 0, y: 0 };
 let nextEnemyRuntimeId = 1;
@@ -192,6 +194,7 @@ const enemyColors = {
   support: "#0f766e"
 };
 const SPAWN_PLACEMENT_ATTEMPTS = 16;
+const MAX_DETERMINISTIC_SPAWN_CANDIDATES = 256;
 const COLLISION_EPSILON = 1e-7;
 const RUN_PHASES = Object.freeze(Object.fromEntries([
   "STAGE_ENTER", "WAVE_ACTIVE", "INTERMISSION", "INTRODUCTION_PENDING", "INTRODUCTION_ACTIVE",
@@ -286,16 +289,63 @@ function dismissEnemyIntroduction() {
   startWave(waveIndex);
   return true;
 }
+function battlefieldActorFootprints() {
+  return [
+    { id: "player", width: player.width, height: player.height },
+    ...Object.entries(Encounters.ENEMIES).map(([id, definition]) => ({ id,
+      width: definition.stats.width, height: definition.stats.height })),
+    ...Object.entries(Encounters.BOSSES).map(([id, definition]) => ({ id,
+      width: definition.stats.width, height: definition.stats.height }))
+  ];
+}
+function createBattlefieldSeed() {
+  const override = new URLSearchParams(globalThis.location?.search || "").get("battlefieldSeed");
+  if (override !== null && override !== "") return Battlefields.normalizeSeed(override);
+  try {
+    if (typeof globalThis.crypto?.getRandomValues === "function") {
+      const values = new Uint32Array(1);
+      globalThis.crypto.getRandomValues(values);
+      return values[0];
+    }
+  } catch {
+    // The private deterministic fallback never consumes encounter or spawn RNG.
+  }
+  fallbackBattlefieldSeed = (fallbackBattlefieldSeed + 0x9e3779b9) >>> 0;
+  return fallbackBattlefieldSeed;
+}
+function updateCameraRuntime() {
+  if (!cameraRuntime || !battlefieldRuntime) return null;
+  GameLayout.updateCamera(cameraRuntime, player, battlefieldRuntime.definition.bounds);
+  const worldPoint = GameLayout.screenToWorld(
+    { x: mouse.screenX, y: mouse.screenY }, cameraRuntime);
+  mouse.x = worldPoint.x;
+  mouse.y = worldPoint.y;
+  return cameraRuntime;
+}
+function battlefieldTelemetry() {
+  return battlefieldRuntime ? {
+    battlefieldId: battlefieldRuntime.id,
+    battlefieldSeed: battlefieldRuntime.seed,
+    worldWidth: battlefieldRuntime.definition.bounds.width,
+    worldHeight: battlefieldRuntime.definition.bounds.height,
+    obstacleCount: battlefieldRuntime.definition.obstacles.length
+  } : {};
+}
 function initializeBattlefield(stage, placePlayer = false) {
-  battlefieldRuntime = Battlefields.createRuntime(stage.battlefieldId);
+  battlefieldRuntime = Battlefields.createRuntime(stage.battlefieldId, {
+    seed: createBattlefieldSeed(), actorFootprints: battlefieldActorFootprints()
+  });
+  cameraRuntime = GameLayout.createCamera(canvas.width, canvas.height);
   if (placePlayer) {
     player.x = battlefieldRuntime.definition.playerSpawn.x;
     player.y = battlefieldRuntime.definition.playerSpawn.y;
   }
+  updateCameraRuntime();
   return battlefieldRuntime;
 }
 function clearBattlefieldRuntime() {
   battlefieldRuntime = null;
+  cameraRuntime = null;
   enemies.length = 0;
   bullets.length = 0;
   EnemyBehaviors.clearTransient(enemies, hazards);
@@ -318,7 +368,7 @@ function startWave(index) {
   runPhase = RUN_PHASES.WAVE_ACTIVE;
   clearInput({ weaponReady: true });
   observeTelemetry("startEncounter", () => ({ type: "wave", definition: currentWave,
-    battlefieldId: battlefieldRuntime?.id, player: telemetryPlayer() }));
+    ...battlefieldTelemetry(), player: telemetryPlayer() }));
 }
 function enterStage() {
   runPhase = RUN_PHASES.STAGE_ENTER;
@@ -361,7 +411,7 @@ function startBossEncounter() {
   runPhase = RUN_PHASES.BOSS_ACTIVE;
   clearInput({ weaponReady: true });
   observeTelemetry("startEncounter", () => ({ type: "boss", definition,
-    battlefieldId: battlefieldRuntime?.id,
+    ...battlefieldTelemetry(),
     stageId: stageRuntime.definition.id, waveIndex: stageRuntime.waveIndex, player: telemetryPlayer() }));
 }
 function completeBossEncounter() {
@@ -454,7 +504,9 @@ const keys = {
 
 const mouse = {
   x: 0,
-  y: 0
+  y: 0,
+  screenX: 0,
+  screenY: 0
 };
 
 function renderMetaView(view) {
@@ -549,8 +601,13 @@ function updateAim(event) {
     canvas.height
   );
   if (!point) return;
-  mouse.x = point.x;
-  mouse.y = point.y;
+  mouse.screenX = point.x;
+  mouse.screenY = point.y;
+  const worldPoint = cameraRuntime
+    ? GameLayout.screenToWorld(point, cameraRuntime)
+    : point;
+  mouse.x = worldPoint.x;
+  mouse.y = worldPoint.y;
 }
 
 function canAttack() {
@@ -728,8 +785,9 @@ function resetGame() {
   stageClearTimer = 0;
   isAbandoned = false;
   closeAbandon();
-  mouse.x = 0;
-  mouse.y = 0;
+  mouse.screenX = 0;
+  mouse.screenY = 0;
+  updateCameraRuntime();
   isGameOver = false;
   isVictory = false;
   isChoosingUpgrade = false;
@@ -752,7 +810,7 @@ function resetGame() {
   keys.s = false;
   keys.d = false;
   renderBuildPanel();
-  observeTelemetry("startRun", () => ({ player: telemetryPlayer() }));
+  observeTelemetry("startRun", () => ({ player: telemetryPlayer(), ...battlefieldTelemetry() }));
   enterStage();
 }
 
@@ -836,6 +894,7 @@ function update(deltaTime) {
   }
   playerVelocity.x = deltaTime > 0 ? (player.x - playerStartX) / deltaTime : 0;
   playerVelocity.y = deltaTime > 0 ? (player.y - playerStartY) / deltaTime : 0;
+  updateCameraRuntime();
 
   if (runPhase === RUN_PHASES.INTERMISSION) {
     observeTelemetry("recordIntermission", () => ({ deltaTime }));
@@ -896,13 +955,7 @@ function updateBullets(deltaTime) {
       continue;
     }
 
-    const isOutsideCanvas =
-      bullet.x + bullet.width < 0 ||
-      bullet.x > canvas.width ||
-      bullet.y + bullet.height < 0 ||
-      bullet.y > canvas.height;
-
-    if (isOutsideCanvas) {
+    if (!Battlefields.isInsideBounds(bullet, battlefieldRuntime)) {
       bullets.splice(index, 1);
     }
   }
@@ -913,29 +966,12 @@ function spawnEnemy(type = "normal", waveId = currentWave?.id) {
   const enemy = { type, waveId, runtimeId: nextEnemyRuntimeId++, x: 0, y: 0, ...stats,
     behaviorRuntime: EnemyBehaviors.createRuntime(Encounters.ENEMIES[type]),
     navigationRuntime: Battlefields.createNavigationRuntime(nextEnemyRuntimeId - 1) };
-  const edge = Math.floor(Math.random() * 4);
+  const sideSample = Math.random();
   const edgeOffset = Math.random();
-  if (positionEnemyForSpawn(enemy, edge, edgeOffset)) enemies.push(enemy);
+  if (positionEnemyForSpawn(enemy, sideSample, edgeOffset)) enemies.push(enemy);
   else {
     observeTelemetry("recordPathFailure");
     observeTelemetry("recordNavigationFallback");
-  }
-}
-
-function setEntityOnCanvasEdge(entity, edge, offsetRatio) {
-  const offset = ((offsetRatio % 1) + 1) % 1;
-  entity.x = 0;
-  entity.y = 0;
-  if (edge === 0) {
-    entity.x = offset * (canvas.width - entity.width);
-  } else if (edge === 1) {
-    entity.x = canvas.width - entity.width;
-    entity.y = offset * (canvas.height - entity.height);
-  } else if (edge === 2) {
-    entity.x = offset * (canvas.width - entity.width);
-    entity.y = canvas.height - entity.height;
-  } else {
-    entity.y = offset * (canvas.height - entity.height);
   }
 }
 
@@ -943,15 +979,7 @@ function projectileTerrainResponse(bullet, obstacle) {
   return obstacle?.blocksProjectiles ? "remove" : "continue";
 }
 
-function positionEnemyForSpawn(enemy, initialEdge, initialOffset) {
-  const offsetSteps = [0, 0.5, 0.25, 0.75];
-  for (let attempt = 0; attempt < SPAWN_PLACEMENT_ATTEMPTS; attempt++) {
-    const edge = (initialEdge + attempt) % 4;
-    const offsetStep = offsetSteps[Math.floor(attempt / 4)];
-    setEntityOnCanvasEdge(enemy, edge, initialOffset + offsetStep);
-    if (isValidSpawnPosition(enemy)) return true;
-  }
-
+function worldPerimeterCandidates(enemy) {
   const bounds = battlefieldRuntime.definition.bounds;
   const perimeterStep = Battlefields.GRID_CELL_SIZE;
   const candidates = [];
@@ -961,8 +989,20 @@ function positionEnemyForSpawn(enemy, initialEdge, initialOffset) {
   for (let y = perimeterStep; y < bounds.height - enemy.height; y += perimeterStep) {
     candidates.push({ x: 0, y }, { x: bounds.width - enemy.width, y });
   }
+  return candidates;
+}
+
+function positionEnemyForSpawn(enemy, sideSample, initialOffset) {
+  const cameraRect = cameraRuntime
+    ? GameLayout.getCameraWorldRect(cameraRuntime)
+    : { x: 0, y: 0, width: canvas.width, height: canvas.height };
+  let candidates = Battlefields.spawnCandidates(enemy, cameraRect, battlefieldRuntime,
+    sideSample, initialOffset);
+  if (!candidates.length) candidates = worldPerimeterCandidates(enemy);
   const rotation = Math.abs(enemy.runtimeId || 0) % Math.max(1, candidates.length);
-  for (let index = 0; index < candidates.length; index++) {
+  const limit = Math.min(candidates.length,
+    Math.max(SPAWN_PLACEMENT_ATTEMPTS, MAX_DETERMINISTIC_SPAWN_CANDIDATES));
+  for (let index = 0; index < limit; index++) {
     Object.assign(enemy, candidates[(index + rotation) % candidates.length]);
     if (isValidSpawnPosition(enemy)) return true;
   }
@@ -977,7 +1017,7 @@ function isValidSpawnPosition(enemy) {
 
 function spawnBoss() {
   boss = { x: 0, y: 0, ...Encounters.BOSSES[stageRuntime.definition.boss].stats };
-  const edge = Math.floor(Math.random() * 4);
+  const edge = Math.random();
   const edgeOffset = Math.random();
   positionEnemyForSpawn(boss, edge, edgeOffset);
 
@@ -1367,8 +1407,9 @@ function moveEnemyCharge(enemy, directionX, directionY, speed, deltaTime) {
   const startY = enemy.y;
   const desiredX = enemy.x + directionX * speed * deltaTime;
   const desiredY = enemy.y + directionY * speed * deltaTime;
-  const targetX = Math.max(0, Math.min(desiredX, canvas.width - enemy.width));
-  const targetY = Math.max(0, Math.min(desiredY, canvas.height - enemy.height));
+  const bounds = battlefieldRuntime.definition.bounds;
+  const targetX = Math.max(0, Math.min(desiredX, bounds.width - enemy.width));
+  const targetY = Math.max(0, Math.min(desiredY, bounds.height - enemy.height));
   const staticMovement = Battlefields.traceMovement(enemy, targetX - enemy.x,
     targetY - enemy.y, battlefieldRuntime);
   if (Math.hypot(staticMovement.movementX, staticMovement.movementY) > COLLISION_EPSILON) {
@@ -1383,8 +1424,9 @@ function emitBehaviorTelemetry(method, details) {
 }
 
 function updateEnemies(deltaTime) {
+  const bounds = battlefieldRuntime.definition.bounds;
   EnemyBehaviors.updateEnemies({ enemies, definitions: Encounters.ENEMIES, hazards,
-    player, playerVelocity, deltaTime, arena: { width: canvas.width, height: canvas.height },
+    player, playerVelocity, deltaTime, arena: bounds,
     isActive: isCurrentEncounterEnemy, moveChase: moveEnemyTowardPlayer,
     moveCharge: moveEnemyCharge,
     resolvePlayablePoint: point => Battlefields.nearestPlayablePoint(point, battlefieldRuntime),
@@ -1450,8 +1492,9 @@ function moveBossCharge(deltaTime) {
   const cycle = Encounters.BOSSES[bossRuntime.encounterId].chargeCycle;
   const nextX = boss.x + bossRuntime.chargeDirectionX * cycle.chargeSpeed * deltaTime;
   const nextY = boss.y + bossRuntime.chargeDirectionY * cycle.chargeSpeed * deltaTime;
-  const maxX = canvas.width - boss.width;
-  const maxY = canvas.height - boss.height;
+  const bounds = battlefieldRuntime.definition.bounds;
+  const maxX = bounds.width - boss.width;
+  const maxY = bounds.height - boss.height;
   const targetX = Math.max(0, Math.min(nextX, maxX));
   const targetY = Math.max(0, Math.min(nextY, maxY));
   const movement = Battlefields.traceMovement(boss, targetX - boss.x,
@@ -1512,6 +1555,7 @@ function drawHealthBar(entity) {
 
 function drawEnemies() {
   for (const enemy of enemies) {
+    if (!isWorldVisible(enemy, 12)) continue;
     ctx.fillStyle = enemyColors[enemy.type];
     ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
     drawHealthBar(enemy);
@@ -1519,7 +1563,7 @@ function drawEnemies() {
 }
 
 function drawBoss() {
-  if (!boss) {
+  if (!boss || !isWorldVisible(boss, 24)) {
     return;
   }
 
@@ -1533,8 +1577,10 @@ function drawBoss() {
     ctx.setLineDash([18, 12]);
     ctx.beginPath();
     ctx.moveTo(centerX, centerY);
-    ctx.lineTo(centerX + bossRuntime.chargeDirectionX * 1000,
-      centerY + bossRuntime.chargeDirectionY * 1000);
+    const bounds = battlefieldRuntime.definition.bounds;
+    const telegraphLength = Math.hypot(bounds.width, bounds.height);
+    ctx.lineTo(centerX + bossRuntime.chargeDirectionX * telegraphLength,
+      centerY + bossRuntime.chargeDirectionY * telegraphLength);
     ctx.stroke();
     ctx.restore();
   }
@@ -1549,6 +1595,7 @@ function drawBullets() {
   ctx.fillStyle = "#facc15";
 
   for (const bullet of bullets) {
+    if (!isWorldVisible(bullet, 8)) continue;
     ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
   }
 }
@@ -1565,6 +1612,7 @@ function drawWeaponDamage() {
 function drawBattlefield() {
   if (!battlefieldRuntime) return;
   for (const obstacle of battlefieldRuntime.definition.obstacles) {
+    if (!isWorldVisible(obstacle, 8)) continue;
     ctx.fillStyle = "#1f2937";
     ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
     ctx.fillStyle = "#475569";
@@ -1577,7 +1625,14 @@ function drawBattlefield() {
 
 function drawBehaviorArena() {
   const living = enemies.filter(isCurrentEncounterEnemy);
-  EnemyBehaviors.drawArenaCues(ctx, living, hazards, Encounters.ENEMIES);
+  EnemyBehaviors.drawArenaCues(ctx, living, hazards, Encounters.ENEMIES, {
+    bounds: battlefieldRuntime.definition.bounds,
+    isVisible: isWorldVisible
+  });
+}
+
+function isWorldVisible(body, padding = 0) {
+  return !cameraRuntime || GameLayout.intersectsCamera(body, cameraRuntime, padding);
 }
 
 function formatNumber(value, precision = 2) {
@@ -1650,7 +1705,8 @@ function updateHud() {
   levelValue.textContent = level;
   xpValue.textContent = `${xp} / ${xpToNextLevel}`;
   document.getElementById("stageValue").textContent = `STAGE ${stageIndex + 1}`;
-  document.getElementById("waveValue").textContent = runPhase === RUN_PHASES.BOSS_ACTIVE ? "BOSS 1" : `WAVE ${(stageRuntime?.waveIndex ?? 0) + 1} / 5`;
+  document.getElementById("waveValue").textContent = runPhase === RUN_PHASES.BOSS_ACTIVE ? "BOSS 1" :
+    `WAVE ${(stageRuntime?.waveIndex ?? 0) + 1} / ${stageRuntime?.definition.waveCount ?? 0}`;
   backToHubButton.hidden = isChoosingUpgrade || isAbandonConfirmOpen ||
     [RUN_PHASES.INTRODUCTION_PENDING, RUN_PHASES.INTRODUCTION_ACTIVE].includes(runPhase);
 }
@@ -1690,7 +1746,7 @@ function updateArenaPresentation() {
 
 function drawPhasePresentation() {
   let title = "", subtitle = "";
-  if (runPhase === RUN_PHASES.STAGE_CLEAR) title = "STAGE 1 CLEAR";
+  if (runPhase === RUN_PHASES.STAGE_CLEAR) title = `STAGE ${stageIndex + 1} CLEAR`;
   if (isGameOver || isVictory || isAbandoned) {
     title = isAbandoned ? "ABANDONED" : isVictory ? "VICTORY" : "GAME OVER";
     subtitle = lastSettlement ? `Score ${lastSettlement.finalScore} · Points ${lastSettlement.points}` : "No secured checkpoint · Points 0";
@@ -1727,6 +1783,10 @@ function initializePlaytestTelemetry() {
       environment: { playtestMode: true, viewport: { width: globalThis.innerWidth || 0, height: globalThis.innerHeight || 0 },
         devicePixelRatio: globalThis.devicePixelRatio || 1 },
       configuration: { reference: "combat-variety-v1.1", threatCurve: Encounters.STAGES[0].threatCurve,
+        battlefield: battlefieldRuntime ? { seed: battlefieldRuntime.seed,
+          worldWidth: battlefieldRuntime.definition.bounds.width,
+          worldHeight: battlefieldRuntime.definition.bounds.height,
+          obstacleCount: battlefieldRuntime.definition.obstacles.length } : null,
         prototype: Encounters.isPrototypeEnabled(globalThis.location?.search || "") ? Encounters.COMBAT_VARIETY_V1.id : null,
         maxActiveThreatCurve: activeStages[0].maxActiveThreatCurve, enemies: Encounters.ENEMIES,
         clearTimeWeights: Encounters.CONFIG.clearTime, baseHandlingTime: Encounters.CONFIG.baseHandlingTime,
@@ -1791,12 +1851,17 @@ function gameLoop(timestamp) {
   if (currentView === APP_VIEWS.GAME) {
     update(deltaTime);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#7dd3fc";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    if (cameraRuntime) ctx.translate(-cameraRuntime.x, -cameraRuntime.y);
     drawBattlefield();
     drawBehaviorArena();
     drawPlayer();
     drawEnemies();
     drawBoss();
     drawBullets();
+    ctx.restore();
     drawWeaponDamage();
     updateArenaPresentation();
     drawPhasePresentation();

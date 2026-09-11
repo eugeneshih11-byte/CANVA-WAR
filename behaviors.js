@@ -398,9 +398,13 @@
     nextHazardId = 1;
   }
 
-  function drawArenaCues(ctx, enemies, hazards, definitions) {
+  function drawArenaCues(ctx, enemies, hazards, definitions, world = {}) {
+    const bounds = world.bounds || { width: ctx.canvas.width, height: ctx.canvas.height };
+    const isVisible = world.isVisible || (() => true);
     ctx.save();
     for (const hazard of hazards) {
+      if (!isVisible({ x: hazard.x - hazard.radius, y: hazard.y - hazard.radius,
+        width: hazard.radius * 2, height: hazard.radius * 2 }, 8)) continue;
       ctx.beginPath();
       ctx.arc(hazard.x, hazard.y, hazard.radius, 0, Math.PI * 2);
       if (hazard.phase === STATES.TELEGRAPH) {
@@ -419,6 +423,9 @@
     ctx.setLineDash([]);
     for (const support of enemies) {
       if (definitions[support.type]?.behavior.profile !== "support" || !support.behaviorRuntime) continue;
+      const linkedTargets = support.behaviorRuntime.supportedEnemyIds
+        .map(targetId => enemies.find(enemy => enemy.runtimeId === targetId)).filter(Boolean);
+      if (!isVisible(support, 60) && !linkedTargets.some(target => isVisible(target, 20))) continue;
       const supportCenter = center(support);
       const pulse = 44 + Math.sin(support.behaviorRuntime.stateElapsed * 5) * 5;
       ctx.beginPath();
@@ -428,9 +435,7 @@
       ctx.lineWidth = 3;
       ctx.fill();
       ctx.stroke();
-      for (const targetId of support.behaviorRuntime.supportedEnemyIds) {
-        const target = enemies.find(enemy => enemy.runtimeId === targetId);
-        if (!target) continue;
+      for (const target of linkedTargets) {
         const targetCenter = center(target);
         ctx.strokeStyle = "rgba(94, 234, 212, 0.9)";
         ctx.lineWidth = 4;
@@ -441,7 +446,7 @@
       }
     }
     for (const target of enemies) {
-      if (!target.behaviorRuntime?.affectedBySupport) continue;
+      if (!target.behaviorRuntime?.affectedBySupport || !isVisible(target, 20)) continue;
       const targetCenter = center(target);
       const pulse = 7 + Math.sin(target.behaviorRuntime.stateElapsed * 7) * 2;
       ctx.strokeStyle = "rgba(153, 246, 228, 0.95)";
@@ -453,13 +458,14 @@
     for (const enemy of enemies) {
       const runtime = enemy.behaviorRuntime;
       if (runtime?.profile !== "interceptor" || runtime.behaviorState !== STATES.TELEGRAPH || !runtime.lockedTarget) continue;
+      if (!isVisible(enemy, definitions[enemy.type].behavior.maxChargeDistance)) continue;
       const enemyCenter = center(enemy);
       const config = definitions[enemy.type].behavior;
       const axisDistance = (position, direction, maximum) => direction > 0
         ? (maximum - position) / direction : direction < 0 ? -position / direction : Infinity;
       const laneLength = Math.min(config.maxChargeDistance,
-        axisDistance(enemyCenter.x, runtime.chargeDirectionX, ctx.canvas.width),
-        axisDistance(enemyCenter.y, runtime.chargeDirectionY, ctx.canvas.height));
+        axisDistance(enemyCenter.x, runtime.chargeDirectionX, bounds.width),
+        axisDistance(enemyCenter.y, runtime.chargeDirectionY, bounds.height));
       ctx.strokeStyle = "rgba(253, 224, 71, 0.95)";
       ctx.lineWidth = 7;
       ctx.setLineDash([15, 10]);

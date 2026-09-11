@@ -91,6 +91,30 @@ test("invalid pointer inputs and nonpositive display rectangles return null", ()
   assert.equal(GameLayout.clientToCanvasPoint(10, 10, validRect, Infinity, 600), null);
 });
 
+test("Camera follows the Player center and clamps at all World edges", () => {
+  const camera = GameLayout.createCamera(800, 600);
+  const world = { width: 1600, height: 1200 };
+  GameLayout.updateCamera(camera, { x: 780, y: 580, width: 40, height: 40 }, world);
+  assert.deepEqual(camera, { x: 400, y: 300, width: 800, height: 600 });
+  GameLayout.updateCamera(camera, { x: 0, y: 0, width: 40, height: 40 }, world);
+  assert.deepEqual(camera, { x: 0, y: 0, width: 800, height: 600 });
+  GameLayout.updateCamera(camera, { x: 1560, y: 1160, width: 40, height: 40 }, world);
+  assert.deepEqual(camera, { x: 800, y: 600, width: 800, height: 600 });
+});
+
+test("screen/world transforms are explicit round trips and Camera rects are copies", () => {
+  const camera = { x: 400, y: 300, width: 800, height: 600 };
+  const screen = { x: 123, y: 234 };
+  const world = GameLayout.screenToWorld(screen, camera);
+  assert.deepEqual(world, { x: 523, y: 534 });
+  assert.deepEqual(GameLayout.worldToScreen(world, camera), screen);
+  const rectangle = GameLayout.getCameraWorldRect(camera);
+  assert.deepEqual(rectangle, camera);
+  assert.notEqual(rectangle, camera);
+  assert.equal(GameLayout.intersectsCamera({ x: 1200, y: 400, width: 20, height: 20 }, camera), true);
+  assert.equal(GameLayout.intersectsCamera({ x: 1221, y: 400, width: 20, height: 20 }, camera), false);
+});
+
 test("viewport shell keeps logical Canvas dimensions and isolates overlay input", () => {
   assert.match(indexSource, /<canvas id="gameCanvas" width="800" height="600"><\/canvas>/);
   assert.match(styleSource, /\.game-screen\s*\{[^}]*height:\s*100dvh;/s);

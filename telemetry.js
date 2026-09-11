@@ -83,18 +83,21 @@
       if (completedRuns.length > 20) completedRuns.shift();
       run = null;
     }
-    function startRun({ player } = {}) {
+    function startRun({ player, battlefieldId = null, battlefieldSeed = null,
+      worldWidth = null, worldHeight = null, obstacleCount = null } = {}) {
       const playerStart = copy(player || {});
       // A reset without a terminal game event still preserves the previous observations.
       if (run) finishRun({ endReason: "run-ended-other", player: { ...run.playerStart,
         playerHp: run.finalPlayerHp, playerLevel: run.finalPlayerLevel } });
       run = { runSequence: ++sequence, startedAt: timestamp(), endedAt: null, endReason: null,
         completed: false, stageReached: null, waveReached: 0, bossReached: false, victory: false,
+        battlefieldId, battlefieldSeed, worldWidth, worldHeight, obstacleCount,
         playerStart, finalPlayerHp: playerStart.playerHp, finalPlayerLevel: playerStart.playerLevel,
         totalActiveCombatTime: 0, totalIntermissionTime: 0, encounters: [], upgradeHistory: [],
         upgradeChoiceHistory: [], enemyIntroductionsShown: [], settlement: null };
     }
-    function startEncounter({ type, definition, stageId, waveIndex, battlefieldId, player }) {
+    function startEncounter({ type, definition, stageId, waveIndex, battlefieldId,
+      battlefieldSeed, worldWidth, worldHeight, obstacleCount, player }) {
       if (!run) return;
       const source = copy(definition), playerStart = copy(player);
       const enemyComposition = {};
@@ -110,6 +113,10 @@
       if (encounter) finishEncounter({ outcome: "run-ended-other", player: playerStart });
       const data = { type, stageId: source.stageId ?? stageId, waveIndex: source.waveIndex ?? waveIndex,
         battlefieldId: source.battlefieldId ?? battlefieldId ?? null,
+        battlefieldSeed: source.battlefieldSeed ?? battlefieldSeed ?? null,
+        worldWidth: source.worldWidth ?? worldWidth ?? null,
+        worldHeight: source.worldHeight ?? worldHeight ?? null,
+        obstacleCount: source.obstacleCount ?? obstacleCount ?? null,
         ...(type === "boss" ? { bossId: source.id, chargeAttempts: 0, chargeContacts: 0 } :
           { waveId: source.id, templateId: source.templateId,
           threatBudget: source.threatBudget, generatedThreat: source.analysis.threat,

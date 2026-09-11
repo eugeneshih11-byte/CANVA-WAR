@@ -412,6 +412,11 @@ test("Wave start snapshots exact definition, analysis, resolved Player and full 
   const encounter = currentEncounter(game), wave = game.state.currentWave;
   assert.equal(encounter.type, "wave");
   assert.equal(encounter.battlefieldId, "stage-1-field-a");
+  assert.equal(encounter.worldWidth, 1600);
+  assert.equal(encounter.worldHeight, 1200);
+  assert.ok(Number.isInteger(encounter.battlefieldSeed));
+  assert.ok(encounter.obstacleCount >= 4);
+  assert.equal(current(game).battlefieldSeed, encounter.battlefieldSeed);
   for (const key of ["stageId", "waveIndex", "templateId", "threatBudget", "maxActiveThreat"]) {
     assert.equal(encounter[key], wave[key]);
   }
@@ -905,7 +910,7 @@ test("telemetry observer and context-construction failures cannot stop gameplay 
   assert.doesNotThrow(() => game.observeTelemetry("recordDamage", () => { throw new Error("broken context"); }));
   game.keys.d = true;
   assert.doesNotThrow(() => game.update(0.1));
-  assert.equal(game.player.x, 404);
+  assert.equal(game.player.x, 804);
   assert.doesNotThrow(() => game.takeDamage(5));
   assert.equal(game.state.isGameOver, true);
   assert.notEqual(game.state.lastSettlement, null);
