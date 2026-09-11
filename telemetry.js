@@ -138,6 +138,9 @@
         groupReleaseTimes: [], lastSpawnGroupReleaseTime: null, actualLastGroupReleaseTime: null,
         pressureBlockedTime: 0, pressureBlockedEvents: 0, threatBlockedTime: 0, enemyCountBlockedTime: 0,
         pathRequests: 0, pathFailures: 0, navigationFallbacks: 0, playerObstacleContacts: 0,
+        forcedRepaths: 0, stuckRecoveries: 0, maxNoProgressDuration: 0,
+        enemyOffscreenEngagementTime: 0, bossOffscreenTime: 0,
+        bossObstructionEvents: 0, cameraEmptyTerrainTime: 0,
         outcome: null };
       encounter = { data, enemyIntegral: 0, threatIntegral: 0, pressureBlocked: false, released: new Set(),
         behaviorEvents: {
@@ -152,7 +155,8 @@
       run.finalPlayerLevel = playerStart.playerLevel;
     }
     function recordEncounterFrame({ deltaTime, activeEnemyCount, activeThreat, hp, maxHp,
-      nextSpawnGroupIndex, groupDelayElapsed, enemiesByType = {} }) {
+      nextSpawnGroupIndex, groupDelayElapsed, enemiesByType = {}, enemyOffscreenCount = 0,
+      bossOffscreen = false, cameraHasTerrain = true }) {
       if (!run || !encounter) return;
       const dt = nonNegative(deltaTime), count = nonNegative(activeEnemyCount), threat = nonNegative(activeThreat);
       const data = encounter.data;
@@ -162,6 +166,9 @@
       encounter.threatIntegral += threat * dt;
       data.peakActiveEnemyCount = Math.max(data.peakActiveEnemyCount, count);
       data.peakActiveThreat = Math.max(data.peakActiveThreat, threat);
+      data.enemyOffscreenEngagementTime += nonNegative(enemyOffscreenCount) * dt;
+      if (bossOffscreen) data.bossOffscreenTime += dt;
+      if (!cameraHasTerrain) data.cameraEmptyTerrainTime += dt;
       observeHp(hp, maxHp);
       if (maxHp > 0 && hp / maxHp <= 0.3) data.timeAtOrBelow30PercentHp += dt;
       for (const [type, amount] of Object.entries(enemiesByType)) increment(data.enemySecondsByType, type, nonNegative(amount) * dt);
@@ -242,6 +249,18 @@
       }),
       recordNavigationFallback: safe("record navigation fallback", () => {
         if (encounter) encounter.data.navigationFallbacks++;
+      }),
+      recordForcedRepath: safe("record forced repath", () => {
+        if (encounter) encounter.data.forcedRepaths++;
+      }),
+      recordStuckRecovery: safe("record stuck recovery", ({ noProgressDuration } = {}) => {
+        if (!encounter) return;
+        encounter.data.stuckRecoveries++;
+        encounter.data.maxNoProgressDuration = Math.max(
+          encounter.data.maxNoProgressDuration, nonNegative(noProgressDuration));
+      }),
+      recordBossObstruction: safe("record Boss obstruction", () => {
+        if (encounter?.data.type === "boss") encounter.data.bossObstructionEvents++;
       }),
       recordPlayerObstacleContact: safe("record Player obstacle contact", () => {
         if (encounter) encounter.data.playerObstacleContacts++;

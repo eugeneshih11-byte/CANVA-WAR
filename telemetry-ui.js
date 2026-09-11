@@ -54,7 +54,7 @@
         const wrapper = element("div", "", "playtest-table-scroll");
         const table = element("table");
         const head = element("tr");
-        ["Encounter", "Template", "Threat / budget", "Encounter time", "Clear ratio", "Attacks / projectiles", "Damage", "Peak Threat", "Avg Threat", "Blocked (s)", "Special behavior", "Outcome"]
+        ["Encounter", "Template", "Threat / budget", "Encounter time", "Clear ratio", "Attacks / projectiles", "Damage", "Peak Threat", "Avg Threat", "Blocked (s)", "Navigation health", "Special behavior", "Outcome"]
           .forEach(label => head.append(element("th", label)));
         const thead = element("thead"); thead.append(head); table.append(thead);
         const body = element("tbody");
@@ -66,6 +66,12 @@
             `${format(encounter.attackEvents)} / ${format(encounter.shotsFired)}`,
             format(encounter.damageTaken), format(encounter.peakActiveThreat), format(encounter.averageActiveThreat),
             format(encounter.pressureBlockedTime),
+            `Path ${format(encounter.pathRequests)}/${format(encounter.pathFailures)} · ` +
+              `Recover ${format(encounter.forcedRepaths)}/${format(encounter.stuckRecoveries)} · ` +
+              `No-progress ${seconds(encounter.maxNoProgressDuration)} · ` +
+              `Offscreen ${seconds(encounter.enemyOffscreenEngagementTime + encounter.bossOffscreenTime)} · ` +
+              `Boss blocks ${format(encounter.bossObstructionEvents)} · ` +
+              `Empty camera ${seconds(encounter.cameraEmptyTerrainTime)}`,
             encounter.type === "boss" ? "—" :
               `I ${format(encounter.interceptor?.attempts)}/${format(encounter.interceptor?.chargeContacts)}/${format(encounter.interceptor?.missedCharges)} · ` +
               `D ${format(encounter.denier?.hazardsCreated)}/${format(encounter.denier?.hazardContacts)}/${format(encounter.denier?.hazardDamageEvents)} · ` +

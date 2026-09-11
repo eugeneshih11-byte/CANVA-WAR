@@ -33,6 +33,16 @@ Persistent Save is schema v2 and unchanged. Battlefield seed, generated structur
 
 Calibration A Threat, concurrency, Enemy, Wave, Boss, Weapon, Upgrade, XP, Score, Points and Settlement numbers are unchanged. Its clear-time values were measured in the pre-Battlefield empty arena and remain operational analysis references, not final post-geometry calibration evidence.
 
+## Phase A.1 pursuit reliability and battlefield density correction
+
+Pursuit success is measured by progress along the remaining route instead of raw actor displacement. Legitimate sub-threshold route gains accumulate; wall sliding that does not shorten the route no longer conceals a stall. A bounded 0.75-second no-progress window invalidates the cached path, and repeat recovery deterministically rotates A* tie-break variants to choose another side of cover without consuming gameplay RNG. Walkability keeps a tiny clearance tolerance at exact obstacle corners, regular Enemies initially move along the full validated route vector, and moving targets replace stale routes after a bounded target-cell interval.
+
+Boss 1 now validates its full planned committed-charge segment before Telegraph and again before Charge. Terrain obstruction returns it to ordinary pursuit until a useful charge lane exists. A committed Charge is still straight, locked, non-homing, and retains the existing collision stop and Recovery behavior.
+
+Seeded generation now validates local spatial density across all Camera regions sampled at viewport-quarter intervals. Every sample must contain at least one grid-cell area of structure, while at least 85% of the World remains open, preserving traversal space instead of producing a maze. Generation attempts, deterministic fallback, actor-footprint connectivity and protected balance values are unchanged. Seed `785540978` is the permanent reproduction fixture.
+
+Memory-only Encounter telemetry adds forced repaths, stuck recoveries, maximum no-progress duration, regular-Enemy and Boss offscreen engagement time, Boss obstruction events, and empty-Camera-terrain time. These diagnostics do not affect gameplay, Save v2, RNG, Settlement or progression. Phase A.1 is a correction to Phase A foundations; Phase B has not started.
+
 ## Experimental checkpoint: Combat Variety v1.1 correction pass
 
 The query `prototype=combat-variety-v1` selects a separate Stage 1 experiment; normal URLs and `?playtest=1` alone continue to use Calibration A. The prototype is not final Stage 1 content. It preserves all established Threat, concurrency, Wave, Boss, Weapon, Build, XP, Score, Settlement, save and progression calibration.
@@ -1098,6 +1108,7 @@ Phase 2.2 Interface/content    COMPLETE
 Phase 2.3 Rename + Save        COMPLETE
 Battlefield/Nav/Data v1       COMPLETE
 Large World/Camera v1         COMPLETE
+Phase A.1 Pursuit/Density     COMPLETE
 ```
 
 Phase 2.3 已 Commit。

@@ -529,6 +529,15 @@ function legacyCoverRuntime() {
   ]);
 }
 
+function wallWorldRuntime(orientation) {
+  const obstacle = orientation === "vertical"
+    ? { id: "vertical-wall", x: 760, y: 260, width: 80, height: 680,
+      solid: true, blocksProjectiles: true }
+    : { id: "horizontal-wall", x: 300, y: 560, width: 1000, height: 80,
+      solid: true, blocksProjectiles: true };
+  return openWorldRuntime([obstacle]);
+}
+
 function selectUpgrade(game, upgradeId) {
   game.setUpgradeChoices([upgradeId]);
   game.chooseUpgrade("1");
@@ -785,7 +794,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="armoryView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="equipmentView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="gameView" class="app-view game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=20260911-battlefield-navigation-v1"/);
+  assert.match(indexSource, /href="style\.css\?v=20260911-pursuit-density-a1"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1 id="hubTitle">CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
@@ -802,7 +811,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="enemyIntroductionCounterplay"/);
   assert.match(indexSource, /id="enemyIntroductionContinue"/);
   assert.match(indexSource, /aria-modal="true"/);
-  const scriptVersion = "20260911-large-world-camera-v1";
+  const scriptVersion = "20260911-pursuit-density-a1";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
   assert.deepEqual(scriptSources, ["settlement.js", "battlefields.js", "encounters.js", "behaviors.js", "weapons.js", "build.js",
@@ -2170,6 +2179,96 @@ test("Normal, Fast, and Tank chase around static cover without entering terrain"
   }
 });
 
+test("Normal, Fast, and Tank make sustained progress around horizontal and vertical walls", () => {
+  const fixtures = {
+    vertical: { enemy: { x: 320, y: 560 }, player: { x: 1180, y: 560 } },
+    horizontal: { enemy: { x: 780, y: 240 }, player: { x: 780, y: 920 } }
+  };
+  for (const [orientation, fixture] of Object.entries(fixtures)) {
+    for (const [index, type] of ["normal", "fast", "tank"].entries()) {
+      const game = loadGame(); startGame(game);
+      game.setBattlefieldRuntime(wallWorldRuntime(orientation));
+      game.enemies.length = 0;
+      Object.assign(game.player, fixture.player);
+      const enemy = makeEnemy(game, type, { runtimeId: index + 1, ...fixture.enemy });
+      game.enemies.push(enemy);
+      const initialDistance = distanceToPlayer(game, enemy);
+      let previous = { x: enemy.x, y: enemy.y };
+      for (let frame = 0; frame < 3600 && distanceToPlayer(game, enemy) > 150; frame++) {
+        game.updateEnemies(1 / 60);
+        assert.equal(Battlefields.firstSolidCollision(enemy, game.getBattlefieldRuntime()), null,
+          `${orientation} ${type} entered terrain`);
+        const frameMovement = Math.hypot(enemy.x - previous.x, enemy.y - previous.y);
+        assert.ok(frameMovement <= enemy.speed / 60 + 1e-6,
+          `${orientation} ${type} exceeded its movement budget`);
+        previous = { x: enemy.x, y: enemy.y };
+      }
+      assert.ok(distanceToPlayer(game, enemy) < Math.min(150, initialDistance * 0.25),
+        `${orientation} ${type} failed to converge: ${JSON.stringify({ x: enemy.x, y: enemy.y,
+          distance: distanceToPlayer(game, enemy), navigation: enemy.navigationRuntime })}`);
+      assert.ok(enemy.navigationRuntime);
+    }
+  }
+});
+
+test("a moving Player invalidates a stale pursuit target without per-frame route churn", () => {
+  const game = loadGame(); startGame(game);
+  game.setBattlefieldRuntime(wallWorldRuntime("vertical"));
+  game.enemies.length = 0;
+  Object.assign(game.player, { x: 1180, y: 340 });
+  const enemy = makeEnemy(game, "normal", { runtimeId: 41, x: 320, y: 560 });
+  game.enemies.push(enemy);
+  game.updateEnemies(1 / 60);
+  const firstTargetCell = enemy.navigationRuntime.targetCell;
+  for (let frame = 0; frame < 30; frame++) game.updateEnemies(1 / 60);
+  assert.equal(enemy.navigationRuntime.targetCell, firstTargetCell);
+
+  Object.assign(game.player, { x: 1180, y: 900 });
+  const distanceAfterMove = distanceToPlayer(game, enemy);
+  for (let frame = 0; frame < 90 && enemy.navigationRuntime.targetCell === firstTargetCell; frame++) {
+    game.updateEnemies(1 / 60);
+  }
+  assert.notEqual(enemy.navigationRuntime.targetCell, firstTargetCell);
+  for (let frame = 0; frame < 2400 && distanceToPlayer(game, enemy) > 180; frame++) {
+    game.updateEnemies(1 / 60);
+    assert.equal(Battlefields.firstSolidCollision(enemy, game.getBattlefieldRuntime()), null);
+  }
+  assert.ok(distanceToPlayer(game, enemy) < Math.min(180, distanceAfterMove * 0.35));
+});
+
+test("problem seed 785540978 keeps an offscreen pursuer engaged across Camera movement", () => {
+  const game = loadGame({}, { search: "?battlefieldSeed=785540978" }); startGame(game);
+  const battlefield = game.getBattlefieldRuntime();
+  assert.equal(battlefield.seed, 785540978);
+  assert.equal(Battlefields.analyzeLocalDensity(battlefield).emptySampleCount, 0);
+  game.enemies.length = 0;
+  game.spawnEnemy("normal");
+  const enemy = game.enemies[0];
+  assert.equal(Battlefields.isOutsideRect(enemy, game.getCameraRuntime()), true);
+  const initialDistance = distanceToPlayer(game, enemy);
+  let becameVisible = false;
+  for (let frame = 0; frame < 1800; frame++) {
+    game.updateEnemies(1 / 60);
+    game.updateCameraRuntime();
+    assert.equal(Battlefields.firstSolidCollision(enemy, battlefield), null);
+    if (!Battlefields.isOutsideRect(enemy, game.getCameraRuntime())) {
+      becameVisible = true;
+      break;
+    }
+  }
+  assert.equal(becameVisible, true);
+  assert.ok(distanceToPlayer(game, enemy) < initialDistance);
+
+  const oldTargetCell = enemy.navigationRuntime.targetCell;
+  Object.assign(game.player, { x: 1180, y: 900 });
+  assert.equal(Battlefields.isStaticPositionValid(game.player, battlefield), true);
+  for (let frame = 0; frame < 120 && enemy.navigationRuntime.targetCell === oldTargetCell; frame++) {
+    game.updateEnemies(1 / 60);
+    game.updateCameraRuntime();
+  }
+  assert.notEqual(enemy.navigationRuntime.targetCell, oldTargetCell);
+});
+
 test("enemy overlap recovery never resolves one stack into static terrain", () => {
   const game = loadGame(); startGame(game);
   game.setBattlefieldRuntime(legacyCoverRuntime());
@@ -2260,6 +2359,49 @@ test("Boss chase uses navigation and Boss charge stops at terrain for full Recov
   game.updateBoss(0.3);
   assert.equal(state.bossRuntime.phase, "RECOVERY");
   assert.ok(state.boss.x + state.boss.width <= 560);
+});
+
+test("Boss pursues around blocked charge lanes before committing a straight attack", () => {
+  for (const fixture of [
+    { name: "synthetic vertical wall", battlefield: wallWorldRuntime("vertical"),
+      boss: { x: 600, y: 560 }, player: { x: 1180, y: 560 } },
+    { name: "problem seed", battlefield: null,
+      boss: { x: 300, y: 600 }, player: { x: 700, y: 600 } }
+  ]) {
+    const game = loadGame({}, fixture.battlefield ? {} : { search: "?battlefieldSeed=785540978" });
+    startGame(game);
+    if (fixture.battlefield) game.setBattlefieldRuntime(fixture.battlefield);
+    game.startBossEncounter();
+    const state = game.getState();
+    Object.assign(state.boss, fixture.boss);
+    Object.assign(game.player, fixture.player);
+    Object.assign(state.bossRuntime, { phase: "CHASE", phaseElapsed: 0,
+      chaseDuration: 0.1, navigationRuntime: null });
+    game.updateBoss(0.1);
+    assert.equal(state.bossRuntime.phase, "CHASE", `${fixture.name} accepted a blocked lane`);
+
+    const initialDistance = distanceToPlayer(game, state.boss);
+    let sawTelegraph = false;
+    let previous = { x: state.boss.x, y: state.boss.y };
+    for (let frame = 0; frame < 4800 && !sawTelegraph; frame++) {
+      game.updateBoss(1 / 60);
+      assert.equal(Battlefields.firstSolidCollision(state.boss, game.getBattlefieldRuntime()), null,
+        `${fixture.name} Boss entered terrain`);
+      const frameMovement = Math.hypot(state.boss.x - previous.x, state.boss.y - previous.y);
+      assert.ok(frameMovement <= 420 / 60 + 1e-6, `${fixture.name} Boss teleported`);
+      previous = { x: state.boss.x, y: state.boss.y };
+      if (state.bossRuntime.phase === "TELEGRAPH") {
+        sawTelegraph = true;
+        assert.equal(Battlefields.hasLineOfTravel(state.boss, game.player,
+          game.getBattlefieldRuntime()), true, `${fixture.name} telegraphed through terrain`);
+      }
+    }
+    assert.equal(sawTelegraph, true, `${fixture.name} Boss never found a useful charge lane: ${JSON.stringify({
+      x: state.boss.x, y: state.boss.y, phase: state.bossRuntime.phase,
+      navigation: state.bossRuntime.navigationRuntime })}`);
+    assert.ok(distanceToPlayer(game, state.boss) < initialDistance,
+      `${fixture.name} Boss made no engagement progress`);
+  }
 });
 
 test("Enemy Introduction pause freezes position and navigation runtime", () => {

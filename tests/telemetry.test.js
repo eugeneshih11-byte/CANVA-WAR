@@ -82,12 +82,22 @@ test("Battlefield navigation diagnostics are encounter-scoped counters", () => {
   telemetry.recordPathFailure();
   telemetry.recordNavigationFallback();
   telemetry.recordPlayerObstacleContact();
+  telemetry.recordForcedRepath();
+  telemetry.recordForcedRepath();
+  telemetry.recordStuckRecovery({ noProgressDuration: 0.8 });
+  telemetry.recordStuckRecovery({ noProgressDuration: 1.1 });
+  frame(telemetry, { deltaTime: 2, enemyOffscreenCount: 3, cameraHasTerrain: false });
   const encounter = currentEncounter(telemetry);
   assert.equal(encounter.battlefieldId, "stage-1-field-a");
   assert.equal(encounter.pathRequests, 2);
   assert.equal(encounter.pathFailures, 1);
   assert.equal(encounter.navigationFallbacks, 1);
   assert.equal(encounter.playerObstacleContacts, 1);
+  assert.equal(encounter.forcedRepaths, 2);
+  assert.equal(encounter.stuckRecoveries, 2);
+  assert.equal(encounter.maxNoProgressDuration, 1.1);
+  assert.equal(encounter.enemyOffscreenEngagementTime, 6);
+  assert.equal(encounter.cameraEmptyTerrainTime, 2);
 });
 test("disabled telemetry performs no recording, input copying or diagnostics", () => {
   const poison = new Proxy({}, { get() { throw new Error("input read"); } });
@@ -393,7 +403,10 @@ test("Boss is separate from Wave Template observations and retains its analysis 
   telemetry.recordBossChargeAttempt();
   telemetry.recordBossChargeAttempt();
   telemetry.recordBossChargeContact();
-  frame(telemetry, { deltaTime: 15, activeEnemyCount: 1 });
+  telemetry.recordBossObstruction();
+  telemetry.recordBossObstruction();
+  frame(telemetry, { deltaTime: 15, activeEnemyCount: 1,
+    bossOffscreen: true, cameraHasTerrain: false });
   telemetry.recordBulletHit({ enemyType: "boss", damage: 2 });
   telemetry.finishEncounter({ outcome: "clear", player });
   telemetry.finishRun({ endReason: "victory", player });
@@ -406,6 +419,9 @@ test("Boss is separate from Wave Template observations and retains its analysis 
   assert.equal(boss.analysis.expectedClearTime, 15);
   assert.equal(boss.chargeAttempts, 2);
   assert.equal(boss.chargeContacts, 1);
+  assert.equal(boss.bossObstructionEvents, 2);
+  assert.equal(boss.bossOffscreenTime, 15);
+  assert.equal(boss.cameraEmptyTerrainTime, 15);
   assert.equal(typeof boss.encounterElapsedTime, "number");
   assert.equal(boss.encounterElapsedTime, 15);
   assert.equal(typeof boss.actualClearTime, "number");

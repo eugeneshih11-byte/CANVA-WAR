@@ -1392,14 +1392,31 @@ function moveEnemyTowardPlayer(enemy, deltaTime) {
   const movementY = directionY * enemy.speed * deltaTime;
   const startX = enemy.x;
   const startY = enemy.y;
-  const movedX = tryMoveEnemy(enemy, movementX, 0);
-  const movedY = tryMoveEnemy(enemy, 0, movementY);
-  if (!movedX && !movedY && recoverEnemyOverlap(enemy, enemy.speed * deltaTime)) {
+  const waypointIndexBefore = enemy.navigationRuntime.waypointIndex;
+  const remainingBefore = intent.remainingDistance;
+  const movedDirectly = tryMoveEnemy(enemy, movementX, movementY);
+  let movedX = false;
+  let movedY = false;
+  if (!movedDirectly) {
+    movedX = tryMoveEnemy(enemy, movementX, 0);
+    movedY = tryMoveEnemy(enemy, 0, movementY);
+  }
+  if (!movedDirectly && !movedX && !movedY && recoverEnemyOverlap(enemy, enemy.speed * deltaTime)) {
     observeTelemetry("recordNavigationFallback");
   }
   const movedDistance = Math.hypot(enemy.x - startX, enemy.y - startY);
-  Battlefields.recordNavigationProgress(enemy.navigationRuntime,
-    Math.min(enemy.speed * deltaTime, directionLength), movedDistance, deltaTime);
+  const recovered = Battlefields.recordNavigationProgress(enemy.navigationRuntime, {
+    attemptedDistance: Math.min(enemy.speed * deltaTime, directionLength), movedDistance, deltaTime,
+    beforeDistance: remainingBefore,
+    afterDistance: Battlefields.navigationRemainingDistance(enemy, enemy.navigationRuntime),
+    waypointIndexBefore, waypointIndexAfter: enemy.navigationRuntime.waypointIndex
+  });
+  if (recovered) {
+    observeTelemetry("recordForcedRepath");
+    observeTelemetry("recordStuckRecovery", () => ({
+      noProgressDuration: enemy.navigationRuntime.lastRecoveryDuration
+    }));
+  }
 }
 
 function moveEnemyCharge(enemy, directionX, directionY, speed, deltaTime) {
@@ -1439,6 +1456,26 @@ function lockBossChargeDirection() {
   const directionLength = Math.hypot(directionX, directionY);
   bossRuntime.chargeDirectionX = directionLength > 0 ? directionX / directionLength : 1;
   bossRuntime.chargeDirectionY = directionLength > 0 ? directionY / directionLength : 0;
+  const cycle = Encounters.BOSSES[bossRuntime.encounterId].chargeCycle;
+  bossRuntime.chargePlannedDistance = Math.min(directionLength,
+    cycle.chargeSpeed * cycle.chargeDuration);
+}
+
+function isBossChargeLaneViable() {
+  const plannedDistance = bossRuntime.chargePlannedDistance || 0;
+  if (plannedDistance <= COLLISION_EPSILON) return true;
+  const movement = Battlefields.traceMovement(boss,
+    bossRuntime.chargeDirectionX * plannedDistance,
+    bossRuntime.chargeDirectionY * plannedDistance, battlefieldRuntime);
+  return !movement.collision || Math.hypot(movement.movementX, movement.movementY) +
+    Battlefields.GRID_CELL_SIZE >= plannedDistance;
+}
+
+function recoverBossObstruction() {
+  bossRuntime.phase = BOSS_PHASES.CHASE;
+  bossRuntime.phaseElapsed = 0;
+  bossRuntime.chaseDuration = Encounters.BOSSES[bossRuntime.encounterId].chargeCycle.chaseDuration;
+  observeTelemetry("recordBossObstruction");
 }
 
 function enterBossPhase(phase) {
@@ -1459,8 +1496,14 @@ function getBossPhaseDuration() {
 }
 
 function advanceBossPhase() {
-  if (bossRuntime.phase === BOSS_PHASES.CHASE) enterBossPhase(BOSS_PHASES.TELEGRAPH);
-  else if (bossRuntime.phase === BOSS_PHASES.TELEGRAPH) enterBossPhase(BOSS_PHASES.CHARGE);
+  if (bossRuntime.phase === BOSS_PHASES.CHASE) {
+    lockBossChargeDirection();
+    if (!isBossChargeLaneViable()) recoverBossObstruction();
+    else enterBossPhase(BOSS_PHASES.TELEGRAPH);
+  } else if (bossRuntime.phase === BOSS_PHASES.TELEGRAPH) {
+    if (!isBossChargeLaneViable()) recoverBossObstruction();
+    else enterBossPhase(BOSS_PHASES.CHARGE);
+  }
   else if (bossRuntime.phase === BOSS_PHASES.CHARGE) enterBossPhase(BOSS_PHASES.RECOVERY);
   else enterBossPhase(BOSS_PHASES.CHASE);
 }
@@ -1479,12 +1522,33 @@ function moveBossTowardPlayer(deltaTime) {
   directionX /= directionLength;
   directionY /= directionLength;
   const attemptedDistance = Math.min(boss.speed * deltaTime, directionLength);
+  const waypointIndexBefore = bossRuntime.navigationRuntime.waypointIndex;
+  const remainingBefore = intent.remainingDistance;
+  const startX = boss.x;
+  const startY = boss.y;
   const movement = Battlefields.traceMovement(boss,
     directionX * attemptedDistance, directionY * attemptedDistance, battlefieldRuntime);
   boss.x = movement.x;
   boss.y = movement.y;
-  Battlefields.recordNavigationProgress(bossRuntime.navigationRuntime, attemptedDistance,
-    Math.hypot(movement.movementX, movement.movementY), deltaTime);
+  if (movement.collision) {
+    boss.x = startX;
+    boss.y = startY;
+    boss.x = Battlefields.moveAxis(boss, directionX * attemptedDistance, "x", battlefieldRuntime).x;
+    boss.y = Battlefields.moveAxis(boss, directionY * attemptedDistance, "y", battlefieldRuntime).y;
+  }
+  const recovered = Battlefields.recordNavigationProgress(bossRuntime.navigationRuntime, {
+    attemptedDistance, movedDistance: Math.hypot(boss.x - startX, boss.y - startY), deltaTime,
+    beforeDistance: remainingBefore,
+    afterDistance: Battlefields.navigationRemainingDistance(boss, bossRuntime.navigationRuntime),
+    waypointIndexBefore, waypointIndexAfter: bossRuntime.navigationRuntime.waypointIndex
+  });
+  if (recovered) {
+    observeTelemetry("recordForcedRepath");
+    observeTelemetry("recordStuckRecovery", () => ({
+      noProgressDuration: bossRuntime.navigationRuntime.lastRecoveryDuration
+    }));
+    observeTelemetry("recordBossObstruction");
+  }
   bossRuntime.collisionPhase = BOSS_PHASES.CHASE;
 }
 
@@ -1825,8 +1889,13 @@ function observeCombatFrame(deltaTime) {
     const living = runPhase === RUN_PHASES.WAVE_ACTIVE ? enemies.filter(enemy => enemy.waveId === currentWave.id && enemy.hp > 0) : [];
     const enemiesByType = {};
     living.forEach(enemy => { enemiesByType[enemy.type] = (enemiesByType[enemy.type] || 0) + 1; });
+    const enemyOffscreenCount = living.filter(enemy => !isWorldVisible(enemy)).length;
+    const bossOffscreen = runPhase === RUN_PHASES.BOSS_ACTIVE && boss && !isWorldVisible(boss);
+    const cameraHasTerrain = battlefieldRuntime?.definition.obstacles
+      .some(obstacle => isWorldVisible(obstacle));
     return { deltaTime, hp: player.hp, maxHp: player.maxHp, activeEnemyCount: living.length,
       activeThreat: living.reduce((sum, enemy) => sum + Encounters.ENEMIES[enemy.type].threatCost, 0), enemiesByType,
+      enemyOffscreenCount, bossOffscreen, cameraHasTerrain,
       nextSpawnGroupIndex: waveRuntime?.nextSpawnGroupIndex, groupDelayElapsed: waveRuntime?.groupDelayElapsed };
   });
 }

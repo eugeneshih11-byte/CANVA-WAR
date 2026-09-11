@@ -5,13 +5,24 @@
   const GRID_CELL_SIZE = 20;
   const SWEEP_STEP = 4;
   const EPSILON = 1e-6;
+  const NAVIGATION = Object.freeze({
+    waypointRadius: GRID_CELL_SIZE * 0.25,
+    minimumRouteProgress: GRID_CELL_SIZE * 0.025,
+    noProgressTimeout: 0.75,
+    repathIntervalBase: 0.65,
+    repathIntervalStep: 0.05,
+    alternateRouteCount: 4
+  });
   const GENERATION = Object.freeze({
     maxAttempts: 6,
     placementsPerObstacle: 24,
     obstaclesPerViewport: 2.5,
     minimumObstacleCountRatio: 0.7,
     spawnSafetyActorLengths: 2,
-    obstacleGapActorLengths: 1.2
+    obstacleGapActorLengths: 1.2,
+    cameraSampleStepRatio: 0.25,
+    minimumLocalCoverageCells: 1,
+    minimumWorldOpenAreaRatio: 0.85
   });
 
   function freeze(value) {
@@ -198,8 +209,14 @@
   ]);
 
   function heapCompare(first, second) {
-    return first.f - second.f || first.g - second.g ||
+    return first.f - second.f || first.tie - second.tie || first.g - second.g ||
       first.row - second.row || first.column - second.column;
+  }
+
+  function routeTie(column, row, shape, routeVariant) {
+    const vertical = routeVariant % 2 === 0 ? row : shape.rows - row;
+    const horizontal = routeVariant < 2 ? column : shape.columns - column;
+    return vertical * shape.columns + horizontal;
   }
 
   function heapPush(heap, value) {
@@ -244,6 +261,44 @@
     return path.reverse();
   }
 
+  function clearedTurningPoint(point, origin, body, battlefield) {
+    const candidate = { ...point, width: body.width, height: body.height };
+    const alternatives = [];
+    for (const obstacle of solidObstacles(battlefield)) {
+      const overlapsX = candidate.x < obstacle.x + obstacle.width - EPSILON &&
+        candidate.x + candidate.width > obstacle.x + EPSILON;
+      const overlapsY = candidate.y < obstacle.y + obstacle.height - EPSILON &&
+        candidate.y + candidate.height > obstacle.y + EPSILON;
+      if (overlapsX && Math.abs(candidate.y + candidate.height - obstacle.y) <= EPSILON) {
+        const awayX = candidate.x + candidate.width / 2 < obstacle.x + obstacle.width / 2
+          ? -GRID_CELL_SIZE : GRID_CELL_SIZE;
+        alternatives.push({ x: point.x + awayX, y: point.y - GRID_CELL_SIZE });
+        alternatives.push({ x: point.x, y: point.y - GRID_CELL_SIZE });
+      }
+      if (overlapsX && Math.abs(candidate.y - (obstacle.y + obstacle.height)) <= EPSILON) {
+        const awayX = candidate.x + candidate.width / 2 < obstacle.x + obstacle.width / 2
+          ? -GRID_CELL_SIZE : GRID_CELL_SIZE;
+        alternatives.push({ x: point.x + awayX, y: point.y + GRID_CELL_SIZE });
+        alternatives.push({ x: point.x, y: point.y + GRID_CELL_SIZE });
+      }
+      if (overlapsY && Math.abs(candidate.x + candidate.width - obstacle.x) <= EPSILON) {
+        const awayY = candidate.y + candidate.height / 2 < obstacle.y + obstacle.height / 2
+          ? -GRID_CELL_SIZE : GRID_CELL_SIZE;
+        alternatives.push({ x: point.x - GRID_CELL_SIZE, y: point.y + awayY });
+        alternatives.push({ x: point.x - GRID_CELL_SIZE, y: point.y });
+      }
+      if (overlapsY && Math.abs(candidate.x - (obstacle.x + obstacle.width)) <= EPSILON) {
+        const awayY = candidate.y + candidate.height / 2 < obstacle.y + obstacle.height / 2
+          ? -GRID_CELL_SIZE : GRID_CELL_SIZE;
+        alternatives.push({ x: point.x + GRID_CELL_SIZE, y: point.y + awayY });
+        alternatives.push({ x: point.x + GRID_CELL_SIZE, y: point.y });
+      }
+    }
+    return alternatives.find(alternative =>
+      isStaticPositionValid({ ...alternative, width: body.width, height: body.height }, battlefield) &&
+      hasLineOfTravel(origin, alternative, battlefield)) || point;
+  }
+
   function smoothPath(body, path, battlefield, target) {
     const points = path.slice(1);
     if (isStaticPositionValid({ ...target, width: body.width, height: body.height }, battlefield)) points.push(target);
@@ -258,7 +313,9 @@
           break;
         }
       }
-      const point = points[selected];
+      const point = selected < points.length - 1
+        ? clearedTurningPoint(points[selected], origin, body, battlefield)
+        : points[selected];
       smoothed.push(point);
       origin = { ...point, width: body.width, height: body.height };
       index = selected + 1;
@@ -266,7 +323,7 @@
     return smoothed;
   }
 
-  function findPath(body, target, battlefield, cellSize = GRID_CELL_SIZE) {
+  function findPath(body, target, battlefield, cellSize = GRID_CELL_SIZE, routeVariant = 0) {
     const cache = getWalkability(body, battlefield, cellSize);
     if (!cache) return null;
     const { shape, walkable } = cache;
@@ -280,7 +337,8 @@
     const startKey = `${start.column},${start.row}`;
     const goalKey = `${goal.column},${goal.row}`;
     const open = [];
-    heapPush(open, { column: start.column, row: start.row, key: startKey, g: 0, f: 0 });
+    heapPush(open, { column: start.column, row: start.row, key: startKey, g: 0, f: 0,
+      tie: routeTie(start.column, start.row, shape, routeVariant) });
     const scores = new Map([[startKey, 0]]);
     const cameFrom = new Map();
     const closed = new Set();
@@ -309,7 +367,8 @@
         const dx = Math.abs(goal.column - column);
         const dy = Math.abs(goal.row - row);
         const heuristic = Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy);
-        heapPush(open, { column, row, key, g: tentative, f: tentative + heuristic });
+        heapPush(open, { column, row, key, g: tentative, f: tentative + heuristic,
+          tie: routeTie(column, row, shape, routeVariant) });
       }
     }
     return null;
@@ -317,7 +376,27 @@
 
   function createNavigationRuntime(runtimeId = 0) {
     return { runtimeId, waypoints: [], waypointIndex: 0, targetCell: null,
-      repathElapsed: 0, forceRepath: false, stuckElapsed: 0 };
+      repathElapsed: 0, forceRepath: false, stuckElapsed: 0,
+      noProgressDuration: 0, maxNoProgressDuration: 0, lastRecoveryDuration: 0,
+      routeProgressAccumulator: 0, forcedRepaths: 0, stuckRecoveries: 0,
+      routeVariant: 0, routeTarget: null };
+  }
+
+  function navigationRemainingDistance(body, runtime) {
+    if (!body || !runtime) return Infinity;
+    let distance = 0;
+    let origin = body;
+    const remaining = runtime.waypoints.slice(runtime.waypointIndex);
+    for (const waypoint of remaining) {
+      distance += Math.hypot(waypoint.x - origin.x, waypoint.y - origin.y);
+      origin = waypoint;
+    }
+    const target = runtime.routeTarget;
+    const last = remaining.at(-1);
+    if (target && (!last || Math.hypot(target.x - last.x, target.y - last.y) > EPSILON)) {
+      distance += Math.hypot(target.x - origin.x, target.y - origin.y);
+    }
+    return distance;
   }
 
   function navigationIntent(body, target, battlefield, runtime, deltaTime) {
@@ -335,49 +414,76 @@
       runtime.waypointIndex = 0;
       runtime.targetCell = `${Math.floor(destination.x / GRID_CELL_SIZE)},${Math.floor(destination.y / GRID_CELL_SIZE)}`;
       runtime.forceRepath = false;
-      return { destination, requested: false, failed: false, fallback: false, direct: true };
+      runtime.routeTarget = destination;
+      return { destination, requested: false, failed: false, fallback: false, direct: true,
+        remainingDistance: navigationRemainingDistance(body, runtime) };
     }
     const targetCell = `${Math.floor(destination.x / GRID_CELL_SIZE)},${Math.floor(destination.y / GRID_CELL_SIZE)}`;
-    const repathInterval = 0.65 + (Math.abs(runtime.runtimeId || 0) % 5) * 0.05;
+    const repathInterval = NAVIGATION.repathIntervalBase +
+      (Math.abs(runtime.runtimeId || 0) % 5) * NAVIGATION.repathIntervalStep;
     const routeInvalid = runtime.waypoints.slice(runtime.waypointIndex).some(point =>
       !isStaticPositionValid({ ...point, width: body.width, height: body.height }, battlefield));
-    const needsRoute = runtime.forceRepath || routeInvalid || runtime.targetCell !== targetCell ||
-      runtime.waypointIndex >= runtime.waypoints.length || runtime.repathElapsed >= repathInterval;
+    const targetChanged = runtime.targetCell !== targetCell;
+    const routeExhausted = runtime.waypointIndex >= runtime.waypoints.length;
+    const needsRoute = runtime.forceRepath || routeInvalid || runtime.targetCell === null ||
+      routeExhausted || (targetChanged && runtime.repathElapsed >= repathInterval);
     let requested = false;
     let failed = false;
     if (needsRoute) {
       requested = true;
-      const path = findPath(body, destination, battlefield);
+      const path = findPath(body, destination, battlefield, GRID_CELL_SIZE, runtime.routeVariant);
       runtime.waypoints = path || [];
       runtime.waypointIndex = 0;
+      runtime.routeProgressAccumulator = 0;
       runtime.targetCell = targetCell;
       runtime.repathElapsed = 0;
       runtime.forceRepath = false;
+      runtime.routeTarget = destination;
       failed = !path;
     }
     while (runtime.waypointIndex < runtime.waypoints.length) {
       const point = runtime.waypoints[runtime.waypointIndex];
-      if (Math.hypot(point.x - body.x, point.y - body.y) > 5) break;
+      if (Math.hypot(point.x - body.x, point.y - body.y) > NAVIGATION.waypointRadius) break;
       runtime.waypointIndex++;
     }
     const waypoint = runtime.waypoints[runtime.waypointIndex];
     return { destination: waypoint || destination, requested, failed,
-      fallback: failed || !waypoint, direct: false };
+      fallback: failed || !waypoint, direct: false,
+      remainingDistance: navigationRemainingDistance(body, runtime) };
   }
 
-  function recordNavigationProgress(runtime, attemptedDistance, movedDistance, deltaTime) {
+  function recordNavigationProgress(runtime, progress, legacyMovedDistance, legacyDeltaTime) {
     if (!runtime) return false;
-    const dt = Number.isFinite(deltaTime) ? Math.max(0, deltaTime) : 0;
-    if (attemptedDistance > 0.1 && movedDistance < Math.min(0.1, attemptedDistance * 0.1)) {
-      runtime.stuckElapsed += dt;
-    } else {
-      runtime.stuckElapsed = 0;
-    }
-    if (runtime.stuckElapsed < 0.6) return false;
+    const details = typeof progress === "object" && progress ? progress : {
+      attemptedDistance: progress, movedDistance: legacyMovedDistance,
+      beforeDistance: Infinity, afterDistance: Infinity, deltaTime: legacyDeltaTime
+    };
+    const dt = Number.isFinite(details.deltaTime) ? Math.max(0, details.deltaTime) : 0;
+    const routeImprovement = Number.isFinite(details.beforeDistance) && Number.isFinite(details.afterDistance)
+      ? details.beforeDistance - details.afterDistance : 0;
+    const waypointAdvanced = (details.waypointIndexAfter ?? 0) > (details.waypointIndexBefore ?? 0);
+    const attempted = Number.isFinite(details.attemptedDistance) && details.attemptedDistance > 0.1;
+    const moved = Number.isFinite(details.movedDistance) ? details.movedDistance : 0;
+    const legacyProgress = !Number.isFinite(details.beforeDistance) &&
+      moved >= Math.min(0.1, Math.max(0, details.attemptedDistance || 0) * 0.1);
+    runtime.routeProgressAccumulator += Math.max(0, routeImprovement);
+    const meaningful = waypointAdvanced ||
+      runtime.routeProgressAccumulator >= NAVIGATION.minimumRouteProgress || legacyProgress;
+    if (meaningful) runtime.routeProgressAccumulator = 0;
+    runtime.noProgressDuration = attempted && !meaningful ? runtime.noProgressDuration + dt : 0;
+    runtime.stuckElapsed = runtime.noProgressDuration;
+    runtime.maxNoProgressDuration = Math.max(runtime.maxNoProgressDuration, runtime.noProgressDuration);
+    if (runtime.noProgressDuration < NAVIGATION.noProgressTimeout) return false;
+    runtime.lastRecoveryDuration = runtime.noProgressDuration;
+    runtime.noProgressDuration = 0;
     runtime.stuckElapsed = 0;
+    runtime.routeProgressAccumulator = 0;
     runtime.forceRepath = true;
     runtime.waypoints = [];
     runtime.waypointIndex = 0;
+    runtime.forcedRepaths++;
+    runtime.stuckRecoveries++;
+    runtime.routeVariant = (runtime.routeVariant + 1) % NAVIGATION.alternateRouteCount;
     return true;
   }
 
@@ -442,6 +548,67 @@
     ];
   }
 
+  function sampleAxisOrigins(worldLength, viewportLength, stepRatio) {
+    const maximum = Math.max(0, worldLength - viewportLength);
+    const step = Math.max(GRID_CELL_SIZE, viewportLength * stepRatio);
+    const origins = [];
+    for (let value = 0; value < maximum - EPSILON; value += step) origins.push(value);
+    origins.push(maximum);
+    return [...new Set(origins.map(value => Math.round(value * 1000) / 1000))];
+  }
+
+  function intersectionArea(first, second) {
+    const width = Math.max(0, Math.min(first.x + first.width, second.x + second.width) -
+      Math.max(first.x, second.x));
+    const height = Math.max(0, Math.min(first.y + first.height, second.y + second.height) -
+      Math.max(first.y, second.y));
+    return width * height;
+  }
+
+  function analyzeLocalDensity(battlefield, actorFootprints = []) {
+    const definition = definitionOf(battlefield);
+    const viewport = definition?.viewport || VIEWPORT;
+    const bounds = definition?.bounds;
+    const generation = battlefield?.sourceDefinition?.generation ||
+      getDefinition(definition?.id)?.generation || GENERATION;
+    if (!bounds || !viewport) return null;
+    const originsX = sampleAxisOrigins(bounds.width, viewport.width,
+      generation.cameraSampleStepRatio);
+    const originsY = sampleAxisOrigins(bounds.height, viewport.height,
+      generation.cameraSampleStepRatio);
+    const viewportArea = viewport.width * viewport.height;
+    const largestActorClearanceArea = normalizedFootprints(actorFootprints)
+      .reduce((largest, footprint) => Math.max(largest,
+        Math.max(footprint.width, footprint.height) * GRID_CELL_SIZE), 0);
+    const requiredArea = Math.max(
+      GRID_CELL_SIZE * GRID_CELL_SIZE * generation.minimumLocalCoverageCells,
+      largestActorClearanceArea
+    );
+    const samples = [];
+    for (const y of originsY) {
+      for (const x of originsX) {
+        const camera = { x, y, width: viewport.width, height: viewport.height };
+        const obstacleArea = solidObstacles(battlefield)
+          .reduce((sum, obstacle) => sum + intersectionArea(camera, obstacle), 0);
+        samples.push({ x, y, obstacleArea, coverageRatio: obstacleArea / viewportArea,
+          hasStructure: obstacleArea + EPSILON >= requiredArea });
+      }
+    }
+    const totalObstacleArea = solidObstacles(battlefield)
+      .reduce((sum, obstacle) => sum + obstacle.width * obstacle.height, 0);
+    const coverages = samples.map(sample => sample.coverageRatio);
+    return {
+      sampleCount: samples.length,
+      requiredLocalArea: requiredArea,
+      emptySampleCount: samples.filter(sample => !sample.hasStructure).length,
+      minimumLocalCoverage: Math.min(...coverages),
+      maximumLocalCoverage: Math.max(...coverages),
+      worldObstacleCoverage: totalObstacleArea / (bounds.width * bounds.height),
+      worldOpenAreaRatio: 1 - totalObstacleArea / (bounds.width * bounds.height),
+      samples
+    };
+  }
+
   function validateGeneratedBattlefield(battlefield, actorFootprints = []) {
     const definition = definitionOf(battlefield);
     const errors = [];
@@ -452,6 +619,13 @@
       if (!isInsideBounds(obstacle, { bounds: definition.bounds, obstacles: [] })) {
         errors.push(`Obstacle outside World: ${obstacle.id}`);
       }
+    }
+    const density = analyzeLocalDensity(battlefield, actorFootprints);
+    const generation = battlefield?.sourceDefinition?.generation ||
+      getDefinition(definition?.id)?.generation || GENERATION;
+    if (!density || density.emptySampleCount > 0) errors.push("Viewport-scale empty terrain region");
+    if (density && density.worldOpenAreaRatio < generation.minimumWorldOpenAreaRatio) {
+      errors.push("Battlefield is too structurally dense");
     }
     for (const footprint of footprints) {
       const spawn = centeredBody(definition.playerSpawnRatio, definition.bounds, footprint);
@@ -651,12 +825,13 @@
     return candidates;
   }
 
-  const api = Object.freeze({ DEFINITIONS, VIEWPORT, WORLD_SCALE, GENERATION, GRID_CELL_SIZE,
+  const api = Object.freeze({ DEFINITIONS, VIEWPORT, WORLD_SCALE, GENERATION, NAVIGATION, GRID_CELL_SIZE,
     normalizeSeed, createSeededRng, getDefinition, generateBattlefield, createRuntime,
     validateGeneratedBattlefield, overlaps, solidObstacles, blockingProjectileObstacles,
     isInsideBounds, firstSolidCollision, isStaticPositionValid, traceMovement, moveAxis,
     hasLineOfTravel, buildWalkability, findPath, createNavigationRuntime,
-    navigationIntent, recordNavigationProgress, nearestPlayablePoint, isOutsideRect,
+    navigationIntent, navigationRemainingDistance, recordNavigationProgress,
+    nearestPlayablePoint, analyzeLocalDensity, isOutsideRect,
     offscreenSpawnRegions, spawnCandidates });
   global.Battlefields = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
