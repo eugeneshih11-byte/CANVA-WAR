@@ -53,7 +53,8 @@
         clearTimeRatio: actualClearTime !== null && data.analysis.expectedClearTime > 0
           ? actualClearTime / data.analysis.expectedClearTime : null,
         averageActiveEnemyCount: duration > 0 ? encounter.enemyIntegral / duration : 0,
-        averageActiveThreat: duration > 0 ? encounter.threatIntegral / duration : 0 });
+        averageActiveThreat: duration > 0 ? encounter.threatIntegral / duration : 0,
+        averageVisibleFill: data.fillSampleTime > 0 ? data.fillIntegral / data.fillSampleTime : data.visibleFill });
     }
     function runSnapshot() {
       if (!run) return copy(completedRuns.at(-1) || null);
@@ -134,6 +135,9 @@
           missedCharges: 0, interruptedTelegraphs: 0 },
         denier: { casts: 0, hazardsCreated: 0, hazardContacts: 0, hazardDamageEvents: 0, activeHazardTime: 0 },
         support: { activeTime: 0, affectedEnemyTime: 0, affectedSpecialActions: 0, linksCreated: 0 },
+        fast: { telegraphs: 0 }, tank: { telegraphs: 0, impacts: 0 },
+        gunner: { bursts: 0 }, artillery: { warnings: 0, impacts: 0 },
+        trapper: { arms: 0, triggers: 0 }, tether: { connects: 0, breaks: 0 },
         peakActiveEnemyCount: 0, peakActiveThreat: 0, configuredSpawnFloor: spawnGroups.reduce((sum, g) => sum + g.delay, 0),
         groupReleaseTimes: [], lastSpawnGroupReleaseTime: null, actualLastGroupReleaseTime: null,
         pressureBlockedTime: 0, pressureBlockedEvents: 0, threatBlockedTime: 0, enemyCountBlockedTime: 0,
@@ -141,6 +145,19 @@
         forcedRepaths: 0, stuckRecoveries: 0, maxNoProgressDuration: 0,
         enemyOffscreenEngagementTime: 0, bossOffscreenTime: 0,
         bossObstructionEvents: 0, cameraEmptyTerrainTime: 0,
+        visibleFill: 0, spawnReservedFill: 0, returnReservedFill: 0, reservedFill: 0, projectedFill: 0,
+        fillIntegral: 0, fillSampleTime: 0, minimumVisibleFill: null, maximumVisibleFill: 0,
+        normalRefillEvents: 0, normalRefillRequestedArea: 0,
+        waveComingDelta: 0, waveComingTarget: 0, waveComingBudgetArea: 0, waveComingCommittedArea: 0,
+        spawnCreditNormal: 0, spawnCreditComing: 0, spawnTypeHistory: [],
+        spawnTypeRejectedByCap: {}, spawnTypeRejectedByFill: {}, spawnTypeRejectedByPlacement: {},
+        spawnPlacementAttempts: 0, spawnPlacementFailures: 0, spawnPlacementFailureReason: {},
+        spawnPlacementRetryCount: 0, placementRetryCount: 0, selectedType: null, preferredDistanceTag: null,
+        fallbackDistanceBandUsed: null, selectedSpawnDistanceTag: {}, fallbackSpawnDistanceBand: {},
+        lifecycleTransitions: {}, lifecycleCounts: {}, reservedEnemyCount: 0,
+        enteringEnemyCount: 0, nearOffscreenEnemyCount: 0, returningEnemyCount: 0,
+        waveProgressArmed: false, N_ref: 0, K_target: 0, currentWaveProgress: 0,
+        settlingDuration: 0,
         outcome: null };
       encounter = { data, enemyIntegral: 0, threatIntegral: 0, pressureBlocked: false, released: new Set(),
         behaviorEvents: {
@@ -322,6 +339,111 @@
       }),
       recordSupportLinkCreated: safe("record Support link", ({ linkId } = {}) =>
         uniqueBehaviorEvent("supportLinks", linkId, data => { data.support.linksCreated++; })),
+      recordFastStrikeTelegraph: safe("record Fast strike telegraph", () => {
+        if (encounter) encounter.data.fast.telegraphs++;
+      }),
+      recordTankSlamTelegraph: safe("record Tank slam telegraph", () => {
+        if (encounter) encounter.data.tank.telegraphs++;
+      }),
+      recordTankSlamImpact: safe("record Tank slam impact", () => {
+        if (encounter) encounter.data.tank.impacts++;
+      }),
+      recordGunnerBurst: safe("record Gunner burst", () => {
+        if (encounter) encounter.data.gunner.bursts++;
+      }),
+      recordArtilleryWarning: safe("record Artillery warning", () => {
+        if (encounter) encounter.data.artillery.warnings++;
+      }),
+      recordArtilleryImpact: safe("record Artillery impact", () => {
+        if (encounter) encounter.data.artillery.impacts++;
+      }),
+      recordTrapperArm: safe("record Trapper arm", () => {
+        if (encounter) encounter.data.trapper.arms++;
+      }),
+      recordTrapperTrigger: safe("record Trapper trigger", () => {
+        if (encounter) encounter.data.trapper.triggers++;
+      }),
+      recordTetherConnect: safe("record Tether connect", () => {
+        if (encounter) encounter.data.tether.connects++;
+      }),
+      recordTetherBreak: safe("record Tether break", () => {
+        if (encounter) encounter.data.tether.breaks++;
+      }),
+      recordWaveComing: safe("record Wave Coming", ({ delta, target, budgetArea } = {}) => {
+        if (!encounter) return;
+        encounter.data.waveComingDelta = nonNegative(delta);
+        encounter.data.waveComingTarget = nonNegative(target);
+        encounter.data.waveComingBudgetArea = nonNegative(budgetArea);
+      }),
+      recordSpawnPlacementAttempt: safe("record spawn placement attempt", (details = {}) => {
+        if (!encounter) return;
+        encounter.data.spawnPlacementAttempts++;
+        encounter.data.selectedType = details.selectedType || encounter.data.selectedType;
+        encounter.data.preferredDistanceTag = details.preferredDistanceTag || encounter.data.preferredDistanceTag;
+        encounter.data.fallbackDistanceBandUsed = details.fallbackDistanceBandUsed || null;
+        encounter.data.placementRetryCount = nonNegative(details.placementRetryCount);
+        encounter.data.spawnPlacementRetryCount = Math.max(encounter.data.spawnPlacementRetryCount,
+          nonNegative(details.placementRetryCount));
+        increment(encounter.data.selectedSpawnDistanceTag, details.preferredDistanceTag);
+        if (details.fallbackDistanceBandUsed) increment(encounter.data.fallbackSpawnDistanceBand, details.fallbackDistanceBandUsed);
+      }),
+      recordSpawnPlacementFailure: safe("record spawn placement failure", (details = {}) => {
+        if (!encounter) return;
+        encounter.data.selectedType = details.selectedType || encounter.data.selectedType;
+        encounter.data.preferredDistanceTag = details.preferredDistanceTag || encounter.data.preferredDistanceTag;
+        encounter.data.spawnPlacementFailures++;
+        increment(encounter.data.spawnPlacementFailureReason, details.reason || "unknown");
+        increment(encounter.data.spawnTypeRejectedByPlacement, details.selectedType || "unknown");
+      }),
+      recordSpawnTypeRejected: safe("record rejected spawn type", ({ type, reason } = {}) => {
+        if (!encounter || !type) return;
+        if (reason === "cap") increment(encounter.data.spawnTypeRejectedByCap, type);
+        if (reason === "fill") increment(encounter.data.spawnTypeRejectedByFill, type);
+      }),
+      recordLifecycleTransition: safe("record lifecycle transition", ({ from, to } = {}) => {
+        if (encounter) increment(encounter.data.lifecycleTransitions, `${from || "NONE"}->${to || "UNKNOWN"}`);
+      }),
+      recordEncounterPhase: safe("record encounter phase", (details = {}) => {
+        if (!encounter) return;
+        encounter.data.N_ref = nonNegative(details.nRef);
+        encounter.data.K_target = nonNegative(details.target);
+        encounter.data.settlingDuration = nonNegative(details.settlingDuration);
+      }),
+      recordContinuousFrame: safe("record Continuous Encounter frame", ({ deltaTime, fill, controller, lifecycleCounts } = {}) => {
+        if (!encounter || !fill || !controller) return;
+        for (const key of ["visibleFill", "spawnReservedFill", "returnReservedFill", "reservedFill", "projectedFill"]) {
+          encounter.data[key] = nonNegative(fill[key]);
+        }
+        const sampleTime = nonNegative(deltaTime);
+        encounter.data.fillIntegral += encounter.data.visibleFill * sampleTime;
+        encounter.data.fillSampleTime += sampleTime;
+        encounter.data.minimumVisibleFill = encounter.data.minimumVisibleFill === null
+          ? encounter.data.visibleFill : Math.min(encounter.data.minimumVisibleFill, encounter.data.visibleFill);
+        encounter.data.maximumVisibleFill = Math.max(encounter.data.maximumVisibleFill, encounter.data.visibleFill);
+        encounter.data.spawnCreditNormal = nonNegative(controller.normalCredit);
+        encounter.data.spawnCreditComing = nonNegative(controller.comingCredit);
+        encounter.data.waveComingCommittedArea = nonNegative(controller.comingCommittedArea);
+        encounter.data.spawnTypeHistory = [...(controller.spawnHistory || [])];
+        encounter.data.waveProgressArmed = Boolean(controller.waveProgressArmed);
+        encounter.data.N_ref = nonNegative(controller.nRef);
+        encounter.data.K_target = nonNegative(controller.target);
+        encounter.data.currentWaveProgress = nonNegative(controller.progress);
+        encounter.data.settlingDuration = nonNegative(controller.settlingDuration);
+        encounter.data.enteringEnemyCount = lifecycleCounts?.ENTERING || 0;
+        encounter.data.nearOffscreenEnemyCount = lifecycleCounts?.NEAR_OFFSCREEN || 0;
+        encounter.data.returningEnemyCount = lifecycleCounts?.RETURNING || 0;
+        encounter.data.lifecycleCounts = { ...(lifecycleCounts || {}),
+          RESERVED: controller.pendingReservations?.length || 0 };
+        encounter.data.reservedEnemyCount = controller.pendingReservations?.length || 0;
+      }),
+      recordContinuousSpawnCommitted: safe("record Continuous Encounter spawn", ({ type, area, phase } = {}) => {
+        if (!encounter) return;
+        if (phase !== "WAVE_COMING") {
+          encounter.data.normalRefillEvents++;
+          encounter.data.normalRefillRequestedArea += nonNegative(area);
+        }
+        if (type) increment(encounter.data.enemyComposition, type);
+      }),
       recordEnemyIntroduction: safe("record Enemy introduction", ({ enemyType } = {}) => {
         if (run && typeof enemyType === "string" && enemyType && !run.enemyIntroductionsShown.includes(enemyType)) {
           run.enemyIntroductionsShown.push(enemyType);

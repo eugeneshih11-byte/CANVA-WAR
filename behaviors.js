@@ -4,7 +4,9 @@
     CHASE: "CHASE",
     TELEGRAPH: "TELEGRAPH",
     CHARGE: "CHARGE",
-    RECOVERY: "RECOVERY"
+    RECOVERY: "RECOVERY",
+    STRIKE: "STRIKE",
+    CONNECTED: "CONNECTED"
   });
   const EPSILON = 1e-9;
   let nextHazardId = 1;
@@ -42,6 +44,12 @@
       linkedTargetId: null,
       linkSequence: 0,
       supportedEnemyIds: []
+      , attackCooldown: Number.isFinite(behavior.initialCooldown) ? behavior.initialCooldown : 0.8
+      , attackDamageApplied: false
+      , shotsRemaining: 0
+      , shotTimer: 0
+      , tetherDamageTimer: 0
+      , lineOfSightLost: 0
     };
   }
 
@@ -213,14 +221,162 @@
     }
   }
 
+  function directionToPlayer(enemy, player) {
+    const from = center(enemy), to = center(player);
+    const dx = to.x - from.x, dy = to.y - from.y, length = Math.hypot(dx, dy) || 1;
+    return { x: dx / length, y: dy / length, distance: length };
+  }
+
+  function updateFast(enemy, definition, context, deltaTime) {
+    const runtime = enemy.behaviorRuntime, config = definition.behavior;
+    runtime.attackCooldown = Math.max(0, runtime.attackCooldown - deltaTime);
+    if (runtime.behaviorState === STATES.CHASE) {
+      context.moveChase(enemy, deltaTime);
+      if (runtime.attackCooldown <= EPSILON && distance(enemy, context.player) <= 150) {
+        const direction = directionToPlayer(enemy, context.player);
+        runtime.chargeDirectionX = direction.x; runtime.chargeDirectionY = direction.y;
+        runtime.attackDamageApplied = false; setState(runtime, STATES.TELEGRAPH);
+        emit(context, "recordFastStrikeTelegraph", { enemyId: enemy.runtimeId });
+      }
+    } else if (runtime.behaviorState === STATES.TELEGRAPH) {
+      runtime.stateElapsed += deltaTime;
+      if (runtime.stateElapsed >= config.telegraphDuration) setState(runtime, STATES.STRIKE);
+    } else if (runtime.behaviorState === STATES.STRIKE) {
+      context.moveCharge(enemy, runtime.chargeDirectionX, runtime.chargeDirectionY, config.strikeSpeed, deltaTime);
+      runtime.stateElapsed += deltaTime;
+      if (runtime.stateElapsed >= config.strikeDuration) setState(runtime, STATES.RECOVERY);
+    } else {
+      runtime.stateElapsed += deltaTime;
+      if (runtime.stateElapsed >= config.recoveryDuration) {
+        runtime.attackCooldown = config.cooldown; setState(runtime, STATES.CHASE);
+      }
+    }
+  }
+
+  function updateTank(enemy, definition, context, deltaTime) {
+    const runtime = enemy.behaviorRuntime, config = definition.behavior;
+    runtime.attackCooldown = Math.max(0, runtime.attackCooldown - deltaTime);
+    if (runtime.behaviorState === STATES.CHASE) {
+      context.moveChase(enemy, deltaTime);
+      if (runtime.attackCooldown <= EPSILON && distance(enemy, context.player) <= config.slamRadius + 30) {
+        runtime.attackDamageApplied = false; setState(runtime, STATES.TELEGRAPH);
+        emit(context, "recordTankSlamTelegraph", { enemyId: enemy.runtimeId });
+      }
+    } else if (runtime.behaviorState === STATES.TELEGRAPH) {
+      runtime.stateElapsed += deltaTime;
+      if (runtime.stateElapsed >= config.telegraphDuration) {
+        if (distance(enemy, context.player) <= config.slamRadius) context.damagePlayer?.(1, enemy.type);
+        emit(context, "recordTankSlamImpact", { enemyId: enemy.runtimeId });
+        setState(runtime, STATES.RECOVERY);
+      }
+    } else {
+      runtime.stateElapsed += deltaTime;
+      if (runtime.stateElapsed >= config.recoveryDuration) {
+        runtime.attackCooldown = config.cooldown; setState(runtime, STATES.CHASE);
+      }
+    }
+  }
+
+  function spawnEnemyProjectile(enemy, config, context) {
+    const direction = directionToPlayer(enemy, context.player), origin = center(enemy);
+    context.hazards.push({ id: nextHazardId++, kind: "enemy-projectile", sourceEnemyId: enemy.runtimeId,
+      x: origin.x - 5, y: origin.y - 5, width: 10, height: 10,
+      directionX: direction.x, directionY: direction.y, speed: config.projectileSpeed, damage: 1, remaining: 4, phase: "ACTIVE" });
+    emit(context, "recordGunnerBurst", { enemyId: enemy.runtimeId });
+  }
+
+  function updateGunner(enemy, definition, context, deltaTime) {
+    const runtime = enemy.behaviorRuntime, config = definition.behavior;
+    runtime.attackCooldown = Math.max(0, runtime.attackCooldown - deltaTime);
+    const range = distance(enemy, context.player);
+    if (runtime.behaviorState === STATES.CHASE) {
+      if (range < config.preferredRange[0] || range > config.preferredRange[1]) context.moveChase(enemy, deltaTime);
+      if (runtime.attackCooldown <= EPSILON && context.hasLineOfSight?.(enemy, context.player) !== false) {
+        setState(runtime, STATES.TELEGRAPH); runtime.shotsRemaining = config.burstCount;
+      }
+    } else if (runtime.behaviorState === STATES.TELEGRAPH) {
+      runtime.stateElapsed += deltaTime;
+      if (runtime.stateElapsed >= config.telegraphDuration) { setState(runtime, STATES.STRIKE); runtime.shotTimer = 0; }
+    } else if (runtime.behaviorState === STATES.STRIKE) {
+      runtime.shotTimer -= deltaTime;
+      while (runtime.shotsRemaining > 0 && runtime.shotTimer <= EPSILON) {
+        spawnEnemyProjectile(enemy, config, context); runtime.shotsRemaining--; runtime.shotTimer += config.shotSpacing;
+      }
+      if (runtime.shotsRemaining <= 0) { runtime.attackCooldown = config.cooldown; setState(runtime, STATES.CHASE); }
+    }
+  }
+
+  function updateArtillery(enemy, definition, context, deltaTime) {
+    const runtime = enemy.behaviorRuntime, config = definition.behavior;
+    runtime.attackCooldown = Math.max(0, runtime.attackCooldown - deltaTime);
+    if (runtime.attackCooldown > EPSILON) { context.moveChase(enemy, deltaTime); return; }
+    const target = context.resolvePlayablePoint?.(center(context.player)) || center(context.player);
+    context.hazards.push({ id: nextHazardId++, kind: "artillery", sourceEnemyId: enemy.runtimeId,
+      x: target.x, y: target.y, radius: config.impactRadius, damage: 1,
+      remaining: config.telegraphDuration, activeDuration: 0.12, phase: STATES.TELEGRAPH });
+    runtime.attackCooldown = config.cooldown;
+    emit(context, "recordArtilleryWarning", { enemyId: enemy.runtimeId });
+  }
+
+  function updateTrapper(enemy, definition, context, deltaTime) {
+    const runtime = enemy.behaviorRuntime, config = definition.behavior;
+    runtime.attackCooldown = Math.max(0, runtime.attackCooldown - deltaTime);
+    const owned = context.hazards.filter(item => item.kind === "trap" && item.sourceEnemyId === enemy.runtimeId);
+    if (runtime.attackCooldown <= EPSILON && owned.length < config.maxOwnedTraps) {
+      const point = context.resolvePlayablePoint?.(center(enemy)) || center(enemy);
+      context.hazards.push({ id: nextHazardId++, kind: "trap", sourceEnemyId: enemy.runtimeId,
+        x: point.x, y: point.y, radius: config.triggerRadius, damage: 1,
+        remaining: config.armDuration, phase: "ARMING", countsTowardEncounterProgress: false });
+      runtime.attackCooldown = config.cooldown;
+      emit(context, "recordTrapperArm", { enemyId: enemy.runtimeId });
+    }
+    context.moveChase(enemy, deltaTime);
+  }
+
+  function updateTether(enemy, definition, context, deltaTime) {
+    const runtime = enemy.behaviorRuntime, config = definition.behavior;
+    const range = distance(enemy, context.player);
+    const hasLos = context.hasLineOfSight?.(enemy, context.player) !== false;
+    if (runtime.behaviorState === STATES.CONNECTED) {
+      runtime.lineOfSightLost = hasLos ? 0 : runtime.lineOfSightLost + deltaTime;
+      if (range > config.breakRange || runtime.lineOfSightLost >= config.losBreakDuration) {
+        setState(runtime, STATES.CHASE); runtime.attackCooldown = config.cooldown;
+        emit(context, "recordTetherBreak", { enemyId: enemy.runtimeId }); return;
+      }
+      runtime.tetherDamageTimer -= deltaTime;
+      if (runtime.tetherDamageTimer <= EPSILON) {
+        context.damagePlayer?.(1, enemy.type); runtime.tetherDamageTimer += config.damageInterval;
+      }
+      return;
+    }
+    runtime.attackCooldown = Math.max(0, runtime.attackCooldown - deltaTime);
+    if (runtime.behaviorState === STATES.TELEGRAPH) {
+      runtime.stateElapsed += deltaTime;
+      if (!hasLos || range > config.breakRange) { setState(runtime, STATES.CHASE); return; }
+      if (runtime.stateElapsed >= config.windupDuration) {
+        setState(runtime, STATES.CONNECTED); runtime.tetherDamageTimer = config.damageInterval;
+        emit(context, "recordTetherConnect", { enemyId: enemy.runtimeId });
+      }
+      return;
+    }
+    if (range < config.preferredRange[0] || range > config.preferredRange[1]) context.moveChase(enemy, deltaTime);
+    if (runtime.attackCooldown <= EPSILON && hasLos && range <= config.preferredRange[1]) setState(runtime, STATES.TELEGRAPH);
+  }
+
   const PROFILE_HANDLERS = Object.freeze({
     chase(enemy, definition, context, deltaTime) { context.moveChase(enemy, deltaTime); },
+    fast: updateFast,
+    tank: updateTank,
     interceptor: updateInterceptor,
     denier: updateDenier,
     support(enemy, definition, context, deltaTime) {
       enemy.behaviorRuntime.stateElapsed += deltaTime;
       context.moveChase(enemy, deltaTime);
-    }
+    },
+    gunner: updateGunner,
+    artillery: updateArtillery,
+    trapper: updateTrapper,
+    tether: updateTether
   });
 
   function isEligibleSupportTarget(support, target, definitions) {
@@ -262,10 +418,47 @@
       linkedEnemyCount: affected.size };
   }
 
-  function updateActiveHazards(hazards, deltaTime) {
+  function updateActiveHazards(hazards, deltaTime, context) {
     let activeHazardTime = 0;
     for (let index = hazards.length - 1; index >= 0; index--) {
       const hazard = hazards[index];
+      if (!hazard) continue;
+      if (hazard.kind === "enemy-projectile") {
+        hazard.x += hazard.directionX * hazard.speed * deltaTime;
+        hazard.y += hazard.directionY * hazard.speed * deltaTime;
+        hazard.remaining -= deltaTime;
+        if (context.overlaps?.(hazard, context.player)) {
+          context.damagePlayer?.(hazard.damage, "gunner"); hazards.splice(index, 1); continue;
+        }
+        if (hazard.remaining <= EPSILON || hazard.x < 0 || hazard.y < 0 ||
+            hazard.x > context.arena.width || hazard.y > context.arena.height) hazards.splice(index, 1);
+        continue;
+      }
+      if (hazard.kind === "artillery" && hazard.phase === STATES.TELEGRAPH) {
+        hazard.remaining -= deltaTime;
+        if (hazard.remaining <= EPSILON) {
+          hazard.phase = "ACTIVE"; hazard.remaining = hazard.activeDuration;
+          const closestX = clamp(hazard.x, context.player.x, context.player.x + context.player.width);
+          const closestY = clamp(hazard.y, context.player.y, context.player.y + context.player.height);
+          if (Math.hypot(hazard.x - closestX, hazard.y - closestY) <= hazard.radius) context.damagePlayer?.(hazard.damage, "artillery");
+          emit(context, "recordArtilleryImpact", { hazardId: hazard.id });
+        }
+        continue;
+      }
+      if (hazard.kind === "trap") {
+        if (hazard.phase === "ARMING") {
+          hazard.remaining -= deltaTime;
+          if (hazard.remaining <= EPSILON) hazard.phase = "ACTIVE";
+        } else {
+          const closestX = clamp(hazard.x, context.player.x, context.player.x + context.player.width);
+          const closestY = clamp(hazard.y, context.player.y, context.player.y + context.player.height);
+          if (Math.hypot(hazard.x - closestX, hazard.y - closestY) <= hazard.radius) {
+            context.damagePlayer?.(hazard.damage, "trapper"); emit(context, "recordTrapperTrigger", { hazardId: hazard.id });
+            hazards.splice(index, 1);
+          }
+        }
+        continue;
+      }
       if (hazard.phase !== "ACTIVE") continue;
       const step = Math.min(deltaTime, Math.max(0, hazard.remaining));
       activeHazardTime += step;
@@ -282,8 +475,8 @@
     for (const enemy of living) {
       enemy.behaviorRuntime ||= createRuntime(options.definitions[enemy.type]);
     }
-    const activeHazardTime = updateActiveHazards(options.hazards, deltaTime);
     const context = { ...options };
+    const activeHazardTime = updateActiveHazards(options.hazards, deltaTime, context);
     const support = applySupportLinks(living, options.definitions, deltaTime, context);
     for (const enemy of living) {
       const definition = options.definitions[enemy.type];
@@ -297,7 +490,7 @@
 
   function getActiveHazardsContainingPlayer(hazards, player, overlaps) {
     return hazards.filter(hazard => {
-      if (hazard.phase !== "ACTIVE") return false;
+      if (hazard.phase !== "ACTIVE" || (hazard.kind && hazard.kind !== "denier")) return false;
       const closestX = clamp(hazard.x, player.x, player.x + player.width);
       const closestY = clamp(hazard.y, player.y, player.y + player.height);
       return typeof overlaps === "function"
@@ -373,6 +566,9 @@
   function recordEnemyDefeat(enemy, hazards, context) {
     const runtime = enemy?.behaviorRuntime;
     if (!runtime) return;
+    if (runtime.profile === "support" && runtime.linkedTargetId != null) {
+      emit(context, "recordSupportLinkBroken", { supportId: enemy.runtimeId });
+    }
     if (runtime.profile === "interceptor" && !runtime.attemptResolved) {
       runtime.attemptResolved = true;
       if (runtime.behaviorState === STATES.TELEGRAPH) {
@@ -403,11 +599,17 @@
     const isVisible = world.isVisible || (() => true);
     ctx.save();
     for (const hazard of hazards) {
+      if (hazard.kind === "enemy-projectile") {
+        if (!isVisible(hazard, 8)) continue;
+        ctx.fillStyle = "#fb7185";
+        ctx.fillRect(hazard.x, hazard.y, hazard.width, hazard.height);
+        continue;
+      }
       if (!isVisible({ x: hazard.x - hazard.radius, y: hazard.y - hazard.radius,
         width: hazard.radius * 2, height: hazard.radius * 2 }, 8)) continue;
       ctx.beginPath();
       ctx.arc(hazard.x, hazard.y, hazard.radius, 0, Math.PI * 2);
-      if (hazard.phase === STATES.TELEGRAPH) {
+      if (hazard.phase === STATES.TELEGRAPH || hazard.phase === "ARMING") {
         ctx.fillStyle = "rgba(250, 204, 21, 0.12)";
         ctx.strokeStyle = "rgba(250, 204, 21, 0.95)";
         ctx.setLineDash([10, 7]);
@@ -419,6 +621,21 @@
       ctx.lineWidth = 4;
       ctx.fill();
       ctx.stroke();
+    }
+    for (const enemy of enemies) {
+      const runtime = enemy.behaviorRuntime;
+      const profile = definitions[enemy.type]?.behavior.profile;
+      if (profile === "tank" && runtime?.behaviorState === STATES.TELEGRAPH) {
+        const point = center(enemy), radius = definitions[enemy.type].behavior.slamRadius;
+        ctx.beginPath(); ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(168,85,247,.12)"; ctx.strokeStyle = "rgba(216,180,254,.95)";
+        ctx.lineWidth = 5; ctx.setLineDash([12, 8]); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+      }
+      if (profile === "tether" && runtime?.behaviorState === STATES.CONNECTED) {
+        const from = center(enemy), to = center(world.player || enemy);
+        ctx.strokeStyle = "rgba(34,211,238,.92)"; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke();
+      }
     }
     ctx.setLineDash([]);
     for (const support of enemies) {

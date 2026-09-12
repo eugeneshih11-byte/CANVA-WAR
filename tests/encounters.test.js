@@ -51,30 +51,37 @@ test("prototype selection is explicit and playtest telemetry alone is gameplay-n
   assert.deepEqual(E.STAGES[0].maxActiveThreatCurve, E.PROTOTYPE_STAGES[0].maxActiveThreatCurve);
 });
 
-test("prototype introduction content is centralized, complete, and teaches each counter", () => {
-  assert.deepEqual(copy(E.COMBAT_VARIETY_V1.introductions), {
-    interceptor: {
-      name: "INTERCEPTOR",
-      role: "Predictive Attacker",
-      description: "Predicts your movement and commits to a long charge.",
-      counterplay: "Change direction after it locks on.",
-      preview: { color: "#eab308", shape: "diamond" }
-    },
-    denier: {
-      name: "DENIER",
-      role: "Area Controller",
-      description: "Creates persistent danger zones along your predicted route.",
-      counterplay: "Leave marked areas before repeated damage builds up.",
-      preview: { color: "#be123c", shape: "zone" }
-    },
-    support: {
-      name: "SUPPORT",
-      role: "Enemy Enhancer",
-      description: "Links to a special enemy and accelerates its abilities.",
-      counterplay: "Destroy the Support to break the link.",
-      preview: { color: "#0f766e", shape: "link" }
-    }
-  });
+test("all ten production Enemy introductions are centralized and teach counterplay", () => {
+  const introductions = copy(E.COMBAT_VARIETY_V1.introductions);
+  assert.deepEqual(Object.keys(introductions), E.STAGES[0].continuousEnemyTypes);
+  for (const introduction of Object.values(introductions)) {
+    assert.ok(introduction.name && introduction.role && introduction.description && introduction.counterplay);
+    assert.ok(introduction.preview?.color && introduction.preview?.shape);
+  }
+});
+
+test("all ten Phase B Enemy identities expose separate footprints, policies, profiles and safety config", () => {
+  const expected = {
+    normal: [56, 56, 2, 110, "NEAR"], fast: [40, 40, 1, 180, "NEAR"],
+    tank: [80, 80, 6, 65, "NEAR"], interceptor: [52, 52, 3, 100, "MID"],
+    denier: [60, 60, 3, 80, "FAR"], support: [52, 52, 2, 75, "FAR"],
+    gunner: [52, 52, 2, 90, "MID"], artillery: [68, 68, 3, 65, "FAR"],
+    trapper: [48, 48, 2, 85, "MID"], tether: [56, 56, 3, 95, "MID"]
+  };
+  assert.deepEqual(E.STAGES[0].continuousEnemyTypes, Object.keys(expected));
+  for (const [type, values] of Object.entries(expected)) {
+    const definition = E.ENEMIES[type];
+    assert.deepEqual([definition.visual.width, definition.visual.height, definition.stats.hp,
+      definition.stats.speed, definition.spawnProfile.distance], values);
+    assert.ok(definition.collision && definition.navigation && definition.behavior.profile && definition.behavior.attackPolicy);
+    assert.equal(definition.mechanicSafetyCap ?? null, ["normal", "fast", "tank"].includes(type) ? null :
+      { interceptor: 6, denier: 6, support: 4, gunner: 8, artillery: 4, trapper: 6, tether: 4 }[type]);
+  }
+  assert.equal(E.ENEMIES.normal.behavior.attackPolicy, "contact");
+  for (const type of Object.keys(expected).filter(type => type !== "normal")) {
+    assert.notEqual(E.ENEMIES[type].behavior.attackPolicy, "contact");
+  }
+  assert.equal(E.ENEMIES.support.stats.damage, 0);
 });
 
 test("prototype Waves require exact teaching compositions within every existing safety constraint", () => {

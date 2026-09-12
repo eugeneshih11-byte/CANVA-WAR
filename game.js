@@ -13,6 +13,10 @@ const enemyIntroductionRole = document.getElementById("enemyIntroductionRole");
 const enemyIntroductionDescription = document.getElementById("enemyIntroductionDescription");
 const enemyIntroductionCounterplay = document.getElementById("enemyIntroductionCounterplay");
 const enemyIntroductionContinue = document.getElementById("enemyIntroductionContinue");
+const reinforcementEdges = document.getElementById("reinforcementEdges");
+const audioMuteButton = document.getElementById("audioMuteButton");
+const masterVolume = document.getElementById("masterVolume");
+const sfxVolume = document.getElementById("sfxVolume");
 const hubView = document.getElementById("hubView");
 const shopView = document.getElementById("shopView");
 const armoryView = document.getElementById("armoryView");
@@ -49,6 +53,7 @@ const activeStages = Encounters.getStagesForSearch(globalThis.location?.search |
 
 const saveStorageKey = "canva-war-save";
 let saveData = loadSave();
+const audioManager = CanvaWarAudio.createAudioManager();
 
 function createDefaultSaveData() {
   return {
@@ -191,11 +196,17 @@ const enemyColors = {
   tank: "#7c3aed",
   interceptor: "#eab308",
   denier: "#be123c",
-  support: "#0f766e"
+  support: "#0f766e",
+  gunner: "#2563eb",
+  artillery: "#9333ea",
+  trapper: "#65a30d",
+  tether: "#0891b2"
 };
 const SPAWN_PLACEMENT_ATTEMPTS = 16;
 const MAX_DETERMINISTIC_SPAWN_CANDIDATES = 256;
 const COLLISION_EPSILON = 1e-7;
+const ENEMY_SPATIAL_CELL_SIZE = 120;
+let enemySpatialHash = new Map();
 const RUN_PHASES = Object.freeze(Object.fromEntries([
   "STAGE_ENTER", "WAVE_ACTIVE", "INTERMISSION", "INTRODUCTION_PENDING", "INTRODUCTION_ACTIVE",
   "BOSS_ACTIVE", "STAGE_CLEAR",
@@ -212,6 +223,9 @@ let stageIndex = 0;
 let stageRuntime = null;
 let currentWave = null;
 let waveRuntime = null;
+let encounterController = null;
+let pendingSpawnReservation = null;
+let waveComingBannerTimer = 0;
 let bossRuntime = null;
 let intermissionTimer = 0;
 let stageClearTimer = 0;
@@ -253,6 +267,26 @@ function clearIntroductionTransient() {
   pendingWaveIndex = null;
   enemyIntroduction.hidden = true;
 }
+function cancelPendingContinuousSpawn() {
+  if (!pendingSpawnReservation) return;
+  ContinuousEncounter.cancelSpawn(encounterController, pendingSpawnReservation.reservation);
+  const index = encounterController.pendingReservations.findIndex(item =>
+    item.reservation.id === pendingSpawnReservation.reservation.id);
+  if (index >= 0) encounterController.pendingReservations.splice(index, 1);
+  pendingSpawnReservation = null;
+}
+function beginSpawnIntroduction(type, reservation) {
+  if (introducedEnemyTypes.has(type)) return false;
+  const definition = Encounters.COMBAT_VARIETY_V1.introductions[type];
+  if (!definition) return false;
+  pendingSpawnReservation = reservation;
+  introductionQueue = [type];
+  pendingWaveIndex = null;
+  currentEnemyIntroduction = null;
+  runPhase = RUN_PHASES.INTRODUCTION_PENDING;
+  clearInput();
+  return true;
+}
 function showNextEnemyIntroduction() {
   const type = introductionQueue.shift();
   const definition = Encounters.COMBAT_VARIETY_V1.introductions[type];
@@ -262,6 +296,7 @@ function showNextEnemyIntroduction() {
   runPhase = RUN_PHASES.INTRODUCTION_ACTIVE;
   clearInput();
   observeTelemetry("recordEnemyIntroduction", () => ({ enemyType: type }));
+  audioManager.play("enemyIntroduction");
   updateArenaPresentation();
   enemyIntroductionContinue.focus?.();
   return true;
@@ -282,6 +317,14 @@ function dismissEnemyIntroduction() {
   if (introductionQueue.length) {
     currentEnemyIntroduction = null;
     runPhase = RUN_PHASES.INTRODUCTION_PENDING;
+    return true;
+  }
+  if (pendingSpawnReservation) {
+    const pending = pendingSpawnReservation;
+    pendingSpawnReservation = null;
+    clearIntroductionTransient();
+    runPhase = RUN_PHASES.WAVE_ACTIVE;
+    finalizeContinuousSpawn(pending);
     return true;
   }
   const waveIndex = pendingWaveIndex;
@@ -347,6 +390,7 @@ function clearBattlefieldRuntime() {
   battlefieldRuntime = null;
   cameraRuntime = null;
   enemies.length = 0;
+  enemySpatialHash = new Map();
   bullets.length = 0;
   EnemyBehaviors.clearTransient(enemies, hazards);
   resetHazardDamageRuntime();
@@ -354,16 +398,23 @@ function clearBattlefieldRuntime() {
   stageRuntime = null;
   currentWave = null;
   waveRuntime = null;
+  encounterController = null;
+  pendingSpawnReservation = null;
   bossRuntime = null;
 }
 function startWave(index) {
   currentEnemyIntroduction = null;
   introductionQueue = [];
   pendingWaveIndex = null;
-  currentWave = Encounters.generateWave(stageRuntime.definition, index, stageRuntime);
+  currentWave = Object.freeze({ id: `${stageRuntime.definition.id}-wave-${index + 1}`,
+    stageId: stageRuntime.definition.id, waveIndex: index, templateId: "continuous",
+    threatBudget: null, maxActiveThreat: null, spawnGroups: [], mechanics: [...stageRuntime.definition.mechanics],
+    analysis: Object.freeze({ threat: null, expectedClearTime: null, expectedBaseScore: 0,
+      performanceAllowance: 0, scoreCapacity: 0, calibrationPending: "continuous-encounter" }) });
   stageRuntime.waveIndex = index;
-  stageRuntime.recentTemplates.push(currentWave.templateId);
-  waveRuntime = Encounters.createWaveRuntime(currentWave);
+  waveRuntime = { waveId: currentWave.id, elapsedTime: 0, damageTaken: 0, analysis: currentWave.analysis,
+    aliveEnemyCount: enemies.filter(enemy => enemy.hp > 0).length, isComplete: false,
+    groupDelayElapsed: 0, nextSpawnGroupIndex: 0, spawnedEnemyCount: 0, activeThreat: 0 };
   runSettlementState.progress.currentEncounter = { id: currentWave.id, type: "wave" };
   runPhase = RUN_PHASES.WAVE_ACTIVE;
   clearInput({ weaponReady: true });
@@ -375,6 +426,8 @@ function enterStage() {
   const definition = activeStages[stageIndex];
   if (battlefieldRuntime?.id !== definition.battlefieldId) initializeBattlefield(definition, true);
   stageRuntime = { definition, waveIndex: 0, recentTemplates: [], completed: false };
+  encounterController = ContinuousEncounter.createController({ waveCount: definition.waveCount,
+    seed: battlefieldRuntime.seed });
   runSettlementState.progress.stage = stageIndex + 1;
   startWave(0);
 }
@@ -396,6 +449,23 @@ function enterIntermission() {
   EnemyBehaviors.clearTransient(enemies, hazards);
   resetHazardDamageRuntime();
   clearInput();
+  audioManager.play("bossIncoming");
+}
+function handleLogicalWaveComplete(fill) {
+  if (!encounterController || runPhase !== RUN_PHASES.WAVE_ACTIVE) return;
+  if (stageRuntime.waveIndex + 1 >= stageRuntime.definition.waveCount) {
+    encounterController.phase = ContinuousEncounter.PHASES.FINAL_COMPLETE;
+    enemies.length = 0;
+    enterIntermission();
+    return;
+  }
+  completeCurrentEncounter("wave", waveRuntime);
+  startWave(stageRuntime.waveIndex + 1);
+  ContinuousEncounter.beginWaveComing(encounterController, fill.projectedFill);
+  waveComingBannerTimer = 2.2;
+  audioManager.play("waveComing");
+  observeTelemetry("recordWaveComing", () => ({ delta: encounterController.comingDelta,
+    target: encounterController.comingTarget, budgetArea: encounterController.comingBudgetArea }));
 }
 function startBossEncounter() {
   const definition = Encounters.BOSSES[stageRuntime.definition.boss];
@@ -443,13 +513,16 @@ function takeDamage(amount, enemyType) {
   if (runtime) runtime.damageTaken += amount;
   observeTelemetry("recordDamage", () => ({ amount: hpBefore - player.hp, incomingDamage: amount,
     hp: player.hp, maxHp: player.maxHp, enemyType }));
+  if (hpBefore > player.hp) audioManager.play("playerDamage", { concurrency: 2, retrigger: 0.08 });
   if (player.hp <= 0) {
     runPhase = RUN_PHASES.RUN_DEAD;
     isGameOver = true;
     settleRun(RUN_END_REASONS.DEATH);
     EnemyBehaviors.clearTransient(enemies, hazards);
     resetHazardDamageRuntime();
+    cancelPendingContinuousSpawn();
     clearIntroductionTransient();
+    audioManager.play("death");
   }
 }
 function openAbandon() {
@@ -476,6 +549,7 @@ function abandonRun() {
   bullets.length = 0;
   EnemyBehaviors.clearTransient(enemies, hazards);
   resetHazardDamageRuntime();
+  cancelPendingContinuousSpawn();
   clearIntroductionTransient();
   if (shouldReturnToHub) showView(APP_VIEWS.HUB);
 }
@@ -555,6 +629,7 @@ function requestHub() {
 }
 
 function startGameplay() {
+  audioManager.unlock();
   ensurePlaytestTelemetry();
   isGameStarted = true;
   resetGame();
@@ -565,6 +640,23 @@ function startGameplay() {
 }
 
 playButton.addEventListener("click", startGameplay);
+function renderAudioSetting() {
+  const settings = audioManager.getSettings();
+  const muted = settings.masterMuted;
+  audioMuteButton.textContent = muted ? "SFX OFF" : "SFX";
+  audioMuteButton.setAttribute("aria-pressed", String(muted));
+  masterVolume.value = String(settings.masterVolume);
+  sfxVolume.value = String(settings.sfxVolume);
+}
+audioMuteButton.addEventListener("click", () => {
+  audioManager.unlock();
+  const settings = audioManager.getSettings();
+  audioManager.setSettings({ masterMuted: !settings.masterMuted });
+  renderAudioSetting();
+});
+masterVolume.addEventListener("input", () => audioManager.setSettings({ masterVolume: masterVolume.value }));
+sfxVolume.addEventListener("input", () => audioManager.setSettings({ sfxVolume: sfxVolume.value }));
+renderAudioSetting();
 document.getElementById("shopButton").addEventListener("click", () => showView(APP_VIEWS.SHOP));
 document.getElementById("armoryButton").addEventListener("click", () => showView(APP_VIEWS.ARMORY));
 document.getElementById("equipmentButton").addEventListener("click", () => showView(APP_VIEWS.EQUIPMENT));
@@ -644,6 +736,7 @@ function fireWeaponAttack() {
     });
     observeTelemetry("recordShot");
   }
+  audioManager.play("playerFire", { concurrency: 2, retrigger: 0.025 });
   weaponRuntime.timeUntilNextShot = 1 / weapon.fireRate;
   return true;
 }
@@ -765,6 +858,7 @@ function resetGame() {
   player.maxHp = playerStats.maxHp;
   player.hp = playerStats.maxHp;
   enemies.length = 0;
+  enemySpatialHash = new Map();
   bullets.length = 0;
   EnemyBehaviors.clearTransient(enemies, hazards);
   resetHazardDamageRuntime();
@@ -780,6 +874,9 @@ function resetGame() {
   stageIndex = 0;
   currentWave = null;
   waveRuntime = null;
+  encounterController = null;
+  pendingSpawnReservation = null;
+  waveComingBannerTimer = 0;
   bossRuntime = null;
   intermissionTimer = 0;
   stageClearTimer = 0;
@@ -839,6 +936,92 @@ function movePlayerAxis(amount, axis) {
   if (obstacleContact) observeTelemetry("recordPlayerObstacleContact");
 }
 
+function pendingSpawnArea() {
+  return encounterController?.pendingReservations.reduce((sum, item) => sum + item.reservation.area, 0) || 0;
+}
+
+function rebuildEnemySpatialHash() {
+  const grid = new Map();
+  for (const enemy of enemies) {
+    if (!isCurrentEncounterEnemy(enemy)) continue;
+    const minX = Math.floor(enemy.x / ENEMY_SPATIAL_CELL_SIZE);
+    const maxX = Math.floor((enemy.x + enemy.width) / ENEMY_SPATIAL_CELL_SIZE);
+    const minY = Math.floor(enemy.y / ENEMY_SPATIAL_CELL_SIZE);
+    const maxY = Math.floor((enemy.y + enemy.height) / ENEMY_SPATIAL_CELL_SIZE);
+    for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
+      const key = `${x},${y}`;
+      if (!grid.has(key)) grid.set(key, []);
+      grid.get(key).push(enemy);
+    }
+  }
+  enemySpatialHash = grid;
+}
+
+function nearbyEnemies(body) {
+  if (!enemySpatialHash.size) return enemies;
+  const found = new Set();
+  const minX = Math.floor(body.x / ENEMY_SPATIAL_CELL_SIZE) - 1;
+  const maxX = Math.floor((body.x + body.width) / ENEMY_SPATIAL_CELL_SIZE) + 1;
+  const minY = Math.floor(body.y / ENEMY_SPATIAL_CELL_SIZE) - 1;
+  const maxY = Math.floor((body.y + body.height) / ENEMY_SPATIAL_CELL_SIZE) + 1;
+  for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
+    for (const enemy of enemySpatialHash.get(`${x},${y}`) || []) found.add(enemy);
+  }
+  return found;
+}
+
+function updateContinuousEncounter(deltaTime) {
+  rebuildEnemySpatialHash();
+  const viewport = cameraViewportRect();
+  for (const enemy of enemies) {
+    const before = enemy.lifecycle;
+    ContinuousEncounter.updateLifecycle(enemy, viewport);
+    if (enemy.lifecycle !== before) observeTelemetry("recordLifecycleTransition", () => ({
+      type: enemy.type, from: before, to: enemy.lifecycle }));
+    if ([ContinuousEncounter.LIFECYCLES.ENTERING, ContinuousEncounter.LIFECYCLES.NEAR_OFFSCREEN,
+      ContinuousEncounter.LIFECYCLES.RETURNING].includes(enemy.lifecycle) &&
+      ![EnemyBehaviors.STATES.TELEGRAPH, EnemyBehaviors.STATES.CHARGE, EnemyBehaviors.STATES.STRIKE,
+        EnemyBehaviors.STATES.CONNECTED].includes(enemy.behaviorRuntime?.behaviorState)) {
+      const anchorBody = enemy.entryAnchor ? { ...enemy, ...enemy.entryAnchor } : null;
+      const anchorNeedsRefresh = [ContinuousEncounter.LIFECYCLES.ENTERING,
+        ContinuousEncounter.LIFECYCLES.RETURNING].includes(enemy.lifecycle) &&
+        (!anchorBody || !ContinuousEncounter.isFullyInside(ContinuousEncounter.visualRect(anchorBody), viewport));
+      if (anchorNeedsRefresh) {
+        const side = outwardDistanceFromViewport(enemy, viewport)?.side || enemy.spawnSide || "left";
+        const entryAnchor = createEntryAnchor(side, enemy);
+        if (entryAnchor) enemy.entryAnchor = entryAnchor;
+      }
+      moveEnemyTowardPlayer(enemy, deltaTime);
+      ContinuousEncounter.updateLifecycle(enemy, viewport);
+    }
+  }
+  rebuildEnemySpatialHash();
+  let fill = ContinuousEncounter.computeFill(enemies, viewport, pendingSpawnArea());
+  const phaseBefore = encounterController.phase;
+  ContinuousEncounter.updateController(encounterController, deltaTime, fill, enemies, viewport);
+  if (phaseBefore !== encounterController.phase) observeTelemetry("recordEncounterPhase", () => ({
+    from: phaseBefore, to: encounterController.phase, settlingDuration: encounterController.settlingDuration,
+    nRef: encounterController.nRef, target: encounterController.target }));
+  const mayRefill = encounterController.phase === ContinuousEncounter.PHASES.WAVE_COMING ||
+    ([ContinuousEncounter.PHASES.NORMAL, ContinuousEncounter.PHASES.SETTLING].includes(encounterController.phase) &&
+      encounterController.normalRefillEnabled);
+  if (mayRefill && runPhase === RUN_PHASES.WAVE_ACTIVE && !pendingSpawnReservation) {
+    for (let commits = 0; commits < 12; commits++) {
+      if (!dispatchContinuousSpawn(fill)) break;
+      fill = ContinuousEncounter.computeFill(enemies, viewport, pendingSpawnArea());
+      if (pendingSpawnReservation) break;
+    }
+  }
+  waveRuntime.elapsedTime += deltaTime;
+  waveRuntime.aliveEnemyCount = enemies.filter(enemy => enemy.hp > 0).length;
+  waveComingBannerTimer = Math.max(0, waveComingBannerTimer - deltaTime);
+  observeTelemetry("recordContinuousFrame", () => ({ deltaTime, fill, controller: encounterController,
+    lifecycleCounts: enemies.reduce((counts, enemy) => {
+      counts[enemy.lifecycle] = (counts[enemy.lifecycle] || 0) + 1; return counts;
+    }, {}) }));
+  return fill;
+}
+
 function update(deltaTime) {
   if (currentView !== APP_VIEWS.GAME || !isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandonConfirmOpen || isAbandoned) {
     return;
@@ -857,6 +1040,7 @@ function update(deltaTime) {
       runPhase = RUN_PHASES.RUN_VICTORY;
       isVictory = true;
       settleRun(RUN_END_REASONS.VICTORY);
+      audioManager.play("victory");
     }
     return;
   }
@@ -909,10 +1093,10 @@ function update(deltaTime) {
   }
   if (runPhase === RUN_PHASES.WAVE_ACTIVE) {
     observeCombatFrame(deltaTime);
-    Encounters.updateWaveRuntime(currentWave, waveRuntime, enemies, deltaTime, spawnEnemy);
-    observeTelemetry("recordGroupRelease", () => ({ groupIndex: waveRuntime.nextSpawnGroupIndex - 1,
-      elapsedTime: waveRuntime.elapsedTime, activeEnemyCount: waveRuntime.aliveEnemyCount, activeThreat: waveRuntime.activeThreat }));
+    updateContinuousEncounter(deltaTime);
+    if (runPhase !== RUN_PHASES.WAVE_ACTIVE) return;
     updateEnemies(deltaTime);
+    if (isGameOver) return;
     handleDenierHazardDamage(deltaTime);
     if (isGameOver) return;
     handlePlayerEnemyCollisions();
@@ -930,8 +1114,6 @@ function update(deltaTime) {
   if (runPhase === RUN_PHASES.WAVE_ACTIVE) {
     handleBulletEnemyCollisions();
     if (isChoosingUpgrade || isGameOver) return;
-    Encounters.syncWaveRuntime(currentWave, waveRuntime, enemies);
-    if (waveRuntime.isComplete) { enterIntermission(); return; }
   } else {
     handleBulletBossCollisions();
     if (player.hp <= 0) { takeDamage(0); return; }
@@ -963,7 +1145,11 @@ function updateBullets(deltaTime) {
 
 function spawnEnemy(type = "normal", waveId = currentWave?.id) {
   const stats = Encounters.getScaledEnemyStats(enemyStats[type], stageRuntime.definition.enemyScaling);
+  const definition = Encounters.ENEMIES[type];
   const enemy = { type, waveId, runtimeId: nextEnemyRuntimeId++, x: 0, y: 0, ...stats,
+    visualWidth: definition.visualWidth, visualHeight: definition.visualHeight,
+    collisionFootprint: { ...definition.collision }, navigationFootprint: { ...definition.navigation },
+    countsTowardEncounterProgress: true, lifecycle: ContinuousEncounter.LIFECYCLES.ACTIVE, hasEnteredViewport: true,
     behaviorRuntime: EnemyBehaviors.createRuntime(Encounters.ENEMIES[type]),
     navigationRuntime: Battlefields.createNavigationRuntime(nextEnemyRuntimeId - 1) };
   const sideSample = Math.random();
@@ -973,6 +1159,227 @@ function spawnEnemy(type = "normal", waveId = currentWave?.id) {
     observeTelemetry("recordPathFailure");
     observeTelemetry("recordNavigationFallback");
   }
+}
+
+function cameraViewportRect() {
+  return { x: cameraRuntime?.x || 0, y: cameraRuntime?.y || 0,
+    width: cameraRuntime?.width || canvas.width, height: cameraRuntime?.height || canvas.height };
+}
+function worldAudioPan(entity) {
+  const viewport = cameraViewportRect();
+  const centerX = entity.x + (entity.width || 0) / 2;
+  return Math.max(-1, Math.min(1, (centerX - (viewport.x + viewport.width / 2)) / (viewport.width / 2)));
+}
+
+function outwardDistanceFromViewport(body, viewport) {
+  if (body.x + body.width <= viewport.x) return { side: "left", distance: viewport.x - body.x - body.width };
+  if (body.x >= viewport.x + viewport.width) return { side: "right", distance: body.x - viewport.x - viewport.width };
+  if (body.y + body.height <= viewport.y) return { side: "top", distance: viewport.y - body.y - body.height };
+  if (body.y >= viewport.y + viewport.height) return { side: "bottom", distance: body.y - viewport.y - viewport.height };
+  return null;
+}
+
+function validPlayerSpawnExclusion(enemy) {
+  const enemyCenterX = enemy.x + enemy.visualWidth / 2;
+  const enemyCenterY = enemy.y + enemy.visualHeight / 2;
+  const playerCenterX = player.x + player.width / 2;
+  const playerCenterY = player.y + player.height / 2;
+  return Math.hypot(enemyCenterX - playerCenterX, enemyCenterY - playerCenterY) + 1e-9 >=
+    ContinuousEncounter.minimumSpawnCenterDistance(enemy);
+}
+
+function createEntryAnchor(side, enemy) {
+  const viewport = cameraViewportRect();
+  const inset = Math.max(ContinuousEncounter.CALIBRATION.entryAnchorMinimumInset,
+    Math.max(enemy.visualWidth || enemy.width, enemy.visualHeight || enemy.height));
+  const ratios = [0.5, 0.3, 0.7, 0.15, 0.85];
+  const candidates = ratios.map(ratio => ({
+    x: side === "left" ? viewport.x + inset : side === "right"
+      ? viewport.x + viewport.width - inset - enemy.width
+      : viewport.x + inset + (viewport.width - inset * 2 - enemy.width) * ratio,
+    y: side === "top" ? viewport.y + inset : side === "bottom"
+      ? viewport.y + viewport.height - inset - enemy.height
+      : viewport.y + inset + (viewport.height - inset * 2 - enemy.height) * ratio
+  })).map(anchor => ({ x: Math.max(viewport.x, Math.min(anchor.x, viewport.x + viewport.width - enemy.width)),
+    y: Math.max(viewport.y, Math.min(anchor.y, viewport.y + viewport.height - enemy.height)) }));
+  const ranked = candidates.map((anchor, index) => {
+    const body = { ...enemy, ...anchor };
+    if (!ContinuousEncounter.isFullyInside(ContinuousEncounter.visualRect(body), viewport) ||
+        !validPlayerSpawnExclusion(body) || !Battlefields.isStaticPositionValid(body, battlefieldRuntime)) return null;
+    const crowding = enemies.reduce((score, other) => {
+      if (other === enemy || other.hp <= 0 || other.lifecycle === ContinuousEncounter.LIFECYCLES.DEAD) return score;
+      const dx = (other.x + other.width / 2) - (anchor.x + enemy.width / 2);
+      const dy = (other.y + other.height / 2) - (anchor.y + enemy.height / 2);
+      return score + Math.max(0, ContinuousEncounter.CALIBRATION.entryCrowdingRadius - Math.hypot(dx, dy));
+    }, 0);
+    return { anchor, body, crowding, index };
+  }).filter(Boolean).sort((first, second) => first.crowding - second.crowding || first.index - second.index);
+  for (const candidate of ranked) {
+    if (Battlefields.hasLineOfTravel(enemy, candidate.body, battlefieldRuntime) ||
+        Battlefields.findPath(enemy, candidate.body, battlefieldRuntime)) return candidate.anchor;
+  }
+  return null;
+}
+
+function paddedBody(body, padding) {
+  return { ...body, x: body.x - padding, y: body.y - padding,
+    width: body.width + padding * 2, height: body.height + padding * 2 };
+}
+
+function profileCandidatePreference(enemy, profile) {
+  if (profile.geometry === "los-preferred") {
+    return Battlefields.hasLineOfTravel(enemy, player, battlefieldRuntime) ? 0 : 1;
+  }
+  if (profile.geometry === "open-space-preferred") {
+    return Battlefields.isStaticPositionValid(paddedBody(enemy,
+      ContinuousEncounter.CALIBRATION.openSpacePadding), battlefieldRuntime) ? 0 : 1;
+  }
+  return 0;
+}
+
+function profileGeometryAccepts(enemy, profile, entryAnchor) {
+  if (profile.geometry === "lane-required") {
+    return Battlefields.hasLineOfTravel(enemy, player, battlefieldRuntime);
+  }
+  if (profile.geometry === "approach-space") {
+    return Battlefields.hasLineOfTravel(enemy, { ...enemy, ...entryAnchor }, battlefieldRuntime);
+  }
+  if (profile.geometry === "large-clearance") {
+    return Battlefields.isStaticPositionValid(paddedBody(enemy,
+      ContinuousEncounter.CALIBRATION.largeClearancePadding), battlefieldRuntime);
+  }
+  return true;
+}
+
+function positionEnemyForProfile(enemy, type) {
+  const profile = Encounters.ENEMIES[type].spawnProfile;
+  const viewport = cameraViewportRect();
+  const sideSample = encounterController.positionRng();
+  const offsetSample = encounterController.positionRng();
+  const order = [profile.distance, ...["NEAR", "MID", "FAR"].filter(tag => tag !== profile.distance)];
+  for (const tag of order) {
+    const band = ContinuousEncounter.distanceBandPixels(tag, viewport.width, viewport.height);
+    const candidates = Battlefields.spawnCandidates(enemy, viewport, battlefieldRuntime,
+      sideSample, offsetSample, band.maximum + Battlefields.GRID_CELL_SIZE)
+      .slice(0, ContinuousEncounter.CALIBRATION.placementCandidateScanLimit)
+      .map((candidate, index) => ({ candidate, index,
+        preference: profileCandidatePreference({ ...enemy, ...candidate }, profile) }))
+      .sort((first, second) => first.preference - second.preference || first.index - second.index)
+      .map(item => item.candidate);
+    let attempts = 0;
+    for (const candidate of candidates) {
+      const body = { ...enemy, ...candidate };
+      const edge = outwardDistanceFromViewport(body, viewport);
+      if (!edge || edge.distance + 1e-9 < band.minimum || edge.distance > band.maximum + Battlefields.GRID_CELL_SIZE) continue;
+      Object.assign(enemy, candidate);
+      attempts++;
+      observeTelemetry("recordSpawnPlacementAttempt", () => ({ selectedType: type,
+        preferredDistanceTag: profile.distance, fallbackDistanceBandUsed: tag !== profile.distance ? tag : null,
+        placementRetryCount: attempts - 1 }));
+      if (!validPlayerSpawnExclusion(enemy) || !isValidSpawnPosition(enemy)) {
+        if (attempts >= ContinuousEncounter.CALIBRATION.placementAttemptsPerBand) break;
+        continue;
+      }
+      enemy.spawnSide = edge.side;
+      enemy.selectedSpawnDistanceTag = profile.distance;
+      enemy.fallbackSpawnDistanceBand = tag !== profile.distance ? tag : null;
+      const entryAnchor = createEntryAnchor(edge.side, enemy);
+      if (!entryAnchor || !profileGeometryAccepts(enemy, profile, entryAnchor)) {
+        if (attempts >= ContinuousEncounter.CALIBRATION.placementAttemptsPerBand) break;
+        continue;
+      }
+      enemy.entryAnchor = entryAnchor;
+      return true;
+    }
+  }
+  observeTelemetry("recordSpawnPlacementFailure", () => ({ selectedType: type,
+    reason: "no-legal-profile-candidate", preferredDistanceTag: profile.distance }));
+  return false;
+}
+
+function positionStillValid(enemy) {
+  return validPlayerSpawnExclusion(enemy) && isValidSpawnPosition(enemy);
+}
+
+function finalizeContinuousSpawn(pending) {
+  const index = encounterController.pendingReservations.findIndex(item => item.reservation.id === pending.reservation.id);
+  if (index >= 0) encounterController.pendingReservations.splice(index, 1);
+  if (!positionStillValid(pending.enemy) && !positionEnemyForProfile(pending.enemy, pending.enemy.type)) {
+    ContinuousEncounter.cancelSpawn(encounterController, pending.reservation);
+    observeTelemetry("recordSpawnPlacementFailure", () => ({ selectedType: pending.enemy.type,
+      reason: "camera-moved-before-introduction-dismiss" }));
+    return false;
+  }
+  pending.enemy.lifecycle = ContinuousEncounter.LIFECYCLES.ENTERING;
+  pending.enemy.hasEnteredViewport = false;
+  pending.enemy.reservationPhase = pending.reservation.phase;
+  ContinuousEncounter.establishSpawn(pending.reservation);
+  enemies.push(pending.enemy);
+  observeTelemetry("recordContinuousSpawnCommitted", () => ({ type: pending.enemy.type,
+    area: pending.reservation.area, phase: pending.reservation.phase }));
+  observeTelemetry("recordLifecycleTransition", () => ({ type: pending.enemy.type, to: pending.enemy.lifecycle }));
+  return true;
+}
+
+function dispatchContinuousSpawn(fill) {
+  const phase = encounterController.phase;
+  const isComing = phase === ContinuousEncounter.PHASES.WAVE_COMING;
+  const ceiling = isComing ? ContinuousEncounter.STRUCTURE.controllerCeiling : ContinuousEncounter.STRUCTURE.normalFillMaximum;
+  const credit = isComing ? encounterController.comingCredit : encounterController.normalCredit;
+  const types = stageRuntime.definition.continuousEnemyTypes;
+  const activeCounts = enemies.reduce((counts, enemy) => {
+    if (enemy.hp > 0 && enemy.lifecycle !== ContinuousEncounter.LIFECYCLES.DEAD) {
+      counts[enemy.type] = (counts[enemy.type] || 0) + 1;
+    }
+    return counts;
+  }, {});
+  for (const type of types) {
+    const cap = ContinuousEncounter.CALIBRATION.mechanicCaps[type];
+    const area = ContinuousEncounter.visualArea(Encounters.ENEMIES[type]);
+    if (Number.isFinite(cap) && (activeCounts[type] || 0) >= cap) {
+      observeTelemetry("recordSpawnTypeRejected", () => ({ type, reason: "cap" }));
+    } else if (fill.projectedFill + area / fill.capacityArea > ceiling + 1e-9) {
+      observeTelemetry("recordSpawnTypeRejected", () => ({ type, reason: "fill" }));
+    }
+  }
+  const legal = ContinuousEncounter.legalTypes({ definitions: Encounters.ENEMIES, types, enemies,
+    projectedFill: fill.projectedFill, capacity: fill.capacityArea }).filter(type => {
+      const area = ContinuousEncounter.visualArea(Encounters.ENEMIES[type]);
+      return (!isComing || area <= encounterController.comingRemainingArea + 1e-9) &&
+        fill.projectedFill + area / fill.capacityArea <= ceiling + 1e-9;
+    });
+  if (!legal.length) {
+    if (isComing) {
+      const minimumArea = Math.min(...types.map(type => ContinuousEncounter.visualArea(Encounters.ENEMIES[type])));
+      if (encounterController.comingRemainingArea < minimumArea) encounterController.comingRemainingArea = 0;
+    }
+    return false;
+  }
+  const requestCredit = Math.max(...legal.map(type => ContinuousEncounter.visualArea(Encounters.ENEMIES[type])));
+  if (credit + 1e-9 < requestCredit) return false;
+  const selected = ContinuousEncounter.selectType(legal, encounterController.spawnHistory, encounterController.typeRng);
+  for (const type of [selected, ...legal.filter(type => type !== selected)]) {
+    const definition = Encounters.ENEMIES[type];
+    const stats = Encounters.getScaledEnemyStats(definition.stats, stageRuntime.definition.enemyScaling);
+    const enemy = { type, waveId: currentWave.id, runtimeId: nextEnemyRuntimeId++, x: 0, y: 0, ...stats,
+      visualWidth: definition.visualWidth, visualHeight: definition.visualHeight,
+      collisionFootprint: { ...definition.collision }, navigationFootprint: { ...definition.navigation },
+      countsTowardEncounterProgress: true, lifecycle: ContinuousEncounter.LIFECYCLES.RESERVED,
+      behaviorRuntime: EnemyBehaviors.createRuntime(definition),
+      navigationRuntime: Battlefields.createNavigationRuntime(nextEnemyRuntimeId - 1) };
+    if (!positionEnemyForProfile(enemy, type)) continue;
+    const area = ContinuousEncounter.visualArea(definition);
+    const reservation = ContinuousEncounter.commitSpawn(encounterController, type, area, phase);
+    if (!reservation) return false;
+    const pending = { reservation, enemy };
+    if (beginSpawnIntroduction(type, pending)) {
+      encounterController.pendingReservations.push(pending);
+      return true;
+    }
+    return finalizeContinuousSpawn(pending);
+  }
+  if (isComing) encounterController.comingRemainingArea = 0;
+  return false;
 }
 
 function projectileTerrainResponse(bullet, obstacle) {
@@ -1036,11 +1443,16 @@ function isOverlapping(rectangleA, rectangleB) {
 function isCurrentEncounterEnemy(enemy) {
   return Boolean(
     runPhase === RUN_PHASES.WAVE_ACTIVE &&
-    currentWave &&
-    enemy?.waveId === currentWave.id &&
     Number.isFinite(enemy.hp) &&
-    enemy.hp > 0
+    enemy.hp > 0 && enemy.lifecycle !== ContinuousEncounter.LIFECYCLES.DEAD
   );
+}
+
+function canEnemyAct(enemy) {
+  if (!isCurrentEncounterEnemy(enemy)) return false;
+  if (!enemy.lifecycle || enemy.lifecycle === ContinuousEncounter.LIFECYCLES.ACTIVE) return true;
+  return [EnemyBehaviors.STATES.TELEGRAPH, EnemyBehaviors.STATES.CHARGE,
+    EnemyBehaviors.STATES.STRIKE, EnemyBehaviors.STATES.CONNECTED].includes(enemy.behaviorRuntime?.behaviorState);
 }
 
 function prepareProjectileHitState(bullet) {
@@ -1071,6 +1483,7 @@ function handleBulletEnemyCollisions() {
 
       if (!bullet.hitTargets.has(enemy) && isOverlapping(bullet, enemy)) {
         enemy.hp -= bullet.damage;
+        audioManager.play("weaponHit", { world: true, pan: worldAudioPan(enemy), concurrency: 3 });
         observeTelemetry("recordBulletHit", () => ({ enemyType: enemy.type,
           damage: Math.max(0, Math.min(bullet.damage, enemy.hp + bullet.damage)) }));
         const projectileRemoved = consumeProjectileHit(bullet, bulletIndex, enemy);
@@ -1078,12 +1491,19 @@ function handleBulletEnemyCollisions() {
         if (enemy.hp <= 0) {
           EnemyBehaviors.recordEnemyDefeat(enemy, hazards, { emit: emitBehaviorTelemetry, enemies });
           enemies.splice(enemyIndex, 1);
-          Encounters.syncWaveRuntime(currentWave, waveRuntime, enemies);
+          if (waveRuntime) waveRuntime.aliveEnemyCount = enemies.filter(candidate => candidate.hp > 0).length;
           observeTelemetry("recordEnemyKill", () => ({ enemyType: enemy.type }));
           awardRunScore(SCORE_TYPES.ENEMY_KILL, 1);
           xp += 1;
           saveData.statistics.totalKills += 1;
           saveGame();
+          audioManager.play("enemyKill", { world: true, pan: worldAudioPan(enemy), concurrency: 3 });
+          const completedWave = ContinuousEncounter.recordKill(encounterController,
+            enemy.countsTowardEncounterProgress !== false);
+          if (completedWave) {
+            const fill = ContinuousEncounter.computeFill(enemies, cameraViewportRect(), pendingSpawnArea());
+            handleLogicalWaveComplete(fill);
+          }
           updateLevel();
 
           if (isChoosingUpgrade) {
@@ -1169,6 +1589,7 @@ function updateLevel() {
     }
 
     isChoosingUpgrade = true;
+    audioManager.play("levelUp");
     clearInput();
     renderUpgradeChoices();
     return;
@@ -1221,13 +1642,22 @@ function handlePlayerEnemyCollisions() {
     const enemy = enemies[enemyIndex];
 
     if (isCurrentEncounterEnemy(enemy) && isOverlapping(player, enemy)) {
-      // This removal is guaranteed below; observe it before fatal damage can finish the report.
-      observeTelemetry("recordEnemyRemoval", () => ({ enemyType: enemy.type, reason: "contact" }));
-      EnemyBehaviors.recordEnemyContact(enemy, { emit: emitBehaviorTelemetry });
-      EnemyBehaviors.recordEnemyRemoval(enemy, hazards, enemies);
-      takeDamage(enemy.damage ?? 1, enemy.type);
-      enemies.splice(enemyIndex, 1);
-      if (waveRuntime) Encounters.syncWaveRuntime(currentWave, waveRuntime, enemies);
+      const policy = Encounters.ENEMIES[enemy.type].behavior.attackPolicy;
+      const runtime = enemy.behaviorRuntime;
+      if (policy === "contact") {
+        observeTelemetry("recordEnemyRemoval", () => ({ enemyType: enemy.type, reason: "contact" }));
+        EnemyBehaviors.recordEnemyRemoval(enemy, hazards, enemies);
+        takeDamage(enemy.damage ?? 1, enemy.type);
+        enemy.lifecycle = ContinuousEncounter.LIFECYCLES.DEAD;
+        enemies.splice(enemyIndex, 1);
+        if (waveRuntime) waveRuntime.aliveEnemyCount = enemies.filter(candidate => candidate.hp > 0).length;
+      } else if (policy === "strike" && runtime?.behaviorState === EnemyBehaviors.STATES.STRIKE && !runtime.attackDamageApplied) {
+        runtime.attackDamageApplied = true;
+        takeDamage(enemy.damage ?? 1, enemy.type);
+      } else if (policy === "charge" && runtime?.behaviorState === EnemyBehaviors.STATES.CHARGE && !runtime.chargeContact) {
+        EnemyBehaviors.recordEnemyContact(enemy, { emit: emitBehaviorTelemetry });
+        takeDamage(enemy.damage ?? 1, enemy.type);
+      }
       if (isGameOver) return;
     }
   }
@@ -1290,7 +1720,7 @@ function pushEnemy(enemy, movementX, movementY) {
 }
 
 function hasOtherEnemyCollision(enemy) {
-  for (const otherEnemy of enemies) {
+  for (const otherEnemy of nearbyEnemies(enemy)) {
     if (otherEnemy !== enemy && isCurrentEncounterEnemy(otherEnemy) && isOverlapping(enemy, otherEnemy)) {
       return true;
     }
@@ -1315,7 +1745,7 @@ function getEnemyCollisionState(enemy, x = enemy.x, y = enemy.y) {
   const candidate = { x, y, width: enemy.width, height: enemy.height };
   const colliders = new Set();
   let totalPenetration = 0;
-  for (const otherEnemy of enemies) {
+  for (const otherEnemy of nearbyEnemies(candidate)) {
     if (otherEnemy === enemy || !isCurrentEncounterEnemy(otherEnemy)) continue;
     const penetration = getOverlapPenetration(candidate, otherEnemy);
     if (penetration > 0) {
@@ -1377,7 +1807,11 @@ function recoverEnemyOverlap(enemy, distance) {
 
 function moveEnemyTowardPlayer(enemy, deltaTime) {
   enemy.navigationRuntime ||= Battlefields.createNavigationRuntime(enemy.runtimeId);
-  const intent = Battlefields.navigationIntent(enemy, player, battlefieldRuntime,
+  const rejoinsAtAnchor = [ContinuousEncounter.LIFECYCLES.ENTERING, ContinuousEncounter.LIFECYCLES.RETURNING].includes(enemy.lifecycle);
+  if (rejoinsAtAnchor && !enemy.entryAnchor) return;
+  const navigationTarget = rejoinsAtAnchor
+    ? { x: enemy.entryAnchor.x, y: enemy.entryAnchor.y, width: enemy.width, height: enemy.height } : player;
+  const intent = Battlefields.navigationIntent(enemy, navigationTarget, battlefieldRuntime,
     enemy.navigationRuntime, deltaTime);
   if (intent.requested) observeTelemetry("recordPathRequest");
   if (intent.failed) observeTelemetry("recordPathFailure");
@@ -1438,14 +1872,31 @@ function moveEnemyCharge(enemy, directionX, directionY, speed, deltaTime) {
 
 function emitBehaviorTelemetry(method, details) {
   observeTelemetry(method, () => details);
+  const cueByEvent = {
+    recordInterceptorAttempt: "interceptorTelegraph", recordInterceptorCommit: "interceptorCharge",
+    recordTankSlamTelegraph: "tankSlamTelegraph", recordTankSlamImpact: "tankSlamImpact",
+    recordGunnerBurst: "gunnerBurst", recordArtilleryWarning: "artilleryWarning",
+    recordArtilleryImpact: "artilleryImpact", recordDenierCast: "denierCast",
+    recordSupportLinkCreated: "supportLinkOn", recordSupportLinkBroken: "supportLinkOff", recordTrapperArm: "trapperArm",
+    recordTrapperTrigger: "trapperTrigger", recordTetherConnect: "tetherConnect",
+    recordTetherBreak: "tetherBreak"
+  };
+  const cue = cueByEvent[method];
+  if (cue) {
+    const source = enemies.find(enemy => enemy.runtimeId === details?.enemyId || enemy.runtimeId === details?.supportId);
+    audioManager.play(cue, { world: true, pan: source ? worldAudioPan(source) : 0 });
+  }
 }
 
 function updateEnemies(deltaTime) {
   const bounds = battlefieldRuntime.definition.bounds;
   EnemyBehaviors.updateEnemies({ enemies, definitions: Encounters.ENEMIES, hazards,
     player, playerVelocity, deltaTime, arena: bounds,
-    isActive: isCurrentEncounterEnemy, moveChase: moveEnemyTowardPlayer,
+    isActive: canEnemyAct, moveChase: moveEnemyTowardPlayer,
     moveCharge: moveEnemyCharge,
+    damagePlayer: takeDamage,
+    overlaps: isOverlapping,
+    hasLineOfSight: (enemy, target) => Battlefields.hasLineOfTravel(enemy, target, battlefieldRuntime),
     resolvePlayablePoint: point => Battlefields.nearestPlayablePoint(point, battlefieldRuntime),
     emit: emitBehaviorTelemetry });
 }
@@ -1617,11 +2068,45 @@ function drawHealthBar(entity) {
   ctx.restore();
 }
 
+function drawEnemyVisual(targetContext, type, x, y, width, height, preview = false) {
+  targetContext.save();
+  targetContext.fillStyle = enemyColors[type] || "#dc2626";
+  targetContext.strokeStyle = "#05070b";
+  targetContext.lineWidth = Math.max(3, Math.min(width, height) * 0.08);
+  targetContext.fillRect(x, y, width, height);
+  targetContext.strokeRect(x, y, width, height);
+  if (preview && ["denier", "artillery", "trapper"].includes(type)) {
+    targetContext.beginPath();
+    targetContext.arc(x + width * 0.72, y + height * 0.82, width * 0.38, 0, Math.PI * 2);
+    targetContext.fillStyle = "rgba(251,113,133,.18)";
+    targetContext.strokeStyle = "#fda4af";
+    targetContext.fill(); targetContext.stroke();
+  }
+  if (preview && ["support", "tether"].includes(type)) {
+    targetContext.strokeStyle = type === "support" ? "#5eead4" : "#67e8f9";
+    targetContext.lineWidth = 5;
+    targetContext.beginPath();
+    targetContext.moveTo(x + width, y + height / 2);
+    targetContext.lineTo(x + width * 1.65, y + height * 0.25);
+    targetContext.stroke();
+  }
+  targetContext.restore();
+}
+
+function renderIntroductionPreview(type) {
+  const previewContext = enemyIntroductionIcon.getContext?.("2d");
+  if (!previewContext) return;
+  previewContext.clearRect(0, 0, enemyIntroductionIcon.width, enemyIntroductionIcon.height);
+  const definition = Encounters.ENEMIES[type];
+  const scale = Math.min(72 / definition.visualWidth, 72 / definition.visualHeight);
+  const width = definition.visualWidth * scale, height = definition.visualHeight * scale;
+  drawEnemyVisual(previewContext, type, 58 - width / 2, 70 - height / 2, width, height, true);
+}
+
 function drawEnemies() {
   for (const enemy of enemies) {
     if (!isWorldVisible(enemy, 12)) continue;
-    ctx.fillStyle = enemyColors[enemy.type];
-    ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+    drawEnemyVisual(ctx, enemy.type, enemy.x, enemy.y, enemy.visualWidth, enemy.visualHeight);
     drawHealthBar(enemy);
   }
 }
@@ -1691,6 +2176,7 @@ function drawBehaviorArena() {
   const living = enemies.filter(isCurrentEncounterEnemy);
   EnemyBehaviors.drawArenaCues(ctx, living, hazards, Encounters.ENEMIES, {
     bounds: battlefieldRuntime.definition.bounds,
+    player,
     isVisible: isWorldVisible
   });
 }
@@ -1784,28 +2270,38 @@ function updateArenaPresentation() {
     enemyIntroductionRole.textContent = currentEnemyIntroduction.role;
     enemyIntroductionDescription.textContent = currentEnemyIntroduction.description;
     enemyIntroductionCounterplay.textContent = currentEnemyIntroduction.counterplay;
-    const previewColor = currentEnemyIntroduction.preview?.color || enemyColors[currentEnemyIntroduction.type];
-    enemyIntroductionIcon.style.background = previewColor;
-    enemyIntroductionIcon.style.color = previewColor;
-    enemyIntroductionIcon.dataset.shape = currentEnemyIntroduction.preview?.shape || "square";
+    renderIntroductionPreview(currentEnemyIntroduction.type);
   }
+  const showWaveComing = runPhase === RUN_PHASES.WAVE_ACTIVE && waveComingBannerTimer > 0 &&
+    !isGameOver && !isVictory && !isAbandoned;
   const showIntermission = runPhase === RUN_PHASES.INTERMISSION &&
     !isGameOver && !isVictory && !isAbandoned;
-  intermissionBanner.hidden = !showIntermission;
-  if (!showIntermission) {
-    intermissionBanner.classList.remove("boss-incoming");
-    return;
+  intermissionBanner.hidden = !showIntermission && !showWaveComing;
+  intermissionBanner.classList[showWaveComing ? "add" : "remove"]("wave-coming");
+  intermissionBanner.classList[showIntermission ? "add" : "remove"]("boss-incoming");
+  if (showWaveComing) {
+    intermissionTitle.textContent = "WAVE COMING";
+    intermissionDetail.textContent = "REINFORCEMENTS INBOUND";
+    intermissionCountdown.textContent = "";
+  } else if (showIntermission) {
+    intermissionTitle.textContent = `WAVE ${stageRuntime.waveIndex + 1} CLEAR`;
+    intermissionDetail.textContent = "BOSS INCOMING";
+    intermissionCountdown.textContent = String(Math.ceil(Math.max(0, Encounters.CONFIG.intermission - intermissionTimer)));
   }
-
-  const bossIncoming = stageRuntime.waveIndex + 1 >= stageRuntime.definition.waveCount;
-  intermissionTitle.textContent = `WAVE ${stageRuntime.waveIndex + 1} CLEAR`;
-  intermissionDetail.textContent = bossIncoming
-    ? "BOSS INCOMING"
-    : `NEXT · WAVE ${stageRuntime.waveIndex + 2}`;
-  intermissionCountdown.textContent = String(
-    Math.ceil(Math.max(0, Encounters.CONFIG.intermission - intermissionTimer))
-  );
-  intermissionBanner.classList[bossIncoming ? "add" : "remove"]("boss-incoming");
+  const edgeCounts = { top: 0, right: 0, bottom: 0, left: 0 };
+  for (const enemy of enemies) if (enemy.lifecycle === ContinuousEncounter.LIFECYCLES.ENTERING &&
+      enemy.reservationPhase === ContinuousEncounter.PHASES.WAVE_COMING && edgeCounts[enemy.spawnSide] !== undefined) {
+    edgeCounts[enemy.spawnSide]++;
+  }
+  for (const pending of encounterController?.pendingReservations || []) {
+    if (pending.reservation.phase === ContinuousEncounter.PHASES.WAVE_COMING && edgeCounts[pending.enemy.spawnSide] !== undefined) {
+      edgeCounts[pending.enemy.spawnSide]++;
+    }
+  }
+  for (const indicator of reinforcementEdges.children) {
+    const count = edgeCounts[indicator.dataset.edge] || 0;
+    if (count) indicator.dataset.count = String(count); else delete indicator.dataset.count;
+  }
 }
 
 function drawPhasePresentation() {
@@ -1886,7 +2382,7 @@ function observeTelemetry(method, details) {
 }
 function observeCombatFrame(deltaTime) {
   observeTelemetry("recordEncounterFrame", () => {
-    const living = runPhase === RUN_PHASES.WAVE_ACTIVE ? enemies.filter(enemy => enemy.waveId === currentWave.id && enemy.hp > 0) : [];
+    const living = runPhase === RUN_PHASES.WAVE_ACTIVE ? enemies.filter(enemy => enemy.hp > 0) : [];
     const enemiesByType = {};
     living.forEach(enemy => { enemiesByType[enemy.type] = (enemiesByType[enemy.type] || 0) + 1; });
     const enemyOffscreenCount = living.filter(enemy => !isWorldVisible(enemy)).length;

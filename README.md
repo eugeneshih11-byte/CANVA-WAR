@@ -6,9 +6,9 @@ A roguelite 2D browser game built with HTML, CSS, vanilla JavaScript and an 800 
 
 From this directory, run `python -m http.server 8080`, then open `http://localhost:8080`. Run the complete dependency-free automated suite with `node --test`.
 
-CANVA WAR now boots into a non-combat Main Hub. Choose **PLAY** to begin a Run, or open the standalone **SHOP**, **ARMORY**, and **EQUIPMENT** destinations. Those three meta-progression pages are foundations only: Shop has no economy, Armory only presents the owned Starter definition, and Equipment does not invent items or stats.
+CANVA WAR now boots into a clean non-combat Main Hub. Choose **PLAY** to begin a Run, or open the standalone **SHOP**, **ARMORY**, and **EQUIPMENT** destinations. Those three meta-progression pages are foundations only: Shop has no economy, Armory only presents the owned Starter definition, and Equipment does not invent items or stats.
 
-Combat Variety v1.1 is an experimental behavior-validation correction pass, not permanent Stage 1 content. Launch it with `http://localhost:8080/?prototype=combat-variety-v1`, then choose PLAY. Add telemetry independently with `http://localhost:8080/?playtest=1&prototype=combat-variety-v1`; `?playtest=1` by itself keeps Calibration A gameplay unchanged. Query configuration remains selected while the Hub is open and applies when PLAY begins.
+Phase B makes all ten regular Enemy identities and the Continuous Encounter controller production Stage 1 content. Add observation-only telemetry with `http://localhost:8080/?playtest=1`; the older `?prototype=combat-variety-v1` selector remains only as a compatibility fixture for historical tests.
 
 Local script URLs use an explicit version query to prevent stale browser JavaScript during development and playtesting. Bump the shared version string when a new test build must load guaranteed fresh assets.
 
@@ -19,6 +19,26 @@ Controls: use the menu buttons in the Hub and meta views. In combat, use WASD mo
 `index.html` contains five sibling top-level roots: Hub, Shop, Armory, Equipment, and Game. A lightweight in-memory router in `game.js` keeps exactly one active; navigation state is not saved. Application boot only loads existing durable progression and shows the Hub. PLAY initializes optional playtest telemetry, creates the in-memory Run, increments the existing Run statistic, and enters Game. Hidden non-combat views reject gameplay keyboard and firing input, and the game loop does not simulate or render combat outside Game.
 
 `battlefields.js` owns immutable Battlefield source parameters, seeded runtime generation, validation, shared static geometry and footprint-aware navigation helpers. `encounters.js` owns frozen Stage, Enemy evaluation, Template and Boss definitions, generation, validation, analysis, scaling and Wave runtime helpers. `behaviors.js` owns extensible regular-Enemy behavior profiles, per-Enemy mutable behavior runtimes, locked prediction, hazard lifetime and dynamic support relationships; Boss 1 deliberately keeps its curated state machine in `game.js`. `weapons.js` owns immutable Weapon definitions, the technical Fire Rate cap and deterministic projectile-direction math. `build.js` owns immutable Upgrade definitions plus pure Build creation, validation, choice and stat-resolution helpers. `layout.js` owns pure 800 x 600 display sizing, Camera following/clamping and explicit screen/world conversion. `game.js` coordinates the view router and those modules with movement, firing, collision, XP, Run phases and saves. `settlement.js` remains the authoritative Score-to-Points calculation and checkpoint implementation.
+
+## Phase B Continuous Encounter
+
+`continuous-encounter.js` is the single production authority for regular-Enemy field pressure, spawn credits, logical-Wave progress, spawn reservations, return reservations and Enemy lifecycle state. The older generated Spawn Group, Threat-budget and MaxActiveThreat code remains isolated in `encounters.js` for analyzer and regression compatibility; it no longer schedules production regular combat. Regular Wave boundaries do not clear surviving Enemies or enter the four-second Intermission. The existing Intermission is retained only for the transition from the final logical Wave to Boss 1.
+
+The controller phases are `SETTLING`, `NORMAL`, `WAVE_COMING` and `FINAL_COMPLETE`. Enemy lifecycles are `RESERVED`, `ENTERING`, `ACTIVE`, `NEAR_OFFSCREEN`, `RETURNING` and `DEAD`. For the 800 x 600 viewport, Capacity Area is `800 × 600 − π × 100² ≈ 448584.07 px²`; obstacle area is not deducted. Visible Fill is the sum of every living Enemy's visual-rectangle intersection with the viewport divided by Capacity Area. Projected Fill adds committed off-screen spawn and fully off-screen return reservations exactly once. Normal refill uses 40%/45%/50% hysteresis and a hard 90% controller ceiling. A 120-pixel spatial hash replaces the former all-pairs dynamic-Enemy neighbor scan in the hot movement/placement path.
+
+The provisional calibration is deliberately centralized: TurnoverCycles `1.5`; Normal area-credit rate `0.12 Capacity Area/second`; Wave Coming area-credit rate `0.32 Capacity Area/second`; credit cap `0.14 Capacity Area`; fixed Wave Coming delta `0.25`; eight placement attempts per distance band; six-entry recency history with multipliers `[0.35, 0.50, 0.65, 0.80, 0.90, 1.00]`; same-type streak multiplier `0.55`; and mechanic caps Interceptor 6, Denier 6, Support 4, Gunner 8, Artillery 4, Trapper 6 and Tether 4. These are first-pass values awaiting playtest tuning, not final balance.
+
+Logical-Wave progress arms only after the initial field settles inside the Normal band. It snapshots `N_ref`, computes `K_target = max(1, ceil(N_ref * TurnoverCycles))`, and advances only from qualifying kills. On a non-final target, the normal refill is suspended, the previous Wave's clear/performance hooks and secured checkpoint execute immediately, and a fixed additive Wave Coming budget is committed without resetting the field. The selected spawn type is committed before a once-per-run Introduction; dismissing the modal resumes that exact reservation, while camera invalidation retries the same type within bounded placement rules or cancels its credit and Fill reservation cleanly.
+
+Each spawn performs one weighted selection from the ten eligible identities. Recent occurrence and streak suppression are soft weights, not forced rotations. Type selection and position sampling use separate seeded RNG streams; exactly two position samples seed deterministic candidate scans, so placement retries cannot perturb future type selection. Profiles use NEAR/MID/FAR distance bands plus geometry tags (`none`, `approach-space`, `large-clearance`, `lane-required`, `open-space-preferred`, `support-access`, `los-preferred`, and `route-space-preferred`). Telemetry records preferred/fallback bands, attempts, failures, cap/fill/placement rejection counts and lifecycle transitions.
+
+Moving Player/Camera geometry can invalidate a candidate while a reservation is being resolved. Phase B deliberately handles that measured risk with bounded same-Type revalidation, deterministic band fallback and clean cancellation/credit return; it does not predict the Camera, teleport actors or phase through walls. Playtest telemetry should determine whether the observed failure rate needs a later follow-up.
+
+The production roster is Normal (56, HP 2, speed 110 contact pursuer), Fast (40, HP 1, speed 180 committed strike), Tank (80, HP 6, speed 65 radial slam), Interceptor (52, HP 3, speed 100 predictive charge), Denier (60, HP 3, speed 80 persistent hazard), Support (52, HP 2, speed 75 special cooldown link), Gunner (52, HP 2, speed 90 two-shot burst), Artillery (68, HP 3, speed 65 delayed 80-radius impact), Trapper (48, HP 2, speed 85 armed route trap) and Tether (56, HP 3, speed 95 line-of-sight tether). Their immutable visual, collision, navigation, spawn-profile, safety-cap and attack-policy data lives in `encounters.js`; runtime behavior lives in `behaviors.js`.
+
+All ten once-per-Run Introductions use the shared production Enemy renderer with deterministic preview-only cues. Denier receives a representative hazard marker and Support a short representative Link without creating gameplay hazards, targets, timers, telemetry, or consuming gameplay RNG. A selected Type and its reservation are held unchanged while the modal pauses simulation.
+
+`audio.js` provides a gesture-unlocked procedural Web Audio foundation with Master, SFX and reserved Music buses, per-cue retrigger/concurrency limits, global priority preemption and camera-relative stereo panning for world cues. Mute, Master volume and SFX volume persist under the separate `canva-war-settings` key; Save v2 is unchanged. Audio failure is isolated from gameplay.
 
 The Hub does not begin a Run, create a Battlefield runtime, generate a Wave, advance combat timers, increment `totalRuns`, or initialize a playtest telemetry session. The Shop reads current Points from Save; Armory reads the existing Starter Weapon from `weapons.js`; Equipment reflects the existing owned-equipment list. Save v2 reserves empty `deployables` and `summons` unlock lists without exposing unfinished systems in the Hub. Returning from an active Run cannot hide or discard it: the same Abandon confirmation and secured-checkpoint Settlement semantics run first. Returning after an abandoned or completed Run clears Battlefield, navigation, Enemy, projectile, hazard and Boss runtime state. Death and Victory have already settled and may return directly to the Hub. The broader development focus remains **Core Direction Realignment**; this navigation foundation does not complete that work.
 
@@ -42,9 +62,9 @@ Battlefield acceptance now samples every possible Camera region on a viewport-qu
 
 Playtest Encounter telemetry now includes `forcedRepaths`, `stuckRecoveries`, `maxNoProgressDuration`, regular-Enemy offscreen engagement time, Boss offscreen time, Boss obstruction events, and Camera time without visible terrain. These remain observation-only, memory-only fields and do not enter Save v2 or gameplay decisions.
 
-## Combat Variety v1.1 correction pass
+## Historical Combat Variety v1.1 correction pass
 
-The normal `STAGES` plan remains Calibration A. `getStagesForSearch()` selects a separate frozen prototype plan only for the exact `prototype=combat-variety-v1` value, without reading or writing Save data. The prototype retains the Stage 1 Threat curve `[8, 10, 12, 14, 17]`, MaxActiveThreat curve `[6, 7, 8.5, 10, 12]`, existing allocator/validation limits and all Enemy costs. Its generation constraints reserve room inside those budgets for exactly one Interceptor in Wave 3, one Denier in Wave 4, and one Support plus one Interceptor in Wave 5. The Wave 5 pair is additionally constrained to the same primary spawn group without bypassing normal allocation or adding budget.
+The following finite-Wave notes are retained as historical design and regression context. `getStagesForSearch()` still exposes the frozen prototype plan for compatibility, but production regular combat now uses the Phase B controller above.
 
 Regular Enemy definitions now pair immutable stats and Roles with a behavior profile. Each spawned Enemy receives an independent runtime containing state, elapsed state time, cooldown and locked target data. Registry-dispatched profiles keep the main update loop free of type-specific branches:
 
@@ -86,7 +106,7 @@ Holding the primary mouse button requests attacks at the resolved Fire Rate. Coo
 
 An attack is one trigger event and may emit multiple projectiles. Split Shot places projectile directions symmetrically around the aim angle, while the unmodified Starter keeps the original single straight shot. Each projectile carries its resolved Damage, size, speed and Pierce budget. A projectile can hit each regular Enemy or Boss at most once; Pierce permits additional distinct targets before removal. Starter Pierce remains 0, so current base behavior is unchanged.
 
-## Stage 1 configuration
+## Legacy finite-Wave configuration (analysis/test compatibility)
 
 Stage ID: `stage-1`. Battlefield: `stage-1-field-a`. Five Waves. Enemy pool: normal, fast, tank. Mechanics: empty. Boss: `boss-1`. HP, Damage and Speed multipliers are all **1**, preserving original combat stats. `getScaledEnemyStats()` scales these independently and never scales Threat Cost.
 
@@ -100,7 +120,7 @@ Stage ID: `stage-1`. Battlefield: `stage-1-field-a`. Five Waves. Enemy pool: nor
 
 Enemy evaluation: normal = frontline, Threat 1; fast = pressure, Threat 1.4; tank = frontline + heavy, Threat 2.2. Threat measures pressure independently of HP, Damage, XP and Score. Field pressure uses MaxActiveThreat, with safety guards of 8 active regular enemies and 18 generated enemies per Wave. The old infinite spawning and global 10-enemy difficulty limit are removed.
 
-## Templates and generation
+## Legacy templates and generation
 
 | Template | Threat allocation | Relative delays (seconds) | Bias / requirements |
 |---|---|---|---|
@@ -168,4 +188,4 @@ Run `node --test` for the complete dependency-free suite, `node --check` for eac
 
 Manual browser validation should exercise held firing across normal and long frames, upgrade card mouse/keyboard selection, all pause and Encounter transitions, the BUILD panel at desktop and narrow widths, Split Shot telemetry, the complete Stage/Boss flow and browser console output. This README does not record a completed unassisted balance playthrough.
 
-The protected Calibration A Threat, Enemy costs, Template delays, hard active count, ordinary Enemy stats, Weapon/Upgrade values, XP, Score, Points, Settlement and Boss numbers remain unchanged by Phase A.1. Its old clear-time evidence predates geometry, so collect new unassisted clear times, navigation diagnostics, damage, composition, group waiting, Boss charge attempts/contacts and offered/selected Upgrade histories before tuning again. Save changes are limited to the v2 migration and empty future unlock categories. No Phase B work, Quick Clear award, Stage 2, Deployable/Summon mechanics, Equipment/Item systems, Boss adds, reward content or Run persistence are implemented.
+The protected Weapon/Upgrade, XP, Score, Points, Settlement and Boss systems remain unchanged by Phase B. Continuous Fill, credit, turnover, profile, cap and Enemy-behavior values need unassisted calibration. No Quick Clear award, Stage 2, Deployable/Summon mechanics, Equipment/Item systems, Boss adds, reward content or Run persistence is implemented.

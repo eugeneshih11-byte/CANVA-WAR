@@ -1,5 +1,7 @@
 # CANVA WAR --- Project Context & Design Notes
 
+> **Phase B status (2026-09-12):** Production regular combat now uses the Continuous Encounter controller documented in `README.md`, with all ten regular Enemy identities, continuous field pressure, logical-Wave turnover targets, additive Wave Coming reinforcement, lifecycle/reservation accounting, and the first formal Web Audio foundation. Finite Spawn Group/Threat/MaxActiveThreat sections below are retained as historical context and regression documentation; they no longer describe the production regular-Enemy scheduler. Save v2, Settlement, Boss 1, Weapons, Upgrades, XP, Score and Points remain protected.
+
 ## Main Hub and meta-page foundation
 
 CANVA WAR now boots into a non-combat Main Hub instead of treating the combat screen as the whole product. The application has five mutually exclusive, in-memory views:

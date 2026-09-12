@@ -54,18 +54,20 @@
         const wrapper = element("div", "", "playtest-table-scroll");
         const table = element("table");
         const head = element("tr");
-        ["Encounter", "Template", "Threat / budget", "Encounter time", "Clear ratio", "Attacks / projectiles", "Damage", "Peak Threat", "Avg Threat", "Blocked (s)", "Navigation health", "Special behavior", "Outcome"]
+        ["Encounter", "Controller", "Fill / Progress", "Encounter time", "Clear ratio", "Attacks / projectiles", "Damage", "Peak count", "Placement", "Lifecycle", "Navigation health", "Special behavior", "Outcome"]
           .forEach(label => head.append(element("th", label)));
         const thead = element("thead"); thead.append(head); table.append(thead);
         const body = element("tbody");
         for (const encounter of run.encounters) {
           const row = element("tr");
           const values = [encounter.type === "boss" ? encounter.bossId : `Wave ${encounter.waveIndex + 1}`,
-            encounter.templateId || "—", encounter.type === "boss" ? "—" : `${format(encounter.generatedThreat)} / ${format(encounter.threatBudget)}`,
+            encounter.type === "boss" ? "Boss" : (encounter.templateId || "continuous"), encounter.type === "boss" ? "—" :
+              `V/P ${format(encounter.visibleFill)}/${format(encounter.projectedFill)} · avg ${format(encounter.averageVisibleFill)} · K ${format(encounter.currentWaveProgress)}/${format(encounter.K_target)} · N ${format(encounter.N_ref)}`,
             encounterTimeSummary(encounter), encounterClearRatio(encounter),
             `${format(encounter.attackEvents)} / ${format(encounter.shotsFired)}`,
-            format(encounter.damageTaken), format(encounter.peakActiveThreat), format(encounter.averageActiveThreat),
-            format(encounter.pressureBlockedTime),
+            format(encounter.damageTaken), format(encounter.peakActiveEnemyCount),
+            `${format(encounter.spawnPlacementFailures)}/${format(encounter.spawnPlacementAttempts)} · fallback ${JSON.stringify(encounter.fallbackSpawnDistanceBand || {})}`,
+            `E ${format(encounter.enteringEnemyCount)} · N ${format(encounter.nearOffscreenEnemyCount)} · R ${format(encounter.returningEnemyCount)}`,
             `Path ${format(encounter.pathRequests)}/${format(encounter.pathFailures)} · ` +
               `Recover ${format(encounter.forcedRepaths)}/${format(encounter.stuckRecoveries)} · ` +
               `No-progress ${seconds(encounter.maxNoProgressDuration)} · ` +

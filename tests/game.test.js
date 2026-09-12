@@ -31,6 +31,7 @@ globalThis.__gameTest = {
   resetGame,
   startGameplay, showView, requestHub,
   startWave, startBossEncounter, completeBossEncounter, updateLevel, openAbandon, closeAbandon, abandonRun,
+  handleLogicalWaveComplete, updateContinuousEncounter,
   updateBullets, positionEnemyForSpawn, isValidSpawnPosition, tryMoveEnemy,
   recoverEnemyOverlap, moveEnemyCharge, moveBossCharge,
   encounters: Encounters,
@@ -55,6 +56,10 @@ globalThis.__gameTest = {
   clearInput,
   spawnEnemy,
   updateEnemies,
+  handlePlayerEnemyCollisions,
+  canEnemyAct,
+  enemyBehaviors: EnemyBehaviors,
+  continuousEncounter: ContinuousEncounter,
   handleDenierHazardDamage,
   beginEnemyIntroductions,
   showNextEnemyIntroduction,
@@ -67,6 +72,7 @@ globalThis.__gameTest = {
   updateAim,
   updateCameraRuntime,
   updateHud,
+  renderIntroductionPreview,
   resizeCanvasDisplay: typeof resizeCanvasDisplay === "function" ? resizeCanvasDisplay : null,
   updateArenaPresentation: typeof updateArenaPresentation === "function" ? updateArenaPresentation : null,
   setBuildState(value) {
@@ -127,7 +133,7 @@ globalThis.__gameTest = {
       isAbandonConfirmOpen,
       previousXpRequirement,
       xpToNextLevel,
-      runPhase, stageIndex, stageRuntime, currentWave, waveRuntime, bossRuntime, intermissionTimer, stageClearTimer,
+      runPhase, stageIndex, stageRuntime, currentWave, waveRuntime, bossRuntime, encounterController, intermissionTimer, stageClearTimer,
       isAbandoned, currentEnemyIntroduction, pendingWaveIndex,
       introducedEnemyTypes: [...introducedEnemyTypes], denierHazardDamageRuntime
     };
@@ -298,6 +304,7 @@ function loadGame(initialStorage = {}, options = {}) {
     intermissionTitle: createElement("intermissionTitle"),
     intermissionDetail: createElement("intermissionDetail"),
     intermissionCountdown: createElement("intermissionCountdown"),
+    reinforcementEdges: createElement("reinforcementEdges"),
     enemyIntroduction: createElement("enemyIntroduction"),
     enemyIntroductionIcon: createElement("enemyIntroductionIcon"),
     enemyIntroductionName: createElement("enemyIntroductionName"),
@@ -306,6 +313,18 @@ function loadGame(initialStorage = {}, options = {}) {
     enemyIntroductionCounterplay: createElement("enemyIntroductionCounterplay"),
     enemyIntroductionContinue: createElement("enemyIntroductionContinue")
   };
+  const previewOperations = [];
+  const previewContext = {};
+  for (const method of ["clearRect", "save", "restore", "fillRect", "strokeRect", "beginPath",
+    "arc", "fill", "stroke", "moveTo", "lineTo"]) {
+    previewContext[method] = (...args) => previewOperations.push({ method, args });
+  }
+  Object.assign(elements.enemyIntroductionIcon, { width: 180, height: 140, previewOperations,
+    getContext: () => previewContext });
+  for (const edge of ["top", "right", "bottom", "left"]) {
+    const indicator = createElement(`edge-${edge}`); indicator.dataset.edge = edge;
+    elements.reinforcementEdges.append(indicator);
+  }
   elements.arenaRegion.clientWidth = options.arenaWidth ?? 1000;
   elements.arenaRegion.clientHeight = options.arenaHeight ?? 760;
   elements.canvasStage.clientWidth = options.stageWidth ?? 800;
@@ -374,10 +393,12 @@ function loadGame(initialStorage = {}, options = {}) {
   vm.runInContext(settlementSource, context, { filename: "settlement.js" });
   vm.runInContext(battlefieldsSource, context, { filename: "battlefields.js" });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "encounters.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "continuous-encounter.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "behaviors.js"), "utf8"), context);
   vm.runInContext(weaponsSource, context, { filename: "weapons.js" });
   vm.runInContext(buildSource, context, { filename: "build.js" });
   if (layoutSource) vm.runInContext(layoutSource, context, { filename: "layout.js" });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "audio.js"), "utf8"), context);
   vm.runInContext(gameSource + testHook, context, { filename: gamePath });
   context.__gameTest.triggerResize = () => resizeObservers.forEach(observer =>
     observer.callback([{ target: observer.target, contentRect: observer.target?.getBoundingClientRect?.() }]));
@@ -794,7 +815,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="armoryView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="equipmentView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="gameView" class="app-view game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=20260911-pursuit-density-a1"/);
+  assert.match(indexSource, /href="style\.css\?v=20260912-continuous-b3"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1 id="hubTitle">CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
@@ -811,11 +832,14 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="enemyIntroductionCounterplay"/);
   assert.match(indexSource, /id="enemyIntroductionContinue"/);
   assert.match(indexSource, /aria-modal="true"/);
-  const scriptVersion = "20260911-pursuit-density-a1";
+  assert.match(indexSource, /id="reinforcementEdges"/);
+  assert.match(indexSource, /id="audioMuteButton"/);
+  assert.doesNotMatch(indexSource, /Choose your next destination|ROGUELITE OPERATIONS/);
+  const scriptVersion = "20260912-continuous-b3";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
-  assert.deepEqual(scriptSources, ["settlement.js", "battlefields.js", "encounters.js", "behaviors.js", "weapons.js", "build.js",
-    "layout.js", "telemetry.js", "telemetry-ui.js", "game.js"]
+  assert.deepEqual(scriptSources, ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js",
+    "layout.js", "audio.js", "telemetry.js", "telemetry-ui.js", "game.js"]
     .map(source => `${source}?v=${scriptVersion}`));
 }
 
@@ -1069,38 +1093,30 @@ for (const [name, test] of tests) {
 
 const test = require("node:test");
 function finishWave(game) {
-  for (let i = 0; i < 30 && game.getState().runPhase === "WAVE_ACTIVE"; i++) {
-    game.update(0);
-    // Simulate legitimate removals, independently of kill awards.
-    game.enemies.length = 0;
-    game.update(3);
-  }
-  assert.equal(game.getState().runPhase, "INTERMISSION");
+  game.handleLogicalWaveComplete({ projectedFill: 0.45 });
+  return game.getState().runPhase;
 }
 
-test("finite five-Wave flow, movement-only intermission, Boss and reward to Victory", () => {
+test("five logical Waves use continuous transitions before the isolated Boss entry", () => {
   const game = loadGame(); startGame(game);
   let rewardCalls = 0;
   game.setReward(context => { assert.equal(context.completed, true); rewardCalls++; });
   for (let index = 0; index < 5; index++) {
     assert.equal(game.getState().stageRuntime.waveIndex, index);
     game.bullets.push(makeBullet()); finishWave(game);
-    assert.equal(game.bullets.length, 0);
     const snapshot = game.getRunSettlementState().securedCheckpoint;
     assert.equal(snapshot.progress.completedWaves, index + 1);
-    pressPrimary(game); assert.equal(game.bullets.length, 0);
-    releasePrimary(game);
-    game.player.x = 380; const x = game.player.x; game.keys.d = true;
-    game.update(0.1); assert.ok(game.player.x > x);
-    game.setState({ isChoosingUpgrade: true });
-    game.update(20); assert.equal(game.getState().intermissionTimer, 0.1);
-    game.setState({ isChoosingUpgrade: false });
-    game.update(3.8); assert.equal(game.getState().runPhase, "INTERMISSION");
-    assert.equal(game.enemies.length, 0);
-    game.update(0.11);
-    assert.equal(game.getState().runPhase, index < 4 ? "WAVE_ACTIVE" : "BOSS_ACTIVE");
-    assert.equal(game.keys.d, false);
-    assert.equal(game.getState().hasBossSpawned, index === 4);
+    if (index < 4) {
+      assert.equal(game.getState().runPhase, "WAVE_ACTIVE");
+      assert.equal(game.getState().encounterController.phase, "WAVE_COMING");
+      assert.equal(game.bullets.length, index + 1);
+    } else {
+      assert.equal(game.getState().runPhase, "INTERMISSION");
+      assert.equal(game.bullets.length, 0);
+      game.update(4);
+      assert.equal(game.getState().runPhase, "BOSS_ACTIVE");
+      assert.equal(game.getState().hasBossSpawned, true);
+    }
   }
   game.setState({ boss: makeBoss({ hp: 1 }) });
   game.bullets.push(makeBullet()); game.update(0);
@@ -1132,12 +1148,12 @@ test("Level 5 is only build progression and pauses all Wave timing", () => {
 });
 
 test("contact removal tracks damage and living count without kill credit", () => {
-  const game = loadGame(); startGame(game); game.update(0);
+  const game = loadGame(); startGame(game); game.spawnEnemy("normal");
   const enemy = game.enemies[0];
   enemy.x = game.player.x; enemy.y = game.player.y;
   const count = game.getState().waveRuntime.aliveEnemyCount;
   game.update(0);
-  assert.equal(game.getState().waveRuntime.aliveEnemyCount, count - 1);
+  assert.equal(game.getState().waveRuntime.aliveEnemyCount, 0);
   assert.equal(game.getState().waveRuntime.damageTaken, 1);
   assert.equal(game.getState().score, 0); assert.equal(game.getState().xp, 0);
   assert.equal(game.getSaveData().statistics.totalKills, 0);
@@ -1201,13 +1217,13 @@ test("Abandon overlay pauses, cancels, and settles only the checkpoint", () => {
 
 test("canonical reset clears encounter timers/history and preserves persistent meta", () => {
   const game = loadGame(); startGame(game);
-  finishWave(game); game.update(4); game.update(1);
+  finishWave(game);
   game.startBossEncounter(); game.update(0.5);
   game.getSaveData().progression.points = 25;
   const saved = JSON.stringify(game.getSaveData());
   game.resetGame(); const state = game.getState();
   assert.equal(state.stageIndex, 0); assert.equal(state.stageRuntime.waveIndex, 0);
-  assert.deepEqual(Array.from(state.stageRuntime.recentTemplates), ["basic"]);
+  assert.deepEqual(Array.from(state.stageRuntime.recentTemplates), []);
   assert.equal(state.waveRuntime.nextSpawnGroupIndex, 0);
   assert.equal(state.waveRuntime.groupDelayElapsed, 0);
   assert.equal(state.waveRuntime.activeThreat, 0); assert.equal(state.waveRuntime.damageTaken, 0);
@@ -1231,20 +1247,24 @@ test("held movement repeats cannot leak across encounter transitions", () => {
   assert.equal(game.keys.d, true);
 });
 
-test("last kill opening an upgrade defers Wave Clear and checkpoint until resume", () => {
+test("last kill disarms Progress and checkpoints before the Level Up pause", () => {
   const game = loadGame(); startGame(game);
   const runtime = game.getState().waveRuntime;
-  runtime.nextSpawnGroupIndex = game.getState().currentWave.spawnGroups.length;
-  game.enemies.push({ waveId: runtime.waveId, type: "normal", x: 100, y: 100, width: 20, height: 20, hp: 1, speed: 0 });
+  game.getState().encounterController.phase = "NORMAL";
+  game.getState().encounterController.waveProgressArmed = true;
+  game.getState().encounterController.target = 1;
+  game.enemies.push({ waveId: runtime.waveId, type: "normal", x: 100, y: 100, width: 20, height: 20,
+    visualWidth: 20, visualHeight: 20, lifecycle: "ACTIVE", hp: 1, speed: 0 });
   game.bullets.push(makeBullet()); game.setState({ xp: 4 });
   game.update(0);
   assert.equal(game.getState().isChoosingUpgrade, true);
   assert.equal(runtime.aliveEnemyCount, 0);
   assert.equal(game.getState().runPhase, "WAVE_ACTIVE");
-  assert.equal(game.getRunSettlementState().securedCheckpoint, null);
+  assert.equal(game.getRunSettlementState().securedCheckpoint.score, 1);
+  assert.equal(game.getState().stageRuntime.waveIndex, 1);
   game.update(5); assert.equal(runtime.elapsedTime, 0);
   game.listeners.keydown({ key: "1" }); game.update(0);
-  assert.equal(game.getState().runPhase, "INTERMISSION");
+  assert.equal(game.getState().runPhase, "WAVE_ACTIVE");
   assert.equal(game.getRunSettlementState().securedCheckpoint.score, 1);
 });
 
@@ -1256,6 +1276,28 @@ test("all invalid Points exponents retain the positive configured fallback", () 
     assert.equal(settlement.calculatePoints(1234, config), standard);
     assert.equal(settlement.calculatePoints(0, config), 0);
     assert.equal(settlement.calculatePoints(-1, config), 0);
+  }
+});
+
+test("Death uses current state while Abandon uses the secured checkpoint during Coming and Settling", () => {
+  for (const phase of ["WAVE_COMING", "SETTLING"]) {
+    const death = loadGame(); startGame(death); finishWave(death);
+    death.getState().encounterController.phase = phase;
+    const checkpointScore = death.getRunSettlementState().securedCheckpoint.score;
+    death.settlement.awardScore(death.getRunSettlementState(), "enemyKill", 9);
+    death.player.hp = 1;
+    death.enemies.push(makeEnemy(death, "normal", { x: death.player.x, y: death.player.y,
+      width: 20, height: 20, visualWidth: 20, visualHeight: 20, hp: 1, lifecycle: "ACTIVE", speed: 0 }));
+    death.handlePlayerEnemyCollisions();
+    assert.equal(death.getState().runPhase, "RUN_DEAD");
+    assert.equal(death.getLastSettlement().finalScore, checkpointScore + 9, `death ${phase}`);
+
+    const abandon = loadGame(); startGame(abandon); finishWave(abandon);
+    abandon.getState().encounterController.phase = phase;
+    const securedScore = abandon.getRunSettlementState().securedCheckpoint.score;
+    abandon.settlement.awardScore(abandon.getRunSettlementState(), "enemyKill", 9);
+    abandon.openAbandon(); abandon.abandonRun();
+    assert.equal(abandon.getLastSettlement().finalScore, securedScore, `abandon ${phase}`);
   }
 });
 
@@ -1325,21 +1367,14 @@ test("Level choice and Abandon freeze Weapon cooldown and clear held attack", ()
   assert.equal(abandonGame.weaponRuntime.timeUntilNextShot, abandonCooldown);
 });
 
-test("Intermission blocks fire, drops held input, and the next Encounter starts ready", () => {
+test("Wave Coming remains non-modal and combat firing stays active", () => {
   const game = loadGame(); startGame(game);
   finishWave(game);
-  game.weaponRuntime.timeUntilNextShot = 0.2;
-  pressPrimary(game);
-  assert.equal(game.bullets.length, 0);
-  assert.equal(game.weaponRuntime.attackHeld, false);
-  game.update(0.1);
-  assert.equal(game.weaponRuntime.timeUntilNextShot, 0.2);
-  game.update(game.encounters.CONFIG.intermission - 0.1);
-  assert.equal(game.getState().runPhase, "WAVE_ACTIVE");
-  assert.equal(game.weaponRuntime.timeUntilNextShot, 0);
-  assert.equal(game.weaponRuntime.attackHeld, false);
+  assert.equal(game.getState().encounterController.phase, "WAVE_COMING");
+  game.weaponRuntime.timeUntilNextShot = 0;
   pressPrimary(game);
   assert.equal(game.bullets.length, 1);
+  assert.equal(game.weaponRuntime.attackHeld, true);
 });
 
 test("blur and run-ending transitions clear held attack input", () => {
@@ -1464,7 +1499,7 @@ test("a piercing projectile cannot hit the same enemy twice across frames", () =
   assert.equal(game.bullets.length, 0);
 });
 
-test("stale and dead ghosts cannot absorb projectiles or award combat credit", () => {
+test("carried Wave enemies remain valid projectile targets while dead ghosts do not", () => {
   const game = loadGame(); startGame(game);
   const active = makeEnemy(game, "normal", {
     x: 100, y: 100, width: 20, height: 20, hp: 5, maxHp: 5, speed: 0
@@ -1481,8 +1516,8 @@ test("stale and dead ghosts cannot absorb projectiles or award combat credit", (
 
   game.handleBulletEnemyCollisions();
 
-  assert.equal(active.hp, 4);
-  assert.equal(stale.hp, 5);
+  assert.equal(active.hp, 5);
+  assert.equal(stale.hp, 4);
   assert.equal(dead.hp, 0);
   assert.equal(game.bullets.length, 0);
   assert.equal(game.getState().score, 0);
@@ -1636,7 +1671,130 @@ test("Normal, Fast, and Tank enemies advance toward the Player at their own spee
   });
 });
 
-test("only living current-Wave enemies update or participate in enemy collision", () => {
+test("only contact policy uses generic body damage; strike and charge require committed states", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  game.player.x = 100; game.player.y = 100;
+  const makeOverlap = type => makeEnemy(game, type, { x: 100, y: 100,
+    ...game.encounters.ENEMIES[type].stats, lifecycle: "ACTIVE",
+    behaviorRuntime: game.enemyBehaviors.createRuntime(game.encounters.ENEMIES[type]) });
+  const passiveTypes = ["fast", "tank", "denier", "support", "gunner", "artillery", "trapper", "tether"];
+  game.enemies.push(...passiveTypes.map(makeOverlap));
+  game.handlePlayerEnemyCollisions();
+  assert.equal(game.player.hp, 5);
+  assert.equal(game.enemies.length, passiveTypes.length);
+
+  const fast = game.enemies.find(enemy => enemy.type === "fast");
+  fast.behaviorRuntime.behaviorState = game.enemyBehaviors.STATES.STRIKE;
+  game.handlePlayerEnemyCollisions();
+  assert.equal(game.player.hp, 4);
+  game.handlePlayerEnemyCollisions();
+  assert.equal(game.player.hp, 4);
+
+  const interceptor = makeOverlap("interceptor");
+  interceptor.behaviorRuntime.behaviorState = game.enemyBehaviors.STATES.CHARGE;
+  game.enemies.push(interceptor);
+  game.handlePlayerEnemyCollisions();
+  assert.equal(game.player.hp, 3);
+
+  const normal = makeOverlap("normal");
+  game.enemies.push(normal);
+  game.handlePlayerEnemyCollisions();
+  assert.equal(game.player.hp, 2);
+  assert.equal(game.enemies.includes(normal), false);
+});
+
+test("ENTERING and RETURNING enemies cannot initiate attacks while fully offscreen", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  const types = ["fast", "tank", "interceptor", "denier", "support", "gunner", "artillery", "trapper", "tether"];
+  for (const lifecycle of ["ENTERING", "RETURNING"]) {
+    for (const type of types) {
+      const definition = game.encounters.ENEMIES[type];
+      const candidate = makeEnemy(game, type, { x: -500, y: -500, ...definition.stats, lifecycle,
+        behaviorRuntime: game.enemyBehaviors.createRuntime(definition) });
+      candidate.behaviorRuntime.attackCooldown = 0;
+      candidate.behaviorRuntime.cooldown = 0;
+      game.enemies.push(candidate);
+      assert.equal(game.canEnemyAct(candidate), false, `${type} ${lifecycle}`);
+    }
+  }
+  const before = game.enemies.map(enemy => ({ x: enemy.x, y: enemy.y, state: enemy.behaviorRuntime.behaviorState }));
+  game.updateEnemies(2);
+  assert.deepEqual(game.enemies.map(enemy => ({ x: enemy.x, y: enemy.y, state: enemy.behaviorRuntime.behaviorState })), before);
+  assert.equal(game.hazards.length, 0);
+  assert.equal(game.player.hp, 5);
+});
+
+test("lethal Enemy hazard cleanup cannot invalidate the active hazard iteration", () => {
+  const game = loadGame(); startGame(game);
+  game.player.hp = 1;
+  game.hazards.push(...[1, 2].map(id => ({ id, kind: "enemy-projectile", phase: "ACTIVE",
+    x: game.player.x, y: game.player.y, width: 10, height: 10,
+    directionX: 0, directionY: 0, speed: 0, damage: 1, remaining: 1 })));
+  assert.doesNotThrow(() => game.updateEnemies(0));
+  assert.equal(game.getState().runPhase, "RUN_DEAD");
+  assert.equal(game.hazards.length, 0);
+});
+
+test("all ten Introduction previews use the shared renderer without gameplay or RNG side effects", () => {
+  const rendered = loadGame(); startGame(rendered);
+  const control = loadGame(); startGame(control);
+  const types = Object.keys(rendered.encounters.ENEMIES);
+  assert.deepEqual(types.sort(), ["artillery", "denier", "fast", "gunner", "interceptor",
+    "normal", "support", "tank", "tether", "trapper"]);
+  const before = JSON.stringify({ enemies: rendered.enemies, hazards: rendered.hazards,
+    history: rendered.getState().encounterController.spawnHistory });
+  for (const type of types) {
+    const operations = rendered.elements.enemyIntroductionIcon.previewOperations;
+    operations.length = 0;
+    rendered.renderIntroductionPreview(type);
+    assert.ok(operations.some(operation => operation.method === "fillRect"), type);
+    assert.ok(operations.some(operation => operation.method === "strokeRect"), type);
+    if (["denier", "artillery", "trapper"].includes(type)) {
+      assert.ok(operations.some(operation => operation.method === "arc"), type);
+    }
+    if (["support", "tether"].includes(type)) {
+      assert.ok(operations.some(operation => operation.method === "lineTo"), type);
+    }
+  }
+  assert.equal(JSON.stringify({ enemies: rendered.enemies, hazards: rendered.hazards,
+    history: rendered.getState().encounterController.spawnHistory }), before);
+  assert.equal(rendered.getState().encounterController.typeRng(),
+    control.getState().encounterController.typeRng());
+});
+
+test("moving-Camera Continuous Encounter stress stays bounded and leaves no pending reservation", () => {
+  const game = loadGame(); startGame(game);
+  let peakCount = 0;
+  for (let frame = 0; frame < 180; frame++) {
+    game.player.x = 780 + Math.sin(frame / 30) * 360;
+    game.player.y = 580 + Math.cos(frame / 36) * 260;
+    game.updateCameraRuntime();
+    const fill = game.updateContinuousEncounter(1 / 30);
+    if (game.getState().runPhase === "INTRODUCTION_PENDING") game.update(0);
+    if (game.getState().runPhase === "INTRODUCTION_ACTIVE") game.dismissEnemyIntroduction();
+    peakCount = Math.max(peakCount, game.enemies.length);
+    assert.ok(fill.projectedFill >= 0);
+    assert.ok(game.getState().encounterController.normalCredit >= 0);
+    assert.ok(game.getState().encounterController.comingCredit >= 0);
+    for (const enemy of game.enemies) {
+      assert.equal(Battlefields.isStaticPositionValid(enemy, game.getBattlefieldRuntime()), true);
+    }
+  }
+  const controller = game.getState().encounterController;
+  assert.equal(controller.pendingReservations.length, 0);
+  assert.ok(peakCount > 10);
+  const counts = game.enemies.reduce((result, enemy) => {
+    result[enemy.type] = (result[enemy.type] || 0) + 1; return result;
+  }, {});
+  assert.ok(Object.keys(counts).length >= 7, JSON.stringify(counts));
+  for (const [type, cap] of Object.entries(game.continuousEncounter.CALIBRATION.mechanicCaps)) {
+    assert.ok((counts[type] || 0) <= cap, type);
+  }
+});
+
+test("all living carried enemies update and collide independent of original Wave id", () => {
   const game = loadGame(); startGame(game);
   game.enemies.length = 0;
   const active = makeEnemy(game, "normal", { x: 0, y: 250 });
@@ -1646,11 +1804,11 @@ test("only living current-Wave enemies update or participate in enemy collision"
   const staleBefore = { x: stale.x, y: stale.y };
   const deadBefore = { x: dead.x, y: dead.y };
 
-  assert.equal(game.hasOtherEnemyCollision(active), false);
+  assert.equal(game.hasOtherEnemyCollision(active), true);
   game.updateEnemies(0.1);
 
-  assert.ok(active.x > 0);
-  assert.deepEqual({ x: stale.x, y: stale.y }, staleBefore);
+  assert.ok(active.x !== 0 || stale.x !== staleBefore.x || stale.y !== staleBefore.y);
+  assert.notDeepEqual({ x: stale.x, y: stale.y }, staleBefore);
   assert.deepEqual({ x: dead.x, y: dead.y }, deadBefore);
   assert.equal(game.hasOtherEnemyCollision(active), false);
 });
@@ -1817,20 +1975,17 @@ test("stale and dead ghost enemies neither block nor damage the Player", () => {
   }
 });
 
-test("Enemies in the next Wave resume movement under the new ownership id", () => {
+test("existing enemies persist and keep moving across a logical Wave boundary", () => {
   const game = loadGame(); startGame(game);
+  game.spawnEnemy("normal");
+  const carried = game.enemies[0];
+  const oldWaveId = carried.waveId;
+  const before = distanceToPlayer(game, carried);
   finishWave(game);
-  game.update(game.encounters.CONFIG.intermission);
   assert.equal(game.getState().runPhase, "WAVE_ACTIVE");
-  game.update(0);
-  const nextWaveId = game.getState().currentWave.id;
-  const active = game.enemies.filter(enemy => enemy.waveId === nextWaveId && enemy.hp > 0);
-  assert.ok(active.length > 0);
-  const before = active.map(enemy => distanceToPlayer(game, enemy));
-
   game.updateEnemies(1 / 60);
-
-  active.forEach((enemy, index) => assert.ok(distanceToPlayer(game, enemy) < before[index]));
+  assert.equal(carried.waveId, oldWaveId);
+  assert.ok(distanceToPlayer(game, carried) < before);
 });
 
 test("Boss follows CHASE, TELEGRAPH, locked CHARGE, RECOVERY, then CHASE without RNG", () => {
@@ -2025,26 +2180,38 @@ test("resizing changes display size without changing logical or Run state or RNG
   assert.equal(randomCalls, callsBefore);
 });
 
-test("Intermission banner text and countdown follow the existing timer", () => {
+test("Wave Coming banner is compact, non-countdown transition presentation", () => {
   const game = loadGame(); startGame(game);
   finishWave(game);
   game.updateArenaPresentation();
   assert.equal(game.elements.intermissionBanner.hidden, false);
-  assert.equal(game.elements.intermissionTitle.textContent, "WAVE 1 CLEAR");
-  assert.equal(game.elements.intermissionDetail.textContent, "NEXT · WAVE 2");
-  assert.equal(game.elements.intermissionCountdown.textContent, "4");
+  assert.equal(game.elements.intermissionTitle.textContent, "WAVE COMING");
+  assert.equal(game.elements.intermissionDetail.textContent, "REINFORCEMENTS INBOUND");
+  assert.equal(game.elements.intermissionCountdown.textContent, "");
+  assert.equal(game.elements.intermissionBanner.classList.contains("wave-coming"), true);
   assert.equal(game.elements.intermissionBanner.classList.contains("boss-incoming"), false);
+});
 
-  game.update(1.2);
+test("reinforcement edge cues aggregate only real Coming reservations and clear on resolution", () => {
+  const game = loadGame(); startGame(game);
+  const controller = game.getState().encounterController;
+  controller.pendingReservations.push(...[1, 2].map(id => ({
+    reservation: { id, phase: "WAVE_COMING", area: 1600, status: "PENDING" },
+    enemy: { spawnSide: "right" }
+  })));
   game.updateArenaPresentation();
-  assert.equal(game.elements.intermissionCountdown.textContent, "3");
-  game.update(2.79);
+  const indicators = game.elements.reinforcementEdges.children;
+  assert.equal(indicators.find(item => item.dataset.edge === "right").dataset.count, "2");
+  assert.equal(indicators.find(item => item.dataset.edge === "left").dataset.count, undefined);
+  controller.pendingReservations.length = 0;
+  game.enemies.push(makeEnemy(game, "fast", { lifecycle: "ENTERING", reservationPhase: "WAVE_COMING",
+    spawnSide: "top" }));
   game.updateArenaPresentation();
-  assert.equal(game.elements.intermissionCountdown.textContent, "1");
-  game.update(0.02);
+  assert.equal(indicators.find(item => item.dataset.edge === "right").dataset.count, undefined);
+  assert.equal(indicators.find(item => item.dataset.edge === "top").dataset.count, "1");
+  game.enemies.length = 0;
   game.updateArenaPresentation();
-  assert.equal(game.getState().runPhase, "WAVE_ACTIVE");
-  assert.equal(game.elements.intermissionBanner.hidden, true);
+  assert.equal(indicators.find(item => item.dataset.edge === "top").dataset.count, undefined);
 });
 
 test("the fifth Wave announces the Boss and terminal states hide the banner", () => {

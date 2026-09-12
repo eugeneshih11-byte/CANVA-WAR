@@ -18,6 +18,15 @@
   const COMBAT_VARIETY_V1 = freeze({
     id: "combat-variety-v1",
     introductions: {
+      normal: { name: "NORMAL", role: "Frontline Pursuer",
+        description: "Closes space and deals damage by body contact.",
+        counterplay: "Keep moving and prevent it from surrounding you.", preview: { color: "#dc2626", shape: "square" } },
+      fast: { name: "FAST", role: "Pass-through Striker",
+        description: "Telegraphs a quick committed strike through your position.",
+        counterplay: "Sidestep after the short tell.", preview: { color: "#f97316", shape: "diamond" } },
+      tank: { name: "TANK", role: "Area Slammer",
+        description: "Approaches slowly and telegraphs a wide radial slam.",
+        counterplay: "Leave the marked radius before impact.", preview: { color: "#7c3aed", shape: "square" } },
       interceptor: { name: "INTERCEPTOR", role: "Predictive Attacker",
         description: "Predicts your movement and commits to a long charge.",
         counterplay: "Change direction after it locks on.",
@@ -29,28 +38,78 @@
       support: { name: "SUPPORT", role: "Enemy Enhancer",
         description: "Links to a special enemy and accelerates its abilities.",
         counterplay: "Destroy the Support to break the link.",
-        preview: { color: "#0f766e", shape: "link" } }
+        preview: { color: "#0f766e", shape: "link" } },
+      gunner: { name: "GUNNER", role: "Burst Shooter",
+        description: "Fires a telegraphed two-shot burst from middle range.",
+        counterplay: "Use cover or move across its firing line.", preview: { color: "#2563eb", shape: "square" } },
+      artillery: { name: "ARTILLERY", role: "Long-range Bombardier",
+        description: "Marks the ground before a large delayed impact.",
+        counterplay: "Leave the warning circle before it lands.", preview: { color: "#9333ea", shape: "zone" } },
+      trapper: { name: "TRAPPER", role: "Route Controller",
+        description: "Places armed traps in useful movement space.",
+        counterplay: "Watch for armed markers and change your route.", preview: { color: "#65a30d", shape: "zone" } },
+      tether: { name: "TETHER", role: "Line Controller",
+        description: "Acquires a line-of-sight tether that deals repeated damage.",
+        counterplay: "Break line of sight or move beyond its range.", preview: { color: "#0891b2", shape: "link" } }
     },
     enemies: {
       interceptor: {
         roles: ["pressure", "interceptor"], threatCost: 1.6,
-        stats: { width: 34, height: 34, speed: 105, hp: 3, maxHp: 3, damage: 1 },
-        behavior: { profile: "interceptor", initialCooldown: 0.9, cooldown: 3,
-          telegraphDuration: 0.55, chargeDuration: 1.6, recoveryDuration: 0.65,
-          chargeSpeed: 340, maxChargeDistance: 520, predictionLeadTime: 0.5 }
+        visualWidth: 52, visualHeight: 52, visual: { width: 52, height: 52 }, collision: { width: 52, height: 52 }, navigation: { width: 52, height: 52 },
+        spawnProfile: { distance: "MID", geometry: "lane-required" }, mechanicSafetyCap: 6,
+        stats: { width: 52, height: 52, speed: 100, hp: 3, maxHp: 3, damage: 1 },
+        behavior: { profile: "interceptor", attackPolicy: "charge", initialCooldown: 0.9, cooldown: 3,
+          telegraphDuration: 0.65, chargeDuration: 1.6, recoveryDuration: 0.55,
+          chargeSpeed: 420, maxChargeDistance: 520, predictionLeadTime: 0.5 }
       },
       denier: {
         roles: ["control"], threatCost: 1.8,
-        stats: { width: 40, height: 40, speed: 85, hp: 3, maxHp: 3, damage: 1 },
-        behavior: { profile: "denier", initialCooldown: 0.9, cooldown: 4,
-          predictionLeadTime: 0.75, telegraphDuration: 0.75,
-          hazardRadius: 55, hazardActiveDuration: 3, hazardDamage: 1, hazardDamageInterval: 1 }
+        visualWidth: 60, visualHeight: 60, visual: { width: 60, height: 60 }, collision: { width: 60, height: 60 }, navigation: { width: 60, height: 60 },
+        spawnProfile: { distance: "FAR", geometry: "open-space-preferred" }, mechanicSafetyCap: 6,
+        stats: { width: 60, height: 60, speed: 80, hp: 3, maxHp: 3, damage: 1 },
+        behavior: { profile: "denier", attackPolicy: "hazard", initialCooldown: 0.9, cooldown: 3,
+          preferredRange: [220, 300], predictionLeadTime: 0.75, telegraphDuration: 0.55,
+          hazardRadius: 70, hazardActiveDuration: 3, hazardDamage: 1, hazardDamageInterval: 1 }
       },
       support: {
         roles: ["support"], threatCost: 1.7,
-        stats: { width: 38, height: 38, speed: 80, hp: 3, maxHp: 3, damage: 1 },
-        behavior: { profile: "support", cooldownRate: 1.75,
+        visualWidth: 52, visualHeight: 52, visual: { width: 52, height: 52 }, collision: { width: 52, height: 52 }, navigation: { width: 52, height: 52 },
+        spawnProfile: { distance: "FAR", geometry: "support-access" }, mechanicSafetyCap: 4,
+        stats: { width: 52, height: 52, speed: 75, hp: 2, maxHp: 2, damage: 0 },
+        behavior: { profile: "support", attackPolicy: "support", cooldownRate: 1.35, retargetCooldown: 1,
           eligibleProfiles: ["interceptor", "denier"] }
+      },
+      gunner: {
+        roles: ["ranged"], threatCost: 1.6,
+        visualWidth: 52, visualHeight: 52, visual: { width: 52, height: 52 }, collision: { width: 52, height: 52 }, navigation: { width: 52, height: 52 },
+        spawnProfile: { distance: "MID", geometry: "los-preferred" }, mechanicSafetyCap: 8,
+        stats: { width: 52, height: 52, speed: 90, hp: 2, maxHp: 2, damage: 1 },
+        behavior: { profile: "gunner", attackPolicy: "projectile", preferredRange: [220, 320], telegraphDuration: 0.3,
+          burstCount: 2, shotSpacing: 0.15, projectileSpeed: 300, cooldown: 1.6 }
+      },
+      artillery: {
+        roles: ["ranged", "control"], threatCost: 2,
+        visualWidth: 68, visualHeight: 68, visual: { width: 68, height: 68 }, collision: { width: 68, height: 68 }, navigation: { width: 68, height: 68 },
+        spawnProfile: { distance: "FAR", geometry: "open-space-preferred" }, mechanicSafetyCap: 4,
+        stats: { width: 68, height: 68, speed: 65, hp: 3, maxHp: 3, damage: 1 },
+        behavior: { profile: "artillery", attackPolicy: "aoe", preferredRange: [320, 480], telegraphDuration: 1,
+          impactRadius: 80, cooldown: 3.2 }
+      },
+      trapper: {
+        roles: ["control"], threatCost: 1.7,
+        visualWidth: 48, visualHeight: 48, visual: { width: 48, height: 48 }, collision: { width: 48, height: 48 }, navigation: { width: 48, height: 48 },
+        spawnProfile: { distance: "MID", geometry: "route-space-preferred" }, mechanicSafetyCap: 6,
+        stats: { width: 48, height: 48, speed: 85, hp: 2, maxHp: 2, damage: 1 },
+        behavior: { profile: "trapper", attackPolicy: "trap", preferredRange: [180, 280], cooldown: 2.4,
+          armDuration: 0.6, triggerRadius: 38, maxOwnedTraps: 2 }
+      },
+      tether: {
+        roles: ["control"], threatCost: 1.8,
+        visualWidth: 56, visualHeight: 56, visual: { width: 56, height: 56 }, collision: { width: 56, height: 56 }, navigation: { width: 56, height: 56 },
+        spawnProfile: { distance: "MID", geometry: "los-preferred" }, mechanicSafetyCap: 4,
+        stats: { width: 56, height: 56, speed: 95, hp: 3, maxHp: 3, damage: 1 },
+        behavior: { profile: "tether", attackPolicy: "tether", preferredRange: [160, 240], windupDuration: 0.45,
+          damageInterval: 1, breakRange: 280, losBreakDuration: 0.5, cooldown: 1.2 }
       }
     },
     requiredEnemies: [{}, {}, { interceptor: 1 }, { denier: 1 }, { support: 1, interceptor: 1 }],
@@ -59,14 +118,22 @@
   });
   const ENEMIES = freeze({
     normal: { roles: ["frontline"], threatCost: 1,
-      stats: { width: 40, height: 40, speed: 120, hp: 3, maxHp: 3, damage: 1 },
-      behavior: { profile: "chase" } },
+      visualWidth: 56, visualHeight: 56, visual: { width: 56, height: 56 }, collision: { width: 56, height: 56 }, navigation: { width: 56, height: 56 },
+      spawnProfile: { distance: "NEAR", geometry: "none" }, mechanicSafetyCap: null,
+      stats: { width: 56, height: 56, speed: 110, hp: 2, maxHp: 2, damage: 1 },
+      behavior: { profile: "chase", attackPolicy: "contact" } },
     fast: { roles: ["pressure"], threatCost: 1.4,
-      stats: { width: 30, height: 30, speed: 200, hp: 1, maxHp: 1, damage: 1 },
-      behavior: { profile: "chase" } },
+      visualWidth: 40, visualHeight: 40, visual: { width: 40, height: 40 }, collision: { width: 40, height: 40 }, navigation: { width: 40, height: 40 },
+      spawnProfile: { distance: "NEAR", geometry: "approach-space" }, mechanicSafetyCap: null,
+      stats: { width: 40, height: 40, speed: 180, hp: 1, maxHp: 1, damage: 1 },
+      behavior: { profile: "fast", attackPolicy: "strike", telegraphDuration: 0.2, strikeSpeed: 300,
+        strikeDuration: 0.45, recoveryDuration: 0.9, cooldown: 0.8 } },
     tank: { roles: ["frontline", "heavy"], threatCost: 2.2,
-      stats: { width: 60, height: 60, speed: 70, hp: 8, maxHp: 8, damage: 1 },
-      behavior: { profile: "chase" } },
+      visualWidth: 80, visualHeight: 80, visual: { width: 80, height: 80 }, collision: { width: 80, height: 80 }, navigation: { width: 80, height: 80 },
+      spawnProfile: { distance: "NEAR", geometry: "large-clearance" }, mechanicSafetyCap: null,
+      stats: { width: 80, height: 80, speed: 65, hp: 6, maxHp: 6, damage: 1 },
+      behavior: { profile: "tank", attackPolicy: "slam", telegraphDuration: 0.85, slamRadius: 95,
+        recoveryDuration: 1.1, cooldown: 2.8 } },
     ...COMBAT_VARIETY_V1.enemies
   });
   const TEMPLATES = freeze({
@@ -78,6 +145,7 @@
   });
   const STAGES = freeze([{
     id: "stage-1", battlefieldId: "stage-1-field-a", waveCount: 5, enemyPool: ["normal", "fast", "tank"],
+    continuousEnemyTypes: ["normal", "fast", "tank", "interceptor", "denier", "support", "gunner", "artillery", "trapper", "tether"],
     templatePool: Object.keys(TEMPLATES), threatCurve: [8, 10, 12, 14, 17],
     maxActiveThreatCurve: [6, 7, 8.5, 10, 12],
     availability: [["normal"], ["normal", "fast"], ["normal", "fast", "tank"],

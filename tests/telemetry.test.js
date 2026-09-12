@@ -64,6 +64,12 @@ test("behavior telemetry records interpretable metrics once per action or hazard
   telemetry.recordSupportAffectedAction();
   telemetry.recordSupportLinkCreated({ linkId: "support-1:1" });
   telemetry.recordSupportLinkCreated({ linkId: "support-1:1" });
+  telemetry.recordFastStrikeTelegraph();
+  telemetry.recordTankSlamTelegraph(); telemetry.recordTankSlamImpact();
+  telemetry.recordGunnerBurst();
+  telemetry.recordArtilleryWarning(); telemetry.recordArtilleryImpact();
+  telemetry.recordTrapperArm(); telemetry.recordTrapperTrigger();
+  telemetry.recordTetherConnect(); telemetry.recordTetherBreak();
   telemetry.recordEnemyIntroduction({ enemyType: "interceptor" });
   telemetry.recordEnemyIntroduction({ enemyType: "interceptor" });
   const encounter = currentEncounter(telemetry);
@@ -73,6 +79,12 @@ test("behavior telemetry records interpretable metrics once per action or hazard
     hazardDamageEvents: 2, activeHazardTime: 0.75 });
   assert.deepEqual(encounter.support, { activeTime: 1.5, affectedEnemyTime: 2.75,
     affectedSpecialActions: 1, linksCreated: 1 });
+  assert.deepEqual(encounter.fast, { telegraphs: 1 });
+  assert.deepEqual(encounter.tank, { telegraphs: 1, impacts: 1 });
+  assert.deepEqual(encounter.gunner, { bursts: 1 });
+  assert.deepEqual(encounter.artillery, { warnings: 1, impacts: 1 });
+  assert.deepEqual(encounter.trapper, { arms: 1, triggers: 1 });
+  assert.deepEqual(encounter.tether, { connects: 1, breaks: 1 });
   assert.deepEqual(telemetry.getCurrentRun().enemyIntroductionsShown, ["interceptor"]);
 });
 test("Battlefield navigation diagnostics are encounter-scoped counters", () => {
