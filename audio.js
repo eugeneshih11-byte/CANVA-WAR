@@ -10,7 +10,11 @@
     tankSlamTelegraph: [130, 0.26, "sine", 5], tankSlamImpact: [65, 0.28, "square", 5], gunnerBurst: [410, 0.08, "square", 2],
     artilleryWarning: [740, 0.35, "sine", 5], artilleryImpact: [55, 0.34, "sawtooth", 5], denierCast: [280, 0.20, "triangle", 3],
     supportLinkOn: [660, 0.12, "sine", 2], supportLinkOff: [390, 0.10, "sine", 2], trapperArm: [820, 0.08, "square", 2],
-    trapperTrigger: [150, 0.20, "square", 4], tetherConnect: [560, 0.15, "sine", 3], tetherBreak: [220, 0.12, "triangle", 3]
+    trapperTrigger: [150, 0.20, "square", 4], tetherConnect: [560, 0.15, "sine", 3], tetherBreak: [220, 0.12, "triangle", 3],
+    scatterFire: [260, 0.07, "sawtooth", 2], piercerFire: [690, 0.09, "square", 2],
+    piercerHit: [115, 0.08, "triangle", 2], burstFire: [470, 0.055, "square", 2],
+    launcherFire: [145, 0.16, "sawtooth", 3], launcherExplosion: [58, 0.25, "square", 4],
+    arcBladeSweep: [780, 0.14, "sawtooth", 3], weaponSwitch: [620, 0.06, "sine", 1]
   });
   const LIMITS = Object.freeze({ defaultConcurrency: 4, lowConcurrency: 2, globalConcurrency: 12, retrigger: 0.035 });
 

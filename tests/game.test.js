@@ -10,6 +10,7 @@ const settlementSource = fs.readFileSync(path.join(__dirname, "..", "settlement.
 const battlefieldsSource = fs.readFileSync(path.join(__dirname, "..", "battlefields.js"), "utf8");
 const weaponsSource = fs.readFileSync(path.join(__dirname, "..", "weapons.js"), "utf8");
 const buildSource = fs.readFileSync(path.join(__dirname, "..", "build.js"), "utf8");
+const discoverySource = fs.readFileSync(path.join(__dirname, "..", "enemy-discovery.js"), "utf8");
 const layoutPath = path.join(__dirname, "..", "layout.js");
 const layoutSource = fs.existsSync(layoutPath) ? fs.readFileSync(layoutPath, "utf8") : "";
 const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
@@ -24,7 +25,10 @@ globalThis.__gameTest = {
   get buildState() { return buildState; },
   get currentUpgradeChoices() { return currentUpgradeChoices; },
   get playerStats() { return playerStats; },
-  weaponRuntime,
+  get weaponRuntime() { return weaponRuntime; },
+  get weaponSlots() { return weaponSlots; },
+  get activeWeaponSlotIndex() { return activeWeaponSlotIndex; },
+  get weaponEffects() { return weaponEffects; },
   keys,
   listeners: globalThis.__listeners,
   elements: globalThis.__elements,
@@ -47,6 +51,7 @@ globalThis.__gameTest = {
   handleBossPlayerCollision,
   updateBossDamageCooldown,
   fireWeaponAttack,
+  configureWeaponLoadout, activateWeaponSlot, switchActiveWeapon,
   beginAttack,
   endAttack,
   updateWeaponRuntime,
@@ -57,6 +62,7 @@ globalThis.__gameTest = {
   spawnEnemy,
   updateEnemies,
   handlePlayerEnemyCollisions,
+  resolvePlayerEnemyOverlap,
   canEnemyAct,
   enemyBehaviors: EnemyBehaviors,
   continuousEncounter: ContinuousEncounter,
@@ -73,11 +79,14 @@ globalThis.__gameTest = {
   updateCameraRuntime,
   updateHud,
   renderIntroductionPreview,
+  renderEnemyCodex,
+  enemyDiscovery,
   resizeCanvasDisplay: typeof resizeCanvasDisplay === "function" ? resizeCanvasDisplay : null,
   updateArenaPresentation: typeof updateArenaPresentation === "function" ? updateArenaPresentation : null,
   setBuildState(value) {
     buildState = RunBuild.createBuildState(value);
-    weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
+    weaponSlots[activeWeaponSlotIndex].buildState = buildState;
+    weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId], buildState);
     playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
     player.speed = playerStats.speed;
     player.maxHp = playerStats.maxHp;
@@ -90,6 +99,7 @@ globalThis.__gameTest = {
     if (isChoosingUpgrade) renderUpgradeChoices();
   },
   setUpgradeRng(rng) { upgradeRng = rng; },
+  setMouse(x, y) { mouse.x = x; mouse.y = y; },
   getMouse() { return { ...mouse }; },
   getSaveData() {
     return saveData;
@@ -158,6 +168,7 @@ globalThis.__gameTest = {
     if ("stageRuntime" in values) stageRuntime = values.stageRuntime;
     if ("currentWave" in values) currentWave = values.currentWave;
     if ("waveRuntime" in values) waveRuntime = values.waveRuntime;
+    if ("encounterController" in values) encounterController = values.encounterController;
   }
 };
 `;
@@ -173,7 +184,7 @@ function loadGame(initialStorage = {}, options = {}) {
       id,
       tagName: "DIV",
       _textContent: "",
-      hidden: ["shopView", "armoryView", "equipmentView", "gameView"].includes(id),
+      hidden: ["shopView", "armoryView", "equipmentView", "codexView", "gameView"].includes(id),
       children: [],
       dataset: {},
       attributes: {},
@@ -266,14 +277,19 @@ function loadGame(initialStorage = {}, options = {}) {
     shopView: createElement("shopView"),
     armoryView: createElement("armoryView"),
     equipmentView: createElement("equipmentView"),
+    codexView: createElement("codexView"),
     gameView: createElement("gameView"),
     playButton: createElement("playButton"),
     shopButton: createElement("shopButton"),
     armoryButton: createElement("armoryButton"),
     equipmentButton: createElement("equipmentButton"),
+    enemyCodexButton: createElement("enemyCodexButton"),
     shopBackButton: createElement("shopBackButton"),
     armoryBackButton: createElement("armoryBackButton"),
     equipmentBackButton: createElement("equipmentBackButton"),
+    codexBackButton: createElement("codexBackButton"),
+    enemyCodexGrid: createElement("enemyCodexGrid"),
+    playtestWeaponSelector: createElement("playtestWeaponSelector"),
     backToHubButton: createElement("backToHubButton"),
     shopPoints: createElement("shopPoints"),
     armoryWeaponName: createElement("armoryWeaponName"),
@@ -292,6 +308,9 @@ function loadGame(initialStorage = {}, options = {}) {
     upgradeMessage: createElement("upgradeMessage"),
     upgradeChoices: createElement("upgradeChoices"),
     buildWeaponName: createElement("buildWeaponName"),
+    slotAValue: createElement("slotAValue"),
+    slotBValue: createElement("slotBValue"),
+    activeWeaponValue: createElement("activeWeaponValue"),
     buildDamage: createElement("buildDamage"),
     buildFireRate: createElement("buildFireRate"),
     buildProjectileCount: createElement("buildProjectileCount"),
@@ -321,6 +340,20 @@ function loadGame(initialStorage = {}, options = {}) {
   }
   Object.assign(elements.enemyIntroductionIcon, { width: 180, height: 140, previewOperations,
     getContext: () => previewContext });
+  const selectorInputs = ["starter", "scatter", "piercer", "burst", "launcher", "arc-blade"]
+    .map((weaponId, index) => {
+      const input = createElement(`weapon-${weaponId}`);
+      input.tagName = "INPUT";
+      input.dataset.weaponId = weaponId;
+      input.checked = index === 0;
+      input.matches = selector => selector === "input[data-weapon-id]";
+      return input;
+    });
+  elements.playtestWeaponSelector.append(...selectorInputs);
+  elements.playtestWeaponSelector.querySelectorAll = selector =>
+    selector === "input[data-weapon-id]:checked" ? selectorInputs.filter(input => input.checked) : selectorInputs;
+  elements.playtestWeaponSelector.querySelector = selector =>
+    elements.playtestWeaponSelector.querySelectorAll(selector)[0] || null;
   for (const edge of ["top", "right", "bottom", "left"]) {
     const indicator = createElement(`edge-${edge}`); indicator.dataset.edge = edge;
     elements.reinforcementEdges.append(indicator);
@@ -399,14 +432,22 @@ function loadGame(initialStorage = {}, options = {}) {
   vm.runInContext(buildSource, context, { filename: "build.js" });
   if (layoutSource) vm.runInContext(layoutSource, context, { filename: "layout.js" });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "audio.js"), "utf8"), context);
+  vm.runInContext(discoverySource, context, { filename: "enemy-discovery.js" });
   vm.runInContext(gameSource + testHook, context, { filename: gamePath });
   context.__gameTest.triggerResize = () => resizeObservers.forEach(observer =>
     observer.callback([{ target: observer.target, contentRect: observer.target?.getBoundingClientRect?.() }]));
   return context.__gameTest;
 }
 
-function startGame(game) {
+function startGame(game, { discoverAll = true } = {}) {
   game.listeners["playButton:click"]();
+  for (let guard = 0; guard < 12; guard++) {
+    const phase = game.getState().runPhase;
+    if (phase === "INTRODUCTION_PENDING") game.update(0);
+    else if (phase === "INTRODUCTION_ACTIVE") game.dismissEnemyIntroduction();
+    else break;
+  }
+  if (discoverAll) Object.keys(game.encounters.ENEMIES).forEach(type => game.enemyDiscovery.discover(type));
 }
 
 function makeBoss(overrides = {}) {
@@ -494,10 +535,12 @@ function assertResetState(game) {
     { level: state.level, xp: state.xp, previous: state.previousXpRequirement, next: state.xpToNextLevel },
     { level: 1, xp: 0, previous: 3, next: 5 }
   );
-  assert.deepEqual({ ...game.weapon }, {
+  assert.deepEqual(JSON.parse(JSON.stringify(game.weapon)), {
     id: "starter",
     name: "Starter",
-    damage: 1,
+    attackKind: "projectile",
+    supportedWeaponUpgrades: ["rapid-fire", "heavy-shot", "split-shot"],
+    damage: 2,
     fireRate: 4,
     bulletSpeed: 480,
     bulletSize: 10,
@@ -512,7 +555,9 @@ function assertResetState(game) {
     vitality: 0,
     "swift-feet": 0
   });
-  assert.deepEqual({ ...game.weaponRuntime }, { timeUntilNextShot: 0, attackHeld: false });
+  assert.deepEqual({ ...game.weaponRuntime }, { timeUntilNextShot: 0, attackHeld: false,
+    burstShotsRemaining: 0, burstShotTimer: 0, burstAimAngle: 0,
+    burstWeapon: null, burstAttackId: null });
   assert.equal(state.boss, null);
   assert.equal(state.hasBossSpawned, false);
   assert.equal(state.isBossDefeated, false);
@@ -815,7 +860,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="armoryView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="equipmentView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="gameView" class="app-view game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=20260912-continuous-b3"/);
+  assert.match(indexSource, /href="style\.css\?v=20260912-combat-c1"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1 id="hubTitle">CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
@@ -835,11 +880,11 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="reinforcementEdges"/);
   assert.match(indexSource, /id="audioMuteButton"/);
   assert.doesNotMatch(indexSource, /Choose your next destination|ROGUELITE OPERATIONS/);
-  const scriptVersion = "20260912-continuous-b3";
+  const scriptVersion = "20260912-combat-c1";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
   assert.deepEqual(scriptSources, ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js",
-    "layout.js", "audio.js", "telemetry.js", "telemetry-ui.js", "game.js"]
+    "layout.js", "audio.js", "enemy-discovery.js", "telemetry.js", "telemetry-ui.js", "game.js"]
     .map(source => `${source}?v=${scriptVersion}`));
 }
 
@@ -1420,20 +1465,20 @@ test("projectiles snapshot resolved stats and later upgrades cannot rewrite them
   const originalProjectile = game.bullets[0];
   assert.deepEqual(
     { damage: originalProjectile.damage, size: originalProjectile.width, speed: originalProjectile.speed },
-    { damage: 1, size: 10, speed: 480 }
+    { damage: 2, size: 10, speed: 480 }
   );
 
   selectUpgrade(game, "heavy-shot");
   assert.deepEqual(
     { damage: originalProjectile.damage, size: originalProjectile.width, speed: originalProjectile.speed },
-    { damage: 1, size: 10, speed: 480 }
+    { damage: 2, size: 10, speed: 480 }
   );
   game.weaponRuntime.timeUntilNextShot = 0;
   pressPrimary(game); releasePrimary(game);
   const upgradedProjectile = game.bullets.at(-1);
   assert.deepEqual(
     { damage: upgradedProjectile.damage, size: upgradedProjectile.width, speed: upgradedProjectile.speed },
-    { damage: 2, size: 11, speed: 480 }
+    { damage: 3, size: 11, speed: 480 }
   );
 });
 
@@ -1446,11 +1491,11 @@ test("fractional Split Shot damage is applied without rounding", () => {
   const bullet = game.bullets[0];
   const enemy = makeEnemy(game, "normal", {
     x: bullet.x, y: bullet.y, width: 20, height: 20,
-    hp: 1, maxHp: 1, speed: 0
+    hp: 2, maxHp: 2, speed: 0
   });
   game.enemies.push(enemy);
   game.handleBulletEnemyCollisions();
-  assert.equal(enemy.hp, 0.25);
+  assert.equal(enemy.hp, 0.5);
   assert.equal(game.enemies.includes(enemy), true);
 });
 
@@ -1621,7 +1666,7 @@ test("Build panel lists owned Upgrades only and displays resolved combat stats",
   selectUpgrade(game, "swift-feet");
   assert.equal(game.player.hp, 4);
   assert.equal(game.elements.buildWeaponName.textContent, "Starter");
-  assert.equal(game.elements.buildDamage.textContent, "2");
+  assert.equal(game.elements.buildDamage.textContent, "3");
   assert.equal(game.elements.buildFireRate.textContent, "3.7/s");
   assert.equal(game.elements.buildProjectileCount.textContent, "1");
   assert.equal(game.elements.buildMoveSpeed.textContent, "259");
@@ -1643,7 +1688,7 @@ test("restart clears the Run Build and restores its panel", () => {
   game.listeners.keydown({ key: "r", repeat: false });
   assertResetState(game);
   assert.equal(game.elements.buildWeaponName.textContent, "Starter");
-  assert.equal(game.elements.buildDamage.textContent, "1");
+  assert.equal(game.elements.buildDamage.textContent, "2");
   assert.equal(game.elements.buildFireRate.textContent, "4.0/s");
   assert.equal(game.elements.buildProjectileCount.textContent, "1");
   assert.equal(game.elements.buildUpgradeList.children.length, 1);
@@ -1683,8 +1728,11 @@ test("only contact policy uses generic body damage; strike and charge require co
   game.handlePlayerEnemyCollisions();
   assert.equal(game.player.hp, 5);
   assert.equal(game.enemies.length, passiveTypes.length);
+  assert.equal(game.enemies.some(enemy => rectanglesOverlap(game.player, enemy)), false,
+    "compressed non-contact enemies must be physically separated without gaining body damage");
 
   const fast = game.enemies.find(enemy => enemy.type === "fast");
+  game.player.x = fast.x = 100; game.player.y = fast.y = 100;
   fast.behaviorRuntime.behaviorState = game.enemyBehaviors.STATES.STRIKE;
   game.handlePlayerEnemyCollisions();
   assert.equal(game.player.hp, 4);
@@ -1692,12 +1740,14 @@ test("only contact policy uses generic body damage; strike and charge require co
   assert.equal(game.player.hp, 4);
 
   const interceptor = makeOverlap("interceptor");
+  game.player.x = interceptor.x = 100; game.player.y = interceptor.y = 100;
   interceptor.behaviorRuntime.behaviorState = game.enemyBehaviors.STATES.CHARGE;
   game.enemies.push(interceptor);
   game.handlePlayerEnemyCollisions();
   assert.equal(game.player.hp, 3);
 
   const normal = makeOverlap("normal");
+  game.player.x = normal.x = 100; game.player.y = normal.y = 100;
   game.enemies.push(normal);
   game.handlePlayerEnemyCollisions();
   assert.equal(game.player.hp, 2);
@@ -1788,7 +1838,8 @@ test("moving-Camera Continuous Encounter stress stays bounded and leaves no pend
   const counts = game.enemies.reduce((result, enemy) => {
     result[enemy.type] = (result[enemy.type] || 0) + 1; return result;
   }, {});
-  assert.ok(Object.keys(counts).length >= 7, JSON.stringify(counts));
+  assert.deepEqual(Object.keys(counts).sort(), ["fast", "normal"]);
+  assert.ok(peakCount <= game.continuousEncounter.CALIBRATION.maxManagedRegularEnemies);
   for (const [type, cap] of Object.entries(game.continuousEncounter.CALIBRATION.mechanicCaps)) {
     assert.ok((counts[type] || 0) <= cap, type);
   }
@@ -2572,7 +2623,7 @@ test("Boss pursues around blocked charge lanes before committing a straight atta
 });
 
 test("Enemy Introduction pause freezes position and navigation runtime", () => {
-  const game = loadGame({}, { search: "?prototype=combat-variety-v1" }); startGame(game);
+  const game = loadGame({}, { search: "?prototype=combat-variety-v1" }); startGame(game, { discoverAll: false });
   game.enemies.length = 0;
   const enemy = makeEnemy(game, "normal", { runtimeId: 1, x: 40, y: 40 });
   game.enemies.push(enemy);
@@ -2609,4 +2660,231 @@ test("Save v2 migration normalizes future arrays idempotently and never persists
   assert.equal("runPhase" in stored, false);
   assert.equal("battlefieldId" in stored, false);
   assert.equal("player" in stored, false);
+});
+
+test("final regular-Wave completion is safe when bullet index greater than zero clears live combat arrays", () => {
+  const game = loadGame(); startGame(game);
+  game.startWave(4);
+  const state = game.getState();
+  state.encounterController.phase = game.continuousEncounter.PHASES.NORMAL;
+  state.encounterController.waveProgressArmed = true;
+  state.encounterController.target = 1;
+  state.encounterController.progress = 0;
+  game.enemies.length = 0;
+  game.bullets.length = 0;
+  const staleTarget = makeEnemy(game, "normal", { x: 300, y: 300, hp: 3, maxHp: 3, speed: 0 });
+  const completingTarget = makeEnemy(game, "fast", { x: 100, y: 100, hp: 1, maxHp: 1, speed: 0 });
+  game.enemies.push(staleTarget, completingTarget);
+  game.bullets.push(makeBullet({ x: 300, y: 300 }), makeBullet({ x: 100, y: 100 }));
+
+  assert.doesNotThrow(() => game.handleBulletEnemyCollisions());
+  assert.equal(state.encounterController.progress, 1);
+  assert.equal(state.encounterController.waveProgressArmed, false);
+  assert.equal(game.getState().runPhase, "INTERMISSION");
+  assert.equal(game.getRunSettlementState().securedCheckpoint.progress.completedWaves, 1);
+  assert.equal(game.getSaveData().statistics.totalKills, 1);
+  assert.equal(game.bullets.length, 0);
+  assert.equal(game.enemies.length, 0);
+  assert.doesNotThrow(() => game.update(0));
+  game.update(4);
+  assert.equal(game.getState().runPhase, "BOSS_ACTIVE");
+  assert.equal(game.getState().hasBossSpawned, true);
+});
+
+test("non-final Wave completion terminates the projectile snapshot before stale hits", () => {
+  const game = loadGame(); startGame(game);
+  const state = game.getState();
+  state.encounterController.phase = game.continuousEncounter.PHASES.NORMAL;
+  state.encounterController.waveProgressArmed = true;
+  state.encounterController.target = 1;
+  state.encounterController.progress = 0;
+  game.enemies.length = 0;
+  game.bullets.length = 0;
+  const staleTarget = makeEnemy(game, "normal", { x: 300, y: 300, hp: 3, maxHp: 3, speed: 0 });
+  const completingTarget = makeEnemy(game, "fast", { x: 100, y: 100, hp: 1, maxHp: 1, speed: 0 });
+  game.enemies.push(staleTarget, completingTarget);
+  const staleBullet = makeBullet({ x: 300, y: 300 });
+  game.bullets.push(staleBullet, makeBullet({ x: 100, y: 100 }));
+
+  game.handleBulletEnemyCollisions();
+  assert.equal(game.getState().stageRuntime.waveIndex, 1);
+  assert.equal(game.getState().encounterController.phase, "WAVE_COMING");
+  assert.equal(game.getSaveData().statistics.totalKills, 1);
+  assert.equal(staleTarget.hp, 3);
+  assert.equal(game.bullets.includes(staleBullet), true);
+  assert.equal(game.getRunSettlementState().securedCheckpoint.progress.completedWaves, 1);
+});
+
+test("two-slot loadout caps at two and preserves independent cooldowns across Q switching", () => {
+  const game = loadGame(); startGame(game);
+  assert.deepEqual(Array.from(game.configureWeaponLoadout(["scatter", "piercer", "launcher"])),
+    ["scatter", "piercer"]);
+  game.setMouse(game.player.x + 300, game.player.y);
+  pressPrimary(game); releasePrimary(game);
+  assert.equal(game.bullets.length, 5);
+  const scatterCooldown = game.weaponSlots[0].runtime.timeUntilNextShot;
+  assert.ok(scatterCooldown > 0);
+
+  game.listeners.keydown({ key: "q", repeat: false, preventDefault() {} });
+  assert.equal(game.activeWeaponSlotIndex, 1);
+  assert.equal(game.weapon.id, "piercer");
+  assert.equal(game.weaponSlots[1].runtime.timeUntilNextShot, 0);
+  pressPrimary(game); releasePrimary(game);
+  assert.equal(game.bullets.length, 6);
+  game.updateWeaponRuntime(0.1);
+  game.listeners.keydown({ key: "q", repeat: false, preventDefault() {} });
+  assert.equal(game.activeWeaponSlotIndex, 0);
+  closeTo(game.weaponRuntime.timeUntilNextShot, scatterCooldown - 0.1);
+  assert.equal(game.elements.slotAValue.textContent, "Scatter");
+  assert.equal(game.elements.slotBValue.textContent, "Piercer");
+  assert.equal(game.elements.activeWeaponValue.textContent, "A: Scatter");
+});
+
+test("Burst fires exactly three deterministic shots and pending shots clean up on death and restart", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["burst"]);
+  game.setMouse(game.player.x + 300, game.player.y);
+  pressPrimary(game); releasePrimary(game);
+  assert.equal(game.bullets.length, 1);
+  assert.equal(game.weaponRuntime.burstShotsRemaining, 2);
+  game.updateWeaponRuntime(0.109);
+  assert.equal(game.bullets.length, 1);
+  game.updateWeaponRuntime(0.001);
+  assert.equal(game.bullets.length, 2);
+  game.updateWeaponRuntime(0.11);
+  assert.equal(game.bullets.length, 3);
+  assert.equal(game.weaponRuntime.burstShotsRemaining, 0);
+
+  game.weaponRuntime.timeUntilNextShot = 0;
+  pressPrimary(game); releasePrimary(game);
+  assert.equal(game.weaponRuntime.burstShotsRemaining, 2);
+  game.player.hp = 1;
+  game.enemies.push(makeEnemy(game, "normal", { x: game.player.x, y: game.player.y,
+    hp: 3, maxHp: 3, lifecycle: "ACTIVE" }));
+  game.handlePlayerEnemyCollisions();
+  assert.equal(game.getState().isGameOver, true);
+  assert.equal(game.weaponRuntime.burstShotsRemaining, 0);
+  game.listeners.keydown({ key: "r", repeat: false });
+  assert.equal(game.weaponSlots.length, 1);
+  assert.equal(game.weapon.id, "starter");
+  assert.equal(game.weaponRuntime.burstShotsRemaining, 0);
+});
+
+test("Launcher explosion hits nearby enemies once each and Arc Blade remains frontal", () => {
+  const launcher = loadGame(); startGame(launcher);
+  launcher.configureWeaponLoadout(["launcher"]);
+  launcher.setMouse(launcher.player.x + 300, launcher.player.y);
+  pressPrimary(launcher); releasePrimary(launcher);
+  const rocket = launcher.bullets[0];
+  rocket.x = 100; rocket.y = 100;
+  const nearby = [
+    makeEnemy(launcher, "normal", { x: 100, y: 100, hp: 5, maxHp: 5, speed: 0 }),
+    makeEnemy(launcher, "fast", { x: 150, y: 100, hp: 5, maxHp: 5, speed: 0 })
+  ];
+  launcher.enemies.push(...nearby);
+  launcher.handleBulletEnemyCollisions();
+  assert.deepEqual(nearby.map(enemy => enemy.hp), [3, 3]);
+  launcher.handleBulletEnemyCollisions();
+  assert.deepEqual(nearby.map(enemy => enemy.hp), [3, 3]);
+  assert.equal(launcher.bullets.includes(rocket), false);
+
+  const blade = loadGame(); startGame(blade);
+  blade.configureWeaponLoadout(["arc-blade"]);
+  blade.player.x = 400; blade.player.y = 300;
+  blade.setMouse(800, 320);
+  const front = makeEnemy(blade, "normal", { x: 475, y: 300, hp: 4, maxHp: 4, speed: 0 });
+  const back = makeEnemy(blade, "normal", { x: 325, y: 300, hp: 4, maxHp: 4, speed: 0 });
+  blade.enemies.push(front, back);
+  pressPrimary(blade); releasePrimary(blade);
+  assert.equal(front.hp, 2);
+  assert.equal(back.hp, 4);
+  assert.equal(blade.bullets.length, 0);
+  assert.equal(blade.weaponEffects.filter(effect => effect.kind === "arc").length, 1);
+});
+
+test("Scatter projectiles carry a short range and Launcher and Arc Blade can damage the Boss", () => {
+  const scatter = loadGame(); startGame(scatter);
+  scatter.configureWeaponLoadout(["scatter"]);
+  scatter.setMouse(scatter.player.x + 300, scatter.player.y);
+  pressPrimary(scatter); releasePrimary(scatter);
+  assert.deepEqual(Array.from(scatter.bullets, projectile => projectile.remainingRange), [260, 260, 260, 260, 260]);
+  scatter.updateBullets(1);
+  assert.equal(scatter.bullets.length, 0);
+
+  const launcher = loadGame(); startGame(launcher);
+  launcher.configureWeaponLoadout(["launcher"]);
+  launcher.startBossEncounter();
+  launcher.setMouse(launcher.player.x + 300, launcher.player.y);
+  pressPrimary(launcher); releasePrimary(launcher);
+  const rocket = launcher.bullets[0];
+  Object.assign(launcher.getState().boss, { x: 100, y: 100, hp: 100 });
+  Object.assign(rocket, { x: 100, y: 100 });
+  launcher.handleBulletBossCollisions();
+  assert.equal(launcher.getState().boss.hp, 98);
+  assert.equal(launcher.weaponEffects.some(effect => effect.kind === "explosion"), true);
+
+  const blade = loadGame(); startGame(blade);
+  blade.configureWeaponLoadout(["arc-blade"]);
+  blade.startBossEncounter();
+  blade.player.x = 400; blade.player.y = 300;
+  Object.assign(blade.getState().boss, { x: 475, y: 285, hp: 100 });
+  blade.setMouse(800, 320);
+  pressPrimary(blade); releasePrimary(blade);
+  assert.equal(blade.getState().boss.hp, 98);
+});
+
+test("production starts Starter-only while playtest selection equips one or two of six", () => {
+  const production = loadGame(); startGame(production);
+  assert.deepEqual(Array.from(production.weaponSlots, slot => slot.weaponId), ["starter"]);
+
+  const playtest = loadGame({}, { search: "?playtest=1" });
+  const inputs = playtest.elements.playtestWeaponSelector.children;
+  inputs.forEach(input => { input.checked = ["scatter", "arc-blade"].includes(input.dataset.weaponId); });
+  playtest.listeners["playtestWeaponSelector:change"]({ target: inputs[1] });
+  startGame(playtest);
+  assert.equal(inputs.length, 6);
+  assert.deepEqual(Array.from(playtest.weaponSlots, slot => slot.weaponId), ["scatter", "arc-blade"]);
+  inputs[2].checked = true;
+  playtest.listeners["playtestWeaponSelector:change"]({ target: inputs[2] });
+  assert.equal(inputs.filter(input => input.checked).length, 2);
+});
+
+test("enemy discovery persists across restart and reload and Codex never creates Run state", () => {
+  const first = loadGame();
+  first.listeners["playButton:click"]();
+  assert.equal(first.getState().runPhase, "INTRODUCTION_PENDING");
+  first.update(0);
+  assert.equal(first.getState().currentEnemyIntroduction.type, "normal");
+  assert.equal(first.enemyDiscovery.has("normal"), true);
+  first.dismissEnemyIntroduction(); first.update(0); first.dismissEnemyIntroduction();
+  assert.equal(first.getState().runPhase, "WAVE_ACTIVE");
+
+  first.setState({ isGameOver: true });
+  first.listeners.keydown({ key: "r", repeat: false });
+  assert.equal(first.getState().runPhase, "WAVE_ACTIVE");
+  assert.equal(first.getState().currentEnemyIntroduction, null);
+
+  const reloaded = loadGame(Object.fromEntries(first.storage));
+  reloaded.renderEnemyCodex();
+  const codexText = reloaded.elements.enemyCodexGrid.textContent;
+  assert.match(codexText, /NORMAL/);
+  assert.match(codexText, /Unknown Enemy/);
+  assert.doesNotMatch(codexText, /Discover this enemy.*Strike/);
+  assert.equal(reloaded.getState().isGameStarted, false);
+  assert.equal(reloaded.enemies.length, 0);
+  reloaded.listeners["playButton:click"]();
+  assert.equal(reloaded.getState().runPhase, "WAVE_ACTIVE");
+});
+
+test("newly eligible undiscovered enemies cannot spawn before their Wave briefing completes", () => {
+  const game = loadGame(); startGame(game, { discoverAll: false });
+  game.startWave(1);
+  assert.equal(game.getState().runPhase, "INTRODUCTION_PENDING");
+  const before = game.enemies.length;
+  for (let index = 0; index < 10; index++) game.updateContinuousEncounter(0.25);
+  assert.equal(game.enemies.length, before);
+  assert.equal(game.enemyDiscovery.has("tank"), false);
+  game.update(0);
+  assert.equal(game.getState().currentEnemyIntroduction.type, "tank");
+  assert.equal(game.enemyDiscovery.has("tank"), true);
 });

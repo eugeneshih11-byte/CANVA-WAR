@@ -19,9 +19,9 @@ test("new Build has one zero stack entry for every formal Upgrade", () => {
   assert.equal(Object.isFrozen(RunBuild.PLAYER_BASE_STATS), true);
 });
 
-test("Starter resolves to Damage 1, Fire Rate 4, and one projectile", () => {
+test("Starter resolves to Damage 2, Fire Rate 4, and one projectile", () => {
   const resolved = RunBuild.resolveWeaponStats(Weapons.STARTER, state());
-  assert.equal(resolved.damage, 1);
+  assert.equal(resolved.damage, 2);
   assert.equal(resolved.fireRate, 4);
   assert.equal(resolved.projectileCount, 1);
   assert.equal(resolved.bulletSpeed, 480);
@@ -39,7 +39,7 @@ test("Rapid Fire multiplies Fire Rate by 1.20 per stack", () => {
 
 test("Heavy Shot adds Damage and bullet size and multiplies Fire Rate by 0.92", () => {
   const resolved = RunBuild.resolveWeaponStats(Weapons.STARTER, state({ "heavy-shot": 2 }));
-  assert.equal(resolved.damage, 3);
+  assert.equal(resolved.damage, 4);
   assert.equal(resolved.bulletSize, 12);
   close(resolved.fireRate, 4 * 0.92 ** 2);
 });
@@ -60,20 +60,20 @@ test("Split Shot stack one creates two projectiles at 0.75 damage", () => {
   const resolved = RunBuild.resolveWeaponStats(Weapons.STARTER, state({ "split-shot": 1 }));
   assert.equal(resolved.projectileCount, 2);
   assert.equal(resolved.spreadDegrees, 12);
-  assert.equal(resolved.damage, 0.75);
+  assert.equal(resolved.damage, 1.5);
 });
 
 test("Split Shot stack two creates three projectiles at 0.65 damage", () => {
   const resolved = RunBuild.resolveWeaponStats(Weapons.STARTER, state({ "split-shot": 2 }));
   assert.equal(resolved.projectileCount, 3);
   assert.equal(resolved.spreadDegrees, 12);
-  assert.equal(resolved.damage, 0.65);
+  assert.equal(resolved.damage, 1.3);
 });
 
 test("Heavy Shot additive damage resolves before Split Shot multiplier", () => {
   const resolved = RunBuild.resolveWeaponStats(Weapons.STARTER,
     state({ "heavy-shot": 2, "split-shot": 1 }));
-  assert.equal(resolved.damage, 2.25);
+  assert.equal(resolved.damage, 3);
   assert.equal(resolved.projectileCount, 2);
 });
 
@@ -100,7 +100,7 @@ test("resolution does not mutate Weapon, Player, Build, or immutable definitions
   RunBuild.resolveWeaponStats(weapon, build);
   RunBuild.resolvePlayerStats(player, build);
   assert.deepEqual({ weapon, player, build }, before);
-  assert.equal(Weapons.STARTER.damage, 1);
+  assert.equal(Weapons.STARTER.damage, 2);
   assert.equal(RunBuild.PLAYER_BASE_STATS.speed, 240);
 });
 
@@ -172,6 +172,18 @@ test("Swift Feet selection never changes base Player speed", () => {
 test("Heavy Shot selection never changes the Starter Weapon definition", () => {
   const before = { ...Weapons.STARTER };
   const applied = RunBuild.applyUpgrade(state(), "heavy-shot");
-  assert.equal(RunBuild.resolveWeaponStats(Weapons.STARTER, applied.buildState).damage, 2);
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.STARTER, applied.buildState).damage, 3);
   assert.deepEqual(Weapons.STARTER, before);
+});
+
+test("Weapon compatibility excludes nonsensical Split Shot interpretations", () => {
+  const arc = Weapons.DEFINITIONS["arc-blade"];
+  const launcher = Weapons.DEFINITIONS.launcher;
+  assert.equal(RunBuild.isUpgradeCompatible(arc, "split-shot"), false);
+  assert.equal(RunBuild.isUpgradeCompatible(launcher, "split-shot"), false);
+  assert.equal(RunBuild.isUpgradeCompatible(arc, "heavy-shot"), true);
+  assert.equal(RunBuild.isUpgradeCompatible(arc, "vitality"), true);
+  const arcChoices = RunBuild.generateUpgradeChoices(state({ "rapid-fire": 4, "heavy-shot": 4 }), 3, () => 0, arc);
+  assert.deepEqual(arcChoices.map(choice => choice.id), ["vitality", "swift-feet"]);
+  assert.equal(RunBuild.applyUpgrade(state(), "split-shot", { baseWeapon: arc }).applied, false);
 });

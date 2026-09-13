@@ -41,6 +41,14 @@
     }
   });
   const UPGRADE_LIST = freeze(Object.values(UPGRADES));
+  const PLAYER_UPGRADE_IDS = freeze(["vitality", "swift-feet"]);
+
+  function isUpgradeCompatible(baseWeapon, upgradeId) {
+    if (!UPGRADES[upgradeId]) return false;
+    if (PLAYER_UPGRADE_IDS.includes(upgradeId)) return true;
+    const supported = baseWeapon?.supportedWeaponUpgrades;
+    return Array.isArray(supported) && supported.includes(upgradeId);
+  }
 
   function stackValue(buildState, upgradeId) {
     const value = buildState?.upgradeStacks?.[upgradeId];
@@ -64,9 +72,9 @@
   }
 
   function resolveWeaponStats(baseWeapon, buildState) {
-    const rapidFire = stackValue(buildState, "rapid-fire");
-    const heavyShot = stackValue(buildState, "heavy-shot");
-    const splitShot = stackValue(buildState, "split-shot");
+    const rapidFire = isUpgradeCompatible(baseWeapon, "rapid-fire") ? stackValue(buildState, "rapid-fire") : 0;
+    const heavyShot = isUpgradeCompatible(baseWeapon, "heavy-shot") ? stackValue(buildState, "heavy-shot") : 0;
+    const splitShot = isUpgradeCompatible(baseWeapon, "split-shot") ? stackValue(buildState, "split-shot") : 0;
     const splitEffects = UPGRADES["split-shot"].effects;
     const preSplitDamage = baseWeapon.damage + heavyShot * UPGRADES["heavy-shot"].effects.damageAdd;
     const damageMultiplier = splitEffects.damageMultipliers[splitShot];
@@ -96,14 +104,15 @@
     };
   }
 
-  function canSelectUpgrade(buildState, upgradeId) {
+  function canSelectUpgrade(buildState, upgradeId, baseWeapon = Weapons.STARTER) {
     const upgrade = UPGRADES[upgradeId];
-    return Boolean(upgrade && stackValue(buildState, upgradeId) < upgrade.maxStacks);
+    return Boolean(upgrade && isUpgradeCompatible(baseWeapon, upgradeId) &&
+      stackValue(buildState, upgradeId) < upgrade.maxStacks);
   }
 
-  function generateUpgradeChoices(buildState, count = 3, rng = Math.random) {
+  function generateUpgradeChoices(buildState, count = 3, rng = Math.random, baseWeapon = Weapons.STARTER) {
     const wanted = Math.max(0, Math.trunc(Number.isFinite(count) ? count : 0));
-    const pool = UPGRADE_LIST.filter(upgrade => canSelectUpgrade(buildState, upgrade.id));
+    const pool = UPGRADE_LIST.filter(upgrade => canSelectUpgrade(buildState, upgrade.id, baseWeapon));
     if (wanted >= pool.length) return pool.slice();
     const choices = [];
     while (choices.length < wanted) {
@@ -117,7 +126,8 @@
   function applyUpgrade(buildState, upgradeId, options = {}) {
     const current = createBuildState(buildState);
     const upgrade = UPGRADES[upgradeId] || null;
-    if (!canSelectUpgrade(current, upgradeId)) {
+    const baseWeapon = options.baseWeapon || Weapons.STARTER;
+    if (!canSelectUpgrade(current, upgradeId, baseWeapon)) {
       return { applied: false, buildState: current, playerHp: options.playerHp, upgrade };
     }
 
@@ -135,8 +145,10 @@
     PLAYER_BASE_STATS,
     UPGRADES,
     UPGRADE_LIST,
+    PLAYER_UPGRADE_IDS,
     createBuildState,
     getUpgradeStacks,
+    isUpgradeCompatible,
     resolveWeaponStats,
     resolvePlayerStats,
     canSelectUpgrade,

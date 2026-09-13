@@ -21,8 +21,13 @@ const hubView = document.getElementById("hubView");
 const shopView = document.getElementById("shopView");
 const armoryView = document.getElementById("armoryView");
 const equipmentView = document.getElementById("equipmentView");
+const codexView = document.getElementById("codexView");
 const gameView = document.getElementById("gameView");
 const playButton = document.getElementById("playButton");
+const enemyCodexButton = document.getElementById("enemyCodexButton");
+const codexBackButton = document.getElementById("codexBackButton");
+const enemyCodexGrid = document.getElementById("enemyCodexGrid");
+const playtestWeaponSelector = document.getElementById("playtestWeaponSelector");
 const backToHubButton = document.getElementById("backToHubButton");
 const hpValue = document.getElementById("hpValue");
 const scoreValue = document.getElementById("scoreValue");
@@ -32,11 +37,15 @@ const upgradeOverlay = document.getElementById("upgradeOverlay");
 const upgradeTitle = document.getElementById("upgradeTitle");
 const upgradeMessage = document.getElementById("upgradeMessage");
 const upgradeChoices = document.getElementById("upgradeChoices");
+const slotAValue = document.getElementById("slotAValue");
+const slotBValue = document.getElementById("slotBValue");
+const activeWeaponValue = document.getElementById("activeWeaponValue");
 const APP_VIEWS = Object.freeze({
   HUB: "hub",
   SHOP: "shop",
   ARMORY: "armory",
   EQUIPMENT: "equipment",
+  CODEX: "codex",
   GAME: "game"
 });
 const appViews = Object.freeze({
@@ -44,6 +53,7 @@ const appViews = Object.freeze({
   [APP_VIEWS.SHOP]: shopView,
   [APP_VIEWS.ARMORY]: armoryView,
   [APP_VIEWS.EQUIPMENT]: equipmentView,
+  [APP_VIEWS.CODEX]: codexView,
   [APP_VIEWS.GAME]: gameView
 });
 let currentView = APP_VIEWS.HUB;
@@ -54,6 +64,9 @@ const activeStages = Encounters.getStagesForSearch(globalThis.location?.search |
 const saveStorageKey = "canva-war-save";
 let saveData = loadSave();
 const audioManager = CanvaWarAudio.createAudioManager();
+const enemyDiscovery = EnemyDiscovery.createStore({ storage: globalThis.localStorage,
+  knownTypes: Object.keys(Encounters.ENEMIES) });
+const isPlaytestMode = new URLSearchParams(globalThis.location?.search || "").get("playtest") === "1";
 
 function createDefaultSaveData() {
   return {
@@ -187,7 +200,11 @@ let weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
 let playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
 let upgradeRng = null;
 let currentUpgradeChoices = [];
-const weaponRuntime = { timeUntilNextShot: 0, attackHeld: false };
+let weaponRuntime = createWeaponRuntime();
+let weaponSlots = [{ weaponId: Weapons.STARTER.id, buildState, runtime: weaponRuntime }];
+let activeWeaponSlotIndex = 0;
+const weaponEffects = [];
+let nextWeaponAttackId = 1;
 const enemyStats = Object.fromEntries(Object.entries(Encounters.ENEMIES)
   .map(([type, definition]) => [type, definition.stats]));
 const enemyColors = {
@@ -237,6 +254,77 @@ let isAbandonConfirmOpen = false;
 let isAbandoned = false;
 const abandonOverlay = document.getElementById("abandonOverlay");
 
+function createWeaponRuntime() {
+  return { timeUntilNextShot: 0, attackHeld: false, burstShotsRemaining: 0,
+    burstShotTimer: 0, burstAimAngle: 0 };
+}
+
+function configureWeaponLoadout(ids = [Weapons.STARTER.id]) {
+  const selected = [...new Set(ids)].filter(id => Weapons.DEFINITIONS[id]).slice(0, 2);
+  if (!selected.length) selected.push(Weapons.STARTER.id);
+  weaponSlots = selected.map(weaponId => ({ weaponId,
+    buildState: RunBuild.createBuildState(), runtime: createWeaponRuntime() }));
+  activeWeaponSlotIndex = 0;
+  buildState = weaponSlots[0].buildState;
+  weaponRuntime = weaponSlots[0].runtime;
+  weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[weaponSlots[0].weaponId], buildState);
+  playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
+  return weaponSlots.map(slot => slot.weaponId);
+}
+
+function selectedPlaytestWeaponIds() {
+  if (!isPlaytestMode || !playtestWeaponSelector?.querySelectorAll) return [Weapons.STARTER.id];
+  const selected = [...playtestWeaponSelector.querySelectorAll("input[data-weapon-id]:checked")]
+    .map(input => input.dataset.weaponId).filter(id => Weapons.DEFINITIONS[id]).slice(0, 2);
+  return selected.length ? selected : [Weapons.STARTER.id];
+}
+
+function activateWeaponSlot(index, { record = true } = {}) {
+  if (!Number.isInteger(index) || index < 0 || index >= weaponSlots.length || index === activeWeaponSlotIndex) return false;
+  weaponRuntime.attackHeld = false;
+  activeWeaponSlotIndex = index;
+  const slot = weaponSlots[index];
+  buildState = slot.buildState;
+  weaponRuntime = slot.runtime;
+  weaponRuntime.attackHeld = false;
+  weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[slot.weaponId], buildState);
+  playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
+  if (record) {
+    observeTelemetry("recordWeaponSwitch", () => ({ activeWeapon: weapon.id,
+      slot: index === 0 ? "A" : "B" }));
+    audioManager.play("weaponSwitch", { concurrency: 1 });
+  }
+  renderBuildPanel();
+  return true;
+}
+
+function switchActiveWeapon() {
+  if (weaponSlots.length < 2 || !canAttack()) return false;
+  return activateWeaponSlot(activeWeaponSlotIndex === 0 ? 1 : 0);
+}
+
+function clearWeaponActions({ ready = false } = {}) {
+  for (const slot of weaponSlots) {
+    slot.runtime.attackHeld = false;
+    slot.runtime.burstShotsRemaining = 0;
+    slot.runtime.burstShotTimer = 0;
+    slot.runtime.burstWeapon = null;
+    slot.runtime.burstAttackId = null;
+    if (ready) slot.runtime.timeUntilNextShot = 0;
+  }
+  weaponEffects.length = 0;
+}
+
+function synchronizePlayerUpgrade(upgradeId) {
+  if (!RunBuild.PLAYER_UPGRADE_IDS.includes(upgradeId)) return;
+  const stacks = RunBuild.getUpgradeStacks(buildState, upgradeId);
+  for (const slot of weaponSlots) {
+    if (slot.buildState === buildState) continue;
+    slot.buildState = RunBuild.createBuildState(slot.buildState);
+    slot.buildState.upgradeStacks[upgradeId] = stacks;
+  }
+}
+
 function createUpgradeRng() {
   let seed = 0x43414e56;
   try {
@@ -253,8 +341,10 @@ function createUpgradeRng() {
 
 function clearInput({ weaponReady = false } = {}) {
   Object.keys(keys).forEach(key => { keys[key] = false; });
-  weaponRuntime.attackHeld = false;
-  if (weaponReady) weaponRuntime.timeUntilNextShot = 0;
+  for (const slot of weaponSlots) {
+    slot.runtime.attackHeld = false;
+    if (weaponReady) slot.runtime.timeUntilNextShot = 0;
+  }
 }
 function resetHazardDamageRuntime() {
   denierHazardDamageRuntime.cooldown = 0;
@@ -276,7 +366,7 @@ function cancelPendingContinuousSpawn() {
   pendingSpawnReservation = null;
 }
 function beginSpawnIntroduction(type, reservation) {
-  if (introducedEnemyTypes.has(type)) return false;
+  if (enemyDiscovery.has(type)) return false;
   const definition = Encounters.COMBAT_VARIETY_V1.introductions[type];
   if (!definition) return false;
   pendingSpawnReservation = reservation;
@@ -292,6 +382,7 @@ function showNextEnemyIntroduction() {
   const definition = Encounters.COMBAT_VARIETY_V1.introductions[type];
   if (!definition) return false;
   introducedEnemyTypes.add(type);
+  enemyDiscovery.discover(type);
   currentEnemyIntroduction = { type, ...definition };
   runPhase = RUN_PHASES.INTRODUCTION_ACTIVE;
   clearInput();
@@ -303,7 +394,14 @@ function showNextEnemyIntroduction() {
 }
 function beginEnemyIntroductions(waveIndex) {
   const planned = stageRuntime.definition.introductions?.[waveIndex] || [];
-  introductionQueue = planned.filter(type => !introducedEnemyTypes.has(type));
+  const undiscovered = planned.filter(type => !enemyDiscovery.has(type));
+  const suppressed = planned.filter(type => enemyDiscovery.has(type));
+  introductionQueue = undiscovered;
+  observeTelemetry("recordEnemyEligibility", () => ({
+    eligibleTypes: Encounters.getContinuousEligibleTypes(stageRuntime.definition, waveIndex),
+    newlyUnlockedTypes: planned.slice(), newlyIntroducedTypes: undiscovered.slice(),
+    introductionSuppressedTypes: suppressed.slice()
+  }));
   if (!introductionQueue.length) return false;
   pendingWaveIndex = waveIndex;
   currentEnemyIntroduction = null;
@@ -327,9 +425,9 @@ function dismissEnemyIntroduction() {
     finalizeContinuousSpawn(pending);
     return true;
   }
-  const waveIndex = pendingWaveIndex;
   clearIntroductionTransient();
-  startWave(waveIndex);
+  runPhase = RUN_PHASES.WAVE_ACTIVE;
+  clearInput({ weaponReady: true });
   return true;
 }
 function battlefieldActorFootprints() {
@@ -392,6 +490,7 @@ function clearBattlefieldRuntime() {
   enemies.length = 0;
   enemySpatialHash = new Map();
   bullets.length = 0;
+  clearWeaponActions();
   EnemyBehaviors.clearTransient(enemies, hazards);
   resetHazardDamageRuntime();
   boss = null;
@@ -408,18 +507,21 @@ function startWave(index) {
   pendingWaveIndex = null;
   currentWave = Object.freeze({ id: `${stageRuntime.definition.id}-wave-${index + 1}`,
     stageId: stageRuntime.definition.id, waveIndex: index, templateId: "continuous",
+    eligibleEnemyTypes: Encounters.getContinuousEligibleTypes(stageRuntime.definition, index),
     threatBudget: null, maxActiveThreat: null, spawnGroups: [], mechanics: [...stageRuntime.definition.mechanics],
     analysis: Object.freeze({ threat: null, expectedClearTime: null, expectedBaseScore: 0,
       performanceAllowance: 0, scoreCapacity: 0, calibrationPending: "continuous-encounter" }) });
   stageRuntime.waveIndex = index;
+  encounterController.waveIndex = index;
   waveRuntime = { waveId: currentWave.id, elapsedTime: 0, damageTaken: 0, analysis: currentWave.analysis,
     aliveEnemyCount: enemies.filter(enemy => enemy.hp > 0).length, isComplete: false,
     groupDelayElapsed: 0, nextSpawnGroupIndex: 0, spawnedEnemyCount: 0, activeThreat: 0 };
   runSettlementState.progress.currentEncounter = { id: currentWave.id, type: "wave" };
-  runPhase = RUN_PHASES.WAVE_ACTIVE;
-  clearInput({ weaponReady: true });
   observeTelemetry("startEncounter", () => ({ type: "wave", definition: currentWave,
     ...battlefieldTelemetry(), player: telemetryPlayer() }));
+  if (beginEnemyIntroductions(index)) return;
+  runPhase = RUN_PHASES.WAVE_ACTIVE;
+  clearInput({ weaponReady: true });
 }
 function enterStage() {
   runPhase = RUN_PHASES.STAGE_ENTER;
@@ -446,6 +548,7 @@ function enterIntermission() {
   runPhase = RUN_PHASES.INTERMISSION;
   intermissionTimer = 0;
   bullets.length = 0;
+  clearWeaponActions();
   EnemyBehaviors.clearTransient(enemies, hazards);
   resetHazardDamageRuntime();
   clearInput();
@@ -464,7 +567,8 @@ function handleLogicalWaveComplete(fill) {
   ContinuousEncounter.beginWaveComing(encounterController, fill.projectedFill);
   waveComingBannerTimer = 2.2;
   audioManager.play("waveComing");
-  observeTelemetry("recordWaveComing", () => ({ delta: encounterController.comingDelta,
+  observeTelemetry("recordWaveComing", () => ({ startFill: encounterController.comingStartFill,
+    selectedDelta: encounterController.comingSelectedDelta, delta: encounterController.comingDelta,
     target: encounterController.comingTarget, budgetArea: encounterController.comingBudgetArea }));
 }
 function startBossEncounter() {
@@ -498,6 +602,7 @@ function completeBossEncounter() {
   runPhase = RUN_PHASES.STAGE_CLEAR;
   stageClearTimer = 0;
   bullets.length = 0;
+  clearWeaponActions();
   EnemyBehaviors.clearTransient(enemies, hazards);
   resetHazardDamageRuntime();
   clearIntroductionTransient();
@@ -522,6 +627,7 @@ function takeDamage(amount, enemyType) {
     resetHazardDamageRuntime();
     cancelPendingContinuousSpawn();
     clearIntroductionTransient();
+    clearWeaponActions();
     audioManager.play("death");
   }
 }
@@ -547,6 +653,7 @@ function abandonRun() {
   settleRun(RUN_END_REASONS.ABANDON);
   isAbandoned = true;
   bullets.length = 0;
+  clearWeaponActions();
   EnemyBehaviors.clearTransient(enemies, hazards);
   resetHazardDamageRuntime();
   cancelPendingContinuousSpawn();
@@ -598,6 +705,7 @@ function renderMetaView(view) {
       ? "No equipment unlocked"
       : `${equipmentCount} equipment unlocked`;
   }
+  if (view === APP_VIEWS.CODEX) renderEnemyCodex();
 }
 
 function showView(view) {
@@ -660,10 +768,21 @@ renderAudioSetting();
 document.getElementById("shopButton").addEventListener("click", () => showView(APP_VIEWS.SHOP));
 document.getElementById("armoryButton").addEventListener("click", () => showView(APP_VIEWS.ARMORY));
 document.getElementById("equipmentButton").addEventListener("click", () => showView(APP_VIEWS.EQUIPMENT));
+enemyCodexButton.addEventListener("click", () => showView(APP_VIEWS.CODEX));
 document.getElementById("shopBackButton").addEventListener("click", requestHub);
 document.getElementById("armoryBackButton").addEventListener("click", requestHub);
 document.getElementById("equipmentBackButton").addEventListener("click", requestHub);
+codexBackButton.addEventListener("click", requestHub);
 backToHubButton.addEventListener("click", requestHub);
+if (playtestWeaponSelector) {
+  playtestWeaponSelector.hidden = !isPlaytestMode;
+  playtestWeaponSelector.addEventListener("change", event => {
+    if (!event.target?.matches?.("input[data-weapon-id]")) return;
+    const checked = [...playtestWeaponSelector.querySelectorAll("input[data-weapon-id]:checked")];
+    if (checked.length > 2) event.target.checked = false;
+    if (!playtestWeaponSelector.querySelector("input[data-weapon-id]:checked")) event.target.checked = true;
+  });
+}
 
 function resizeCanvasDisplay() {
   const bounds = arenaRegion?.getBoundingClientRect?.();
@@ -708,35 +827,90 @@ function canAttack() {
     [RUN_PHASES.WAVE_ACTIVE, RUN_PHASES.BOSS_ACTIVE].includes(runPhase);
 }
 
-function fireWeaponAttack() {
-  if (!canAttack() || weaponRuntime.timeUntilNextShot > 1e-9) return false;
+function createProjectile(direction, weaponSnapshot, attackId) {
+  const playerCenterX = player.x + player.width / 2;
+  const playerCenterY = player.y + player.height / 2;
+  const bullet = {
+    x: playerCenterX - weaponSnapshot.bulletSize / 2,
+    y: playerCenterY - weaponSnapshot.bulletSize / 2,
+    width: weaponSnapshot.bulletSize,
+    height: weaponSnapshot.bulletSize,
+    speed: weaponSnapshot.bulletSpeed,
+    damage: weaponSnapshot.damage,
+    directionX: direction.x,
+    directionY: direction.y,
+    pierceRemaining: weaponSnapshot.pierce,
+    hitTargets: new Set(), weaponId: weaponSnapshot.id, attackId,
+    remainingRange: Number.isFinite(weaponSnapshot.maxRange) ? weaponSnapshot.maxRange : null,
+    explosionRadius: weaponSnapshot.explosionRadius || 0, exploded: false
+  };
+  bullets.push(bullet);
+  observeTelemetry("recordShot");
+  observeTelemetry("recordWeaponProjectile", () => ({ weaponId: weaponSnapshot.id }));
+  return bullet;
+}
 
+function fireProjectileSet(weaponSnapshot, aimAngle, attackId) {
+  const directions = Weapons.getProjectileDirections(aimAngle,
+    weaponSnapshot.projectileCount, weaponSnapshot.spreadDegrees);
+  for (const direction of directions) {
+    createProjectile(direction, weaponSnapshot, attackId);
+  }
+}
+
+function fireArcBlade(weaponSnapshot, aimAngle, attackId) {
+  const centerX = player.x + player.width / 2, centerY = player.y + player.height / 2;
+  const halfAngle = weaponSnapshot.sweepHalfAngleDegrees * Math.PI / 180;
+  const targets = [...enemies.slice().filter(isCurrentEncounterEnemy),
+    ...(runPhase === RUN_PHASES.BOSS_ACTIVE && boss ? [boss] : [])].filter(target => {
+    const dx = target.x + target.width / 2 - centerX, dy = target.y + target.height / 2 - centerY;
+    const distance = Math.hypot(dx, dy);
+    const difference = Math.abs(Math.atan2(Math.sin(Math.atan2(dy, dx) - aimAngle),
+      Math.cos(Math.atan2(dy, dx) - aimAngle)));
+    return distance <= weaponSnapshot.sweepRange + Math.hypot(target.width, target.height) / 2 && difference <= halfAngle;
+  });
+  let hitCount = 0;
+  for (const target of targets) {
+    const result = target === boss
+      ? damageBoss(target, weaponSnapshot.damage, { weaponId: weaponSnapshot.id, hitKind: "arc" })
+      : damageRegularEnemy(target, weaponSnapshot.damage,
+        { weaponId: weaponSnapshot.id, hitKind: "arc" });
+    hitCount++;
+    if (result.waveCompleted || isChoosingUpgrade || isGameOver) break;
+  }
+  weaponEffects.push({ kind: "arc", x: centerX, y: centerY, angle: aimAngle,
+    range: weaponSnapshot.sweepRange, halfAngle, elapsed: 0, duration: 0.16 });
+  observeTelemetry("recordArcBladeSweep", () => ({ weaponId: weaponSnapshot.id, targetCount: hitCount, attackId }));
+  audioManager.play("arcBladeSweep", { world: true, pan: worldAudioPan(player), concurrency: 2 });
+}
+
+function fireWeaponAttack() {
+  if (!canAttack() || weaponRuntime.timeUntilNextShot > 1e-9 || weaponRuntime.burstShotsRemaining > 0) return false;
   const playerCenterX = player.x + player.width / 2;
   const playerCenterY = player.y + player.height / 2;
   const aimAngle = Math.atan2(mouse.y - playerCenterY, mouse.x - playerCenterX);
-  const directions = Weapons.getProjectileDirections(
-    aimAngle,
-    weapon.projectileCount,
-    weapon.spreadDegrees
-  );
-
+  const weaponSnapshot = { ...weapon };
+  const attackId = nextWeaponAttackId++;
   observeTelemetry("recordAttack");
-  for (const direction of directions) {
-    bullets.push({
-      x: playerCenterX - weapon.bulletSize / 2,
-      y: playerCenterY - weapon.bulletSize / 2,
-      width: weapon.bulletSize,
-      height: weapon.bulletSize,
-      speed: weapon.bulletSpeed,
-      damage: weapon.damage,
-      directionX: direction.x,
-      directionY: direction.y,
-      pierceRemaining: weapon.pierce,
-      hitTargets: new Set()
-    });
-    observeTelemetry("recordShot");
+  observeTelemetry("recordWeaponAttack", () => ({ weaponId: weaponSnapshot.id, attackKind: weaponSnapshot.attackKind }));
+  if (weaponSnapshot.attackKind === "arc") {
+    fireArcBlade(weaponSnapshot, aimAngle, attackId);
+  } else if (weaponSnapshot.attackKind === "burst") {
+    fireProjectileSet(weaponSnapshot, aimAngle, attackId);
+    weaponRuntime.burstShotsRemaining = weaponSnapshot.burstCount - 1;
+    weaponRuntime.burstShotTimer = weaponSnapshot.burstSpacing;
+    weaponRuntime.burstAimAngle = aimAngle;
+    weaponRuntime.burstWeapon = weaponSnapshot;
+    weaponRuntime.burstAttackId = attackId;
+    observeTelemetry("recordBurstShot", () => ({ weaponId: weaponSnapshot.id }));
+    audioManager.play("burstFire", { concurrency: 3 });
+  } else {
+    fireProjectileSet(weaponSnapshot, aimAngle, attackId);
+    const cue = weaponSnapshot.id === "scatter" ? "scatterFire" :
+      weaponSnapshot.id === "piercer" ? "piercerFire" :
+      weaponSnapshot.id === "launcher" ? "launcherFire" : "playerFire";
+    audioManager.play(cue, { concurrency: 2, retrigger: 0.025 });
   }
-  audioManager.play("playerFire", { concurrency: 2, retrigger: 0.025 });
   weaponRuntime.timeUntilNextShot = 1 / weapon.fireRate;
   return true;
 }
@@ -762,13 +936,25 @@ function endAttack(event) {
 }
 
 function updateWeaponRuntime(deltaTime) {
-  const attackInterval = 1 / weapon.fireRate;
-  const elapsed = Math.min(attackInterval, Number.isFinite(deltaTime) ? Math.max(0, deltaTime) : 0);
-  const remaining = weaponRuntime.timeUntilNextShot - elapsed;
-  weaponRuntime.timeUntilNextShot = remaining <= 1e-9 ? 0 : remaining;
-  if (weaponRuntime.attackHeld && fireWeaponAttack()) {
-    // Preserve ordinary sub-frame overshoot, but cap lag recovery to one interval.
-    weaponRuntime.timeUntilNextShot = Math.max(0, attackInterval + Math.max(-attackInterval, remaining));
+  const dt = Number.isFinite(deltaTime) ? Math.max(0, deltaTime) : 0;
+  for (const slot of weaponSlots) {
+    slot.runtime.timeUntilNextShot = Math.max(0, slot.runtime.timeUntilNextShot - dt);
+  }
+  if (weaponRuntime.burstShotsRemaining > 0) {
+    weaponRuntime.burstShotTimer -= dt;
+    while (weaponRuntime.burstShotsRemaining > 0 && weaponRuntime.burstShotTimer <= 1e-9) {
+      fireProjectileSet(weaponRuntime.burstWeapon, weaponRuntime.burstAimAngle, weaponRuntime.burstAttackId);
+      weaponRuntime.burstShotsRemaining--;
+      observeTelemetry("recordBurstShot", () => ({ weaponId: "burst" }));
+      if (weaponRuntime.burstShotsRemaining > 0) weaponRuntime.burstShotTimer += weaponRuntime.burstWeapon.burstSpacing;
+    }
+  }
+  // A frame may produce at most one held attack. fireWeaponAttack owns the fresh
+  // cooldown so a long frame cannot burst-catch up or immediately fire again.
+  if (weaponRuntime.attackHeld) fireWeaponAttack();
+  for (let index = weaponEffects.length - 1; index >= 0; index--) {
+    weaponEffects[index].elapsed += dt;
+    if (weaponEffects[index].elapsed >= weaponEffects[index].duration) weaponEffects.splice(index, 1);
   }
 }
 
@@ -835,6 +1021,12 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (key === "q" && !event.repeat) {
+    event.preventDefault?.();
+    switchActiveWeapon();
+    return;
+  }
+
   if (key in keys && !event.repeat) {
     keys[key] = true;
   }
@@ -849,9 +1041,7 @@ document.addEventListener("keyup", (event) => {
 });
 
 function resetGame() {
-  buildState = RunBuild.createBuildState();
-  weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
-  playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
+  configureWeaponLoadout(selectedPlaytestWeaponIds());
   battlefieldRuntime = null;
   initializeBattlefield(activeStages[0], true);
   player.speed = playerStats.speed;
@@ -892,8 +1082,7 @@ function resetGame() {
   upgradeOverlay.hidden = true;
   upgradeChoices.textContent = "";
   upgradeRng = createUpgradeRng();
-  weaponRuntime.timeUntilNextShot = 0;
-  weaponRuntime.attackHeld = false;
+  clearWeaponActions({ ready: true });
   score = 0;
   runSettlementState = createRunSettlementState();
   lastSettlement = null;
@@ -1005,17 +1194,31 @@ function updateContinuousEncounter(deltaTime) {
   const mayRefill = encounterController.phase === ContinuousEncounter.PHASES.WAVE_COMING ||
     ([ContinuousEncounter.PHASES.NORMAL, ContinuousEncounter.PHASES.SETTLING].includes(encounterController.phase) &&
       encounterController.normalRefillEnabled);
-  if (mayRefill && runPhase === RUN_PHASES.WAVE_ACTIVE && !pendingSpawnReservation) {
-    for (let commits = 0; commits < 12; commits++) {
-      if (!dispatchContinuousSpawn(fill)) break;
+  const effectiveOpeningTarget = ContinuousEncounter.effectiveNormalTarget(encounterController, stageRuntime.waveIndex);
+  const dispatchCeiling = encounterController.phase === ContinuousEncounter.PHASES.WAVE_COMING
+    ? ContinuousEncounter.STRUCTURE.controllerCeiling : effectiveOpeningTarget;
+  if (mayRefill && runPhase === RUN_PHASES.WAVE_ACTIVE && !pendingSpawnReservation &&
+      ContinuousEncounter.canDispatchPulse(encounterController)) {
+    const policy = ContinuousEncounter.dispatchPolicy(encounterController.phase);
+    let committed = 0;
+    for (let reservationIndex = 0; reservationIndex < policy.maximum; reservationIndex++) {
+      if (!dispatchContinuousSpawn(fill, dispatchCeiling)) break;
+      committed++;
       fill = ContinuousEncounter.computeFill(enemies, viewport, pendingSpawnArea());
       if (pendingSpawnReservation) break;
     }
+    ContinuousEncounter.recordDispatchPulse(encounterController, committed);
+    observeTelemetry("recordDispatchPulse", () => ({ phase: encounterController.phase,
+      reservationsCommitted: committed }));
   }
+  const managedCount = ContinuousEncounter.managedRegularEnemyCount(enemies,
+    encounterController.pendingReservations.length);
+  encounterController.peakManagedCount = Math.max(encounterController.peakManagedCount, managedCount);
   waveRuntime.elapsedTime += deltaTime;
   waveRuntime.aliveEnemyCount = enemies.filter(enemy => enemy.hp > 0).length;
   waveComingBannerTimer = Math.max(0, waveComingBannerTimer - deltaTime);
   observeTelemetry("recordContinuousFrame", () => ({ deltaTime, fill, controller: encounterController,
+    effectiveOpeningTarget, managedCount,
     lifecycleCounts: enemies.reduce((counts, enemy) => {
       counts[enemy.lifecycle] = (counts[enemy.lifecycle] || 0) + 1; return counts;
     }, {}) }));
@@ -1046,9 +1249,9 @@ function update(deltaTime) {
   }
   if (runPhase === RUN_PHASES.INTRODUCTION_PENDING) {
     if (!showNextEnemyIntroduction()) {
-      const waveIndex = pendingWaveIndex;
       clearIntroductionTransient();
-      startWave(waveIndex);
+      runPhase = RUN_PHASES.WAVE_ACTIVE;
+      clearInput({ weaponReady: true });
     }
     return;
   }
@@ -1122,23 +1325,35 @@ function update(deltaTime) {
 }
 
 function updateBullets(deltaTime) {
-  for (let index = bullets.length - 1; index >= 0; index--) {
-    const bullet = bullets[index];
+  for (const bullet of bullets.slice().reverse()) {
+    if (!bullets.includes(bullet)) continue;
     const movement = Battlefields.traceMovement(bullet,
       bullet.directionX * bullet.speed * deltaTime,
       bullet.directionY * bullet.speed * deltaTime,
       battlefieldRuntime);
     bullet.x = movement.x;
     bullet.y = movement.y;
+    if (Number.isFinite(bullet.remainingRange)) {
+      bullet.remainingRange -= Math.hypot(movement.movementX, movement.movementY);
+    }
 
     if (movement.reachedBoundary ||
-        (movement.collision?.blocksProjectiles && projectileTerrainResponse(bullet, movement.collision) === "remove")) {
-      bullets.splice(index, 1);
+        (movement.collision?.blocksProjectiles && projectileTerrainResponse(bullet, movement.collision) === "remove") ||
+        (Number.isFinite(bullet.remainingRange) && bullet.remainingRange <= 0)) {
+      if (bullet.explosionRadius > 0) {
+        const result = explodeProjectile(bullet);
+        if (result.waveCompleted) return;
+      }
+      else removeProjectile(bullet);
       continue;
     }
 
     if (!Battlefields.isInsideBounds(bullet, battlefieldRuntime)) {
-      bullets.splice(index, 1);
+      if (bullet.explosionRadius > 0) {
+        const result = explodeProjectile(bullet);
+        if (result.waveCompleted) return;
+      }
+      else removeProjectile(bullet);
     }
   }
 }
@@ -1321,12 +1536,18 @@ function finalizeContinuousSpawn(pending) {
   return true;
 }
 
-function dispatchContinuousSpawn(fill) {
+function dispatchContinuousSpawn(fill, requestedCeiling = null) {
   const phase = encounterController.phase;
   const isComing = phase === ContinuousEncounter.PHASES.WAVE_COMING;
-  const ceiling = isComing ? ContinuousEncounter.STRUCTURE.controllerCeiling : ContinuousEncounter.STRUCTURE.normalFillMaximum;
+  const ceiling = requestedCeiling ?? (isComing ? ContinuousEncounter.STRUCTURE.controllerCeiling :
+    ContinuousEncounter.effectiveNormalTarget(encounterController, stageRuntime.waveIndex));
   const credit = isComing ? encounterController.comingCredit : encounterController.normalCredit;
-  const types = stageRuntime.definition.continuousEnemyTypes;
+  const types = Encounters.getContinuousEligibleTypes(stageRuntime.definition, stageRuntime.waveIndex);
+  const pendingCount = encounterController.pendingReservations.length;
+  if (!ContinuousEncounter.canReserveManagedEnemy(enemies, pendingCount)) {
+    observeTelemetry("recordSpawnTypeRejected", () => ({ type: null, reason: "managed-cap" }));
+    return false;
+  }
   const activeCounts = enemies.reduce((counts, enemy) => {
     if (enemy.hp > 0 && enemy.lifecycle !== ContinuousEncounter.LIFECYCLES.DEAD) {
       counts[enemy.type] = (counts[enemy.type] || 0) + 1;
@@ -1462,55 +1683,114 @@ function prepareProjectileHitState(bullet) {
   }
 }
 
-function consumeProjectileHit(bullet, bulletIndex, target) {
+function removeProjectile(bullet) {
+  const index = bullets.indexOf(bullet);
+  if (index >= 0) bullets.splice(index, 1);
+  return index >= 0;
+}
+
+function consumeProjectileHit(bullet, target) {
   bullet.hitTargets.add(target);
   if (bullet.pierceRemaining > 0) {
     bullet.pierceRemaining--;
+    observeTelemetry("recordWeaponPierce", () => ({ weaponId: bullet.weaponId || "starter" }));
     return false;
   }
-  bullets.splice(bulletIndex, 1);
+  removeProjectile(bullet);
   return true;
 }
 
+function damageRegularEnemy(enemy, amount, { weaponId = "starter", hitKind = "projectile" } = {}) {
+  if (!isCurrentEncounterEnemy(enemy)) return { hit: false, killed: false, waveCompleted: false };
+  const hpBefore = enemy.hp;
+  enemy.hp -= amount;
+  const damage = Math.max(0, Math.min(amount, hpBefore));
+  if (hitKind !== "arc") observeTelemetry("recordBulletHit", () => ({ enemyType: enemy.type, damage }));
+  observeTelemetry("recordWeaponHit", () => ({ weaponId, enemyType: enemy.type, damage, hitKind }));
+  audioManager.play(weaponId === "piercer" ? "piercerHit" : "weaponHit",
+    { world: true, pan: worldAudioPan(enemy), concurrency: 3 });
+  if (enemy.hp > 0) return { hit: true, killed: false, waveCompleted: false };
+
+  EnemyBehaviors.recordEnemyDefeat(enemy, hazards, { emit: emitBehaviorTelemetry, enemies });
+  const enemyIndex = enemies.indexOf(enemy);
+  if (enemyIndex >= 0) enemies.splice(enemyIndex, 1);
+  if (waveRuntime) waveRuntime.aliveEnemyCount = enemies.filter(candidate => candidate.hp > 0).length;
+  observeTelemetry("recordEnemyKill", () => ({ enemyType: enemy.type }));
+  observeTelemetry("recordWeaponKill", () => ({ weaponId, enemyType: enemy.type }));
+  awardRunScore(SCORE_TYPES.ENEMY_KILL, 1);
+  xp += 1;
+  saveData.statistics.totalKills += 1;
+  saveGame();
+  audioManager.play("enemyKill", { world: true, pan: worldAudioPan(enemy), concurrency: 3 });
+  const waveCompleted = ContinuousEncounter.recordKill(encounterController,
+    enemy.countsTowardEncounterProgress !== false);
+  if (waveCompleted) {
+    const fill = ContinuousEncounter.computeFill(enemies, cameraViewportRect(), pendingSpawnArea());
+    handleLogicalWaveComplete(fill);
+  }
+  updateLevel();
+  return { hit: true, killed: true, waveCompleted };
+}
+
+function damageBoss(target, amount, { weaponId = "starter", hitKind = "projectile" } = {}) {
+  if (!target || target !== boss || boss.hp <= 0 || runPhase !== RUN_PHASES.BOSS_ACTIVE) {
+    return { hit: false, killed: false, waveCompleted: false };
+  }
+  const hpBefore = boss.hp;
+  boss.hp -= amount;
+  const damage = Math.max(0, Math.min(amount, hpBefore));
+  if (hitKind !== "arc") observeTelemetry("recordBulletHit", () => ({ enemyType: "boss-1", damage }));
+  observeTelemetry("recordWeaponHit", () => ({ weaponId, enemyType: "boss-1", damage, hitKind }));
+  audioManager.play(weaponId === "piercer" ? "piercerHit" : "weaponHit",
+    { world: true, pan: worldAudioPan(boss), concurrency: 3 });
+  return { hit: true, killed: boss.hp <= 0, waveCompleted: false };
+}
+
+function explodeProjectile(bullet) {
+  if (bullet.exploded) return { targets: 0, waveCompleted: false };
+  bullet.exploded = true;
+  removeProjectile(bullet);
+  const centerX = bullet.x + bullet.width / 2, centerY = bullet.y + bullet.height / 2;
+  let targets = 0, waveCompleted = false;
+  const candidates = runPhase === RUN_PHASES.BOSS_ACTIVE && boss ? [boss] : enemies.slice();
+  for (const target of candidates) {
+    if (target !== boss && !isCurrentEncounterEnemy(target)) continue;
+    const distance = Math.hypot(target.x + target.width / 2 - centerX,
+      target.y + target.height / 2 - centerY);
+    if (distance > bullet.explosionRadius + Math.hypot(target.width, target.height) / 2) continue;
+    const result = target === boss
+      ? damageBoss(target, bullet.damage, { weaponId: bullet.weaponId, hitKind: "explosion" })
+      : damageRegularEnemy(target, bullet.damage,
+        { weaponId: bullet.weaponId, hitKind: "explosion" });
+    if (result.hit) targets++;
+    if (result.waveCompleted || isChoosingUpgrade || isGameOver) { waveCompleted = result.waveCompleted; break; }
+  }
+  weaponEffects.push({ kind: "explosion", x: centerX, y: centerY, radius: bullet.explosionRadius,
+    elapsed: 0, duration: 0.22 });
+  observeTelemetry("recordWeaponExplosion", () => ({ weaponId: bullet.weaponId, targetCount: targets }));
+  audioManager.play("launcherExplosion", { world: true, pan: worldAudioPan(bullet), concurrency: 3 });
+  return { targets, waveCompleted };
+}
+
 function handleBulletEnemyCollisions() {
-  for (let bulletIndex = bullets.length - 1; bulletIndex >= 0; bulletIndex--) {
-    const bullet = bullets[bulletIndex];
+  const traversal = bullets.slice().reverse();
+  for (const bullet of traversal) {
+    if (!bullets.includes(bullet)) continue;
     prepareProjectileHitState(bullet);
 
-    for (let enemyIndex = enemies.length - 1; enemyIndex >= 0; enemyIndex--) {
-      const enemy = enemies[enemyIndex];
+    for (const enemy of enemies.slice().reverse()) {
       if (!isCurrentEncounterEnemy(enemy)) continue;
 
       if (!bullet.hitTargets.has(enemy) && isOverlapping(bullet, enemy)) {
-        enemy.hp -= bullet.damage;
-        audioManager.play("weaponHit", { world: true, pan: worldAudioPan(enemy), concurrency: 3 });
-        observeTelemetry("recordBulletHit", () => ({ enemyType: enemy.type,
-          damage: Math.max(0, Math.min(bullet.damage, enemy.hp + bullet.damage)) }));
-        const projectileRemoved = consumeProjectileHit(bullet, bulletIndex, enemy);
-
-        if (enemy.hp <= 0) {
-          EnemyBehaviors.recordEnemyDefeat(enemy, hazards, { emit: emitBehaviorTelemetry, enemies });
-          enemies.splice(enemyIndex, 1);
-          if (waveRuntime) waveRuntime.aliveEnemyCount = enemies.filter(candidate => candidate.hp > 0).length;
-          observeTelemetry("recordEnemyKill", () => ({ enemyType: enemy.type }));
-          awardRunScore(SCORE_TYPES.ENEMY_KILL, 1);
-          xp += 1;
-          saveData.statistics.totalKills += 1;
-          saveGame();
-          audioManager.play("enemyKill", { world: true, pan: worldAudioPan(enemy), concurrency: 3 });
-          const completedWave = ContinuousEncounter.recordKill(encounterController,
-            enemy.countsTowardEncounterProgress !== false);
-          if (completedWave) {
-            const fill = ContinuousEncounter.computeFill(enemies, cameraViewportRect(), pendingSpawnArea());
-            handleLogicalWaveComplete(fill);
-          }
-          updateLevel();
-
-          if (isChoosingUpgrade) {
-            return;
-          }
+        if (bullet.explosionRadius > 0) {
+          const explosion = explodeProjectile(bullet);
+          if (explosion.waveCompleted || isChoosingUpgrade || isGameOver) return;
+          break;
         }
-
+        const projectileRemoved = consumeProjectileHit(bullet, enemy);
+        const result = damageRegularEnemy(enemy, bullet.damage,
+          { weaponId: bullet.weaponId || "starter", hitKind: "projectile" });
+        if (result.waveCompleted || isChoosingUpgrade || isGameOver) return;
         if (projectileRemoved) break;
       }
     }
@@ -1553,10 +1833,11 @@ function handleBulletBossCollisions() {
     prepareProjectileHitState(bullet);
 
     if (!bullet.hitTargets.has(boss) && isOverlapping(bullet, boss)) {
-      boss.hp -= bullet.damage;
-      observeTelemetry("recordBulletHit", () => ({ enemyType: "boss-1",
-        damage: Math.max(0, Math.min(bullet.damage, boss.hp + bullet.damage)) }));
-      consumeProjectileHit(bullet, bulletIndex, boss);
+      if (bullet.explosionRadius > 0) explodeProjectile(bullet);
+      else {
+        consumeProjectileHit(bullet, boss);
+        damageBoss(boss, bullet.damage, { weaponId: bullet.weaponId || "starter", hitKind: "projectile" });
+      }
 
       if (boss.hp <= 0) {
         return;
@@ -1578,7 +1859,8 @@ function updateLevel() {
     currentUpgradeChoices = RunBuild.generateUpgradeChoices(
       buildState,
       3,
-      upgradeRng || (upgradeRng = createUpgradeRng())
+      upgradeRng || (upgradeRng = createUpgradeRng()),
+      Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId]
     );
 
     if (currentUpgradeChoices.length === 0) {
@@ -1604,12 +1886,15 @@ function chooseUpgrade(key) {
 
   const result = RunBuild.applyUpgrade(buildState, upgrade.id, {
     playerHp: player.hp,
-    basePlayer: RunBuild.PLAYER_BASE_STATS
+    basePlayer: RunBuild.PLAYER_BASE_STATS,
+    baseWeapon: Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId]
   });
   if (!result.applied) return;
 
   buildState = result.buildState;
-  weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
+  weaponSlots[activeWeaponSlotIndex].buildState = buildState;
+  synchronizePlayerUpgrade(upgrade.id);
+  weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId], buildState);
   playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
   player.speed = playerStats.speed;
   player.maxHp = playerStats.maxHp;
@@ -1638,28 +1923,48 @@ function chooseUpgrade(key) {
 }
 
 function handlePlayerEnemyCollisions() {
-  for (let enemyIndex = enemies.length - 1; enemyIndex >= 0; enemyIndex--) {
-    const enemy = enemies[enemyIndex];
+  rebuildEnemySpatialHash();
+  const overlapping = [...nearbyEnemies(player)].filter(enemy =>
+    isCurrentEncounterEnemy(enemy) && isOverlapping(player, enemy));
+  const initialPenetrations = new Map(overlapping.map(enemy => [enemy, playerEnemyPenetration(enemy)]));
 
-    if (isCurrentEncounterEnemy(enemy) && isOverlapping(player, enemy)) {
-      const policy = Encounters.ENEMIES[enemy.type].behavior.attackPolicy;
-      const runtime = enemy.behaviorRuntime;
-      if (policy === "contact") {
-        observeTelemetry("recordEnemyRemoval", () => ({ enemyType: enemy.type, reason: "contact" }));
-        EnemyBehaviors.recordEnemyRemoval(enemy, hazards, enemies);
-        takeDamage(enemy.damage ?? 1, enemy.type);
-        enemy.lifecycle = ContinuousEncounter.LIFECYCLES.DEAD;
-        enemies.splice(enemyIndex, 1);
-        if (waveRuntime) waveRuntime.aliveEnemyCount = enemies.filter(candidate => candidate.hp > 0).length;
-      } else if (policy === "strike" && runtime?.behaviorState === EnemyBehaviors.STATES.STRIKE && !runtime.attackDamageApplied) {
-        runtime.attackDamageApplied = true;
-        takeDamage(enemy.damage ?? 1, enemy.type);
-      } else if (policy === "charge" && runtime?.behaviorState === EnemyBehaviors.STATES.CHARGE && !runtime.chargeContact) {
-        EnemyBehaviors.recordEnemyContact(enemy, { emit: emitBehaviorTelemetry });
-        takeDamage(enemy.damage ?? 1, enemy.type);
-      }
-      if (isGameOver) return;
+  // Damage eligibility is determined from the same pre-resolution snapshot.
+  // Otherwise separating one enemy can move the player out of a second enemy
+  // before that enemy's independent attack policy has been evaluated.
+  for (const enemy of overlapping) {
+    const enemyIndex = enemies.indexOf(enemy);
+    if (enemyIndex < 0) continue;
+    const policy = Encounters.ENEMIES[enemy.type].behavior.attackPolicy;
+    const runtime = enemy.behaviorRuntime;
+    if (policy === "contact") {
+      observeTelemetry("recordEnemyRemoval", () => ({ enemyType: enemy.type, reason: "contact" }));
+      EnemyBehaviors.recordEnemyRemoval(enemy, hazards, enemies);
+      takeDamage(enemy.damage ?? 1, enemy.type);
+      enemy.lifecycle = ContinuousEncounter.LIFECYCLES.DEAD;
+      enemies.splice(enemyIndex, 1);
+      if (waveRuntime) waveRuntime.aliveEnemyCount = enemies.filter(candidate => candidate.hp > 0).length;
+    } else if (policy === "strike" && runtime?.behaviorState === EnemyBehaviors.STATES.STRIKE && !runtime.attackDamageApplied) {
+      runtime.attackDamageApplied = true;
+      takeDamage(enemy.damage ?? 1, enemy.type);
+    } else if (policy === "charge" && runtime?.behaviorState === EnemyBehaviors.STATES.CHARGE && !runtime.chargeContact) {
+      EnemyBehaviors.recordEnemyContact(enemy, { emit: emitBehaviorTelemetry });
+      takeDamage(enemy.damage ?? 1, enemy.type);
     }
+    if (isGameOver) {
+      for (const observed of overlapping) {
+        observeTelemetry("recordPlayerEnemyOverlap", () => ({ enemyType: observed.type,
+          penetration: initialPenetrations.get(observed), corrections: 0 }));
+      }
+      return;
+    }
+  }
+
+  rebuildEnemySpatialHash();
+  for (const enemy of overlapping) {
+    const result = enemies.includes(enemy) && isOverlapping(player, enemy)
+      ? resolvePlayerEnemyOverlap(enemy) : { corrections: 0 };
+    observeTelemetry("recordPlayerEnemyOverlap", () => ({ enemyType: enemy.type,
+      penetration: initialPenetrations.get(enemy), corrections: result.corrections || 0 }));
   }
 }
 
@@ -1739,6 +2044,53 @@ function getOverlapPenetration(rectangleA, rectangleB) {
     rectangleB.y + rectangleB.height - rectangleA.y
   );
   return penetrationX > 0 && penetrationY > 0 ? penetrationX + penetrationY : 0;
+}
+
+function playerEnemyPenetration(enemy, playerBody = player) {
+  const x = Math.min(playerBody.x + playerBody.width - enemy.x,
+    enemy.x + enemy.width - playerBody.x);
+  const y = Math.min(playerBody.y + playerBody.height - enemy.y,
+    enemy.y + enemy.height - playerBody.y);
+  return x > 0 && y > 0 ? Math.min(x, y) : 0;
+}
+
+function totalPlayerEnemyPenetration(playerBody = player) {
+  let total = 0;
+  for (const enemy of nearbyEnemies(playerBody)) {
+    if (isCurrentEncounterEnemy(enemy)) total += playerEnemyPenetration(enemy, playerBody);
+  }
+  return total;
+}
+
+function tryMovePlayerSeparation(amount, axis) {
+  const before = totalPlayerEnemyPenetration(player);
+  const movement = Battlefields.moveAxis(player, amount, axis, battlefieldRuntime);
+  const candidate = { ...player, x: movement.x, y: movement.y };
+  const after = totalPlayerEnemyPenetration(candidate);
+  if (after >= before - COLLISION_EPSILON) return false;
+  player.x = candidate.x; player.y = candidate.y;
+  return true;
+}
+
+function resolvePlayerEnemyOverlap(enemy) {
+  const initialPenetration = playerEnemyPenetration(enemy);
+  if (initialPenetration <= 0) return { corrected: false, corrections: 0, initialPenetration: 0 };
+  let corrections = 0;
+  for (; corrections < 16 && playerEnemyPenetration(enemy) > COLLISION_EPSILON; corrections++) {
+    const overlapX = Math.min(player.x + player.width - enemy.x, enemy.x + enemy.width - player.x);
+    const overlapY = Math.min(player.y + player.height - enemy.y, enemy.y + enemy.height - player.y);
+    const axis = overlapX <= overlapY ? "x" : "y";
+    const playerCenter = axis === "x" ? player.x + player.width / 2 : player.y + player.height / 2;
+    const enemyCenter = axis === "x" ? enemy.x + enemy.width / 2 : enemy.y + enemy.height / 2;
+    const enemyDirection = enemyCenter >= playerCenter ? 1 : -1;
+    const step = Math.min(4, (axis === "x" ? overlapX : overlapY) + COLLISION_EPSILON);
+    const enemyMoved = tryMoveEnemy(enemy, axis === "x" ? enemyDirection * step : 0,
+      axis === "y" ? enemyDirection * step : 0);
+    if (!enemyMoved && !tryMovePlayerSeparation(-enemyDirection * step, axis)) break;
+    rebuildEnemySpatialHash();
+  }
+  return { corrected: corrections > 0, corrections, initialPenetration,
+    remainingPenetration: playerEnemyPenetration(enemy) };
 }
 
 function getEnemyCollisionState(enemy, x = enemy.x, y = enemy.y) {
@@ -2093,14 +2445,55 @@ function drawEnemyVisual(targetContext, type, x, y, width, height, preview = fal
   targetContext.restore();
 }
 
-function renderIntroductionPreview(type) {
-  const previewContext = enemyIntroductionIcon.getContext?.("2d");
+function renderEnemyPreview(targetCanvas, type, { hidden = false } = {}) {
+  const previewContext = targetCanvas?.getContext?.("2d");
   if (!previewContext) return;
-  previewContext.clearRect(0, 0, enemyIntroductionIcon.width, enemyIntroductionIcon.height);
+  previewContext.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+  if (hidden) {
+    previewContext.save();
+    previewContext.fillStyle = "#374151";
+    previewContext.fillRect(targetCanvas.width / 2 - 28, targetCanvas.height / 2 - 28, 56, 56);
+    previewContext.restore();
+    return;
+  }
   const definition = Encounters.ENEMIES[type];
+  if (!definition) return;
   const scale = Math.min(72 / definition.visualWidth, 72 / definition.visualHeight);
   const width = definition.visualWidth * scale, height = definition.visualHeight * scale;
-  drawEnemyVisual(previewContext, type, 58 - width / 2, 70 - height / 2, width, height, true);
+  drawEnemyVisual(previewContext, type, targetCanvas.width / 2 - width / 2,
+    targetCanvas.height / 2 - height / 2, width, height, true);
+}
+
+function renderIntroductionPreview(type) {
+  renderEnemyPreview(enemyIntroductionIcon, type);
+}
+
+function renderEnemyCodex() {
+  if (!enemyCodexGrid) return;
+  enemyCodexGrid.textContent = "";
+  for (const type of Object.keys(Encounters.ENEMIES)) {
+    const discovered = enemyDiscovery.has(type);
+    const introduction = Encounters.COMBAT_VARIETY_V1.introductions[type];
+    const definition = Encounters.ENEMIES[type];
+    const card = document.createElement("article");
+    card.className = `codex-card${discovered ? "" : " codex-card-unknown"}`;
+    const preview = document.createElement("canvas");
+    preview.width = 180; preview.height = 110; preview.className = "codex-preview";
+    renderEnemyPreview(preview, discovered ? type : null, { hidden: !discovered });
+    const title = document.createElement("strong");
+    title.textContent = discovered ? introduction.name : "Unknown Enemy";
+    const detail = document.createElement("div");
+    detail.className = "codex-detail";
+    if (discovered) {
+      const policy = definition.behavior.attackPolicy.replace(/-/g, " ");
+      detail.textContent = `${introduction.role} · ${introduction.description} ` +
+        `Mechanism: ${policy}. ${introduction.counterplay}`;
+    } else {
+      detail.textContent = "Discover this enemy in combat to reveal its identity.";
+    }
+    card.append(preview, title, detail);
+    enemyCodexGrid.append(card);
+  }
 }
 
 function drawEnemies() {
@@ -2156,6 +2549,25 @@ function drawWeaponDamage() {
   ctx.textAlign = "right";
   ctx.fillText(`Damage: ${formatNumber(weapon.damage)}`, canvas.width - 15, 30);
   ctx.restore();
+}
+
+function drawWeaponEffects() {
+  for (const effect of weaponEffects) {
+    const alpha = Math.max(0, 1 - effect.elapsed / effect.duration);
+    ctx.save();
+    if (effect.kind === "arc") {
+      ctx.fillStyle = `rgba(147,197,253,${0.32 * alpha})`;
+      ctx.strokeStyle = `rgba(219,234,254,${0.9 * alpha})`;
+      ctx.beginPath(); ctx.moveTo(effect.x, effect.y);
+      ctx.arc(effect.x, effect.y, effect.range, effect.angle - effect.halfAngle,
+        effect.angle + effect.halfAngle); ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else if (effect.kind === "explosion") {
+      ctx.fillStyle = `rgba(251,146,60,${0.28 * alpha})`;
+      ctx.strokeStyle = `rgba(254,215,170,${0.9 * alpha})`;
+      ctx.beginPath(); ctx.arc(effect.x, effect.y, effect.radius, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    ctx.restore();
+  }
 }
 
 function drawBattlefield() {
@@ -2231,6 +2643,9 @@ function renderBuildPanel() {
   document.getElementById("buildProjectileCount").textContent = weapon.projectileCount;
   document.getElementById("buildMoveSpeed").textContent = Math.round(player.speed);
   document.getElementById("buildMaxHp").textContent = player.maxHp;
+  if (slotAValue) slotAValue.textContent = Weapons.DEFINITIONS[weaponSlots[0]?.weaponId]?.name || "Empty";
+  if (slotBValue) slotBValue.textContent = Weapons.DEFINITIONS[weaponSlots[1]?.weaponId]?.name || "Empty";
+  if (activeWeaponValue) activeWeaponValue.textContent = `${activeWeaponSlotIndex === 0 ? "A" : "B"}: ${weapon.name}`;
 
   const list = document.getElementById("buildUpgradeList");
   clearElement(list);
@@ -2244,7 +2659,8 @@ function renderBuildPanel() {
     const stacks = RunBuild.getUpgradeStacks(buildState, upgrade.id);
     list.append(textElement("li", "", `${upgrade.name} ×${stacks}`));
   }
-  if (RunBuild.UPGRADE_LIST.every(upgrade => !RunBuild.canSelectUpgrade(buildState, upgrade.id))) {
+  if (RunBuild.UPGRADE_LIST.every(upgrade => !RunBuild.canSelectUpgrade(buildState, upgrade.id,
+    Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId]))) {
     list.append(textElement("li", "build-maxed", "BUILD MAXED"));
   }
 }
@@ -2332,6 +2748,8 @@ function telemetryPlayer() {
   return { playerHp: player.hp, playerMaxHp: player.maxHp, playerLevel: level, playerXp: xp,
     playerSpeed: player.speed, speed: player.speed, maxHp: player.maxHp,
     weapon: { ...weapon },
+    loadout: { slotA: weaponSlots[0]?.weaponId || null, slotB: weaponSlots[1]?.weaponId || null,
+      activeWeapon: weapon.id, activeSlot: activeWeaponSlotIndex === 0 ? "A" : "B" },
     build: { upgradeStacks: { ...buildState.upgradeStacks } } };
 }
 function initializePlaytestTelemetry() {
@@ -2355,6 +2773,9 @@ function initializePlaytestTelemetry() {
         templates: Object.fromEntries(Object.entries(Encounters.TEMPLATES).map(([id, template]) => [id, { delays: template.delays }])),
         playerBaseStats: RunBuild.PLAYER_BASE_STATS,
         starterWeapon: Weapons.STARTER,
+        weapons: Weapons.DEFINITIONS,
+        continuousEncounter: { structure: ContinuousEncounter.STRUCTURE,
+          calibration: ContinuousEncounter.CALIBRATION },
         upgrades: Object.fromEntries(RunBuild.UPGRADE_LIST.map(upgrade => [upgrade.id, upgrade])),
         technicalFireRateCap: Weapons.MAX_FIRE_RATE }
     });
@@ -2423,6 +2844,7 @@ function gameLoop(timestamp) {
     drawBattlefield();
     drawBehaviorArena();
     drawPlayer();
+    drawWeaponEffects();
     drawEnemies();
     drawBoss();
     drawBullets();

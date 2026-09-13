@@ -42,23 +42,24 @@ test("spawn exclusion includes visual half diagonal", () => {
   assert.equal(Continuous.minimumSpawnCenterDistance({ visualWidth: 60, visualHeight: 80 }), 150);
 });
 
-test("normal refill hysteresis stops at 45 and does not chase 50", () => {
-  assert.equal(Continuous.shouldEnableNormalRefill(0.39, false), true);
-  assert.equal(Continuous.shouldEnableNormalRefill(0.42, true), true);
-  assert.equal(Continuous.shouldEnableNormalRefill(0.45, true), false);
-  assert.equal(Continuous.shouldEnableNormalRefill(0.49, false), false);
+test("normal refill uses the 20/25/30 density band", () => {
+  assert.equal(Continuous.shouldEnableNormalRefill(0.19, false), true);
+  assert.equal(Continuous.shouldEnableNormalRefill(0.22, true), true);
+  assert.equal(Continuous.shouldEnableNormalRefill(0.25, true), false);
+  assert.equal(Continuous.shouldEnableNormalRefill(0.29, false), false);
 });
 
-test("controller ceiling rejects candidates above 90 percent", () => {
+test("controller ceiling rejects commitments above 70 percent", () => {
   const capacity = Continuous.capacityArea();
-  assert.equal(Continuous.candidateFits(0.89, capacity * 0.01, capacity), true);
-  assert.equal(Continuous.candidateFits(0.895, capacity * 0.01, capacity), false);
+  assert.equal(Continuous.candidateFits(0.69, capacity * 0.01, capacity), true);
+  assert.equal(Continuous.candidateFits(0.695, capacity * 0.01, capacity), false);
 });
 
 test("Wave Coming snapshots an additive budget and fast kills do not refill it", () => {
   const controller = Continuous.createController({ waveCount: 5, seed: 7 });
-  const budget = Continuous.beginWaveComing(controller, 0.48);
-  assert.ok(Math.abs(controller.comingTarget - 0.73) < 1e-12);
+  const budget = Continuous.beginWaveComing(controller, 0.25, () => 0.5);
+  assert.ok(Math.abs(controller.comingSelectedDelta - 0.25) < 1e-12);
+  assert.ok(Math.abs(controller.comingTarget - 0.5) < 1e-12);
   assert.ok(Math.abs(budget - Continuous.capacityArea() * 0.25) < 1e-7);
   controller.comingCredit = 10000;
   const reservation = Continuous.commitSpawn(controller, "normal", 3136);
@@ -71,7 +72,7 @@ test("Wave Coming snapshots an additive budget and fast kills do not refill it",
 test("phase-specific token buckets do not bank normal refill during Wave Coming", () => {
   const controller = Continuous.createController({ waveCount: 5 });
   controller.normalCredit = 123;
-  Continuous.beginWaveComing(controller, 0.45);
+  Continuous.beginWaveComing(controller, 0.25, () => 0.5);
   Continuous.addCredit(controller, 1);
   assert.equal(controller.normalCredit, 123);
   assert.ok(controller.comingCredit > 0);
@@ -82,10 +83,11 @@ test("phase-specific token buckets do not bank normal refill during Wave Coming"
   assert.equal(controller.normalCredit, 123);
 });
 
-test("Coming target clamps to 90 percent and transitions through Settling", () => {
+test("Coming random delta stays in range, clamps to 70 percent, and settles", () => {
   const controller = Continuous.createController({ waveCount: 5 });
-  Continuous.beginWaveComing(controller, 0.8);
-  assert.equal(controller.comingTarget, 0.9);
+  Continuous.beginWaveComing(controller, 0.6, () => 0.999999);
+  assert.ok(controller.comingSelectedDelta >= 0.2 && controller.comingSelectedDelta < 0.3);
+  assert.equal(controller.comingTarget, 0.7);
   controller.comingRemainingArea = 0;
   Continuous.updateController(controller, 0.1,
     { capacityArea: Continuous.capacityArea(), projectedFill: 0.7, visibleFill: 0.7, reservedFill: 0 }, [], viewport);
@@ -111,11 +113,11 @@ test("Wave Progress snapshots N_ref and immutable K_target", () => {
   assert.equal(controller.waveProgressArmed, false);
 });
 
-test("Progress only arms in visible 40-50 percent with zero reservation", () => {
-  assert.equal(Continuous.canArmProgress({ visibleFill: 0.4, reservedFill: 0 }), true);
-  assert.equal(Continuous.canArmProgress({ visibleFill: 0.5, reservedFill: 0 }), true);
-  assert.equal(Continuous.canArmProgress({ visibleFill: 0.39, reservedFill: 0 }), false);
-  assert.equal(Continuous.canArmProgress({ visibleFill: 0.45, reservedFill: 0.001 }), false);
+test("Progress only arms in visible 20-30 percent with zero reservation", () => {
+  assert.equal(Continuous.canArmProgress({ visibleFill: 0.2, reservedFill: 0 }), true);
+  assert.equal(Continuous.canArmProgress({ visibleFill: 0.3, reservedFill: 0 }), true);
+  assert.equal(Continuous.canArmProgress({ visibleFill: 0.19, reservedFill: 0 }), false);
+  assert.equal(Continuous.canArmProgress({ visibleFill: 0.25, reservedFill: 0.001 }), false);
 });
 
 test("spawn selection suppression stays soft and type RNG is position-independent", () => {
@@ -136,7 +138,7 @@ test("distance bands derive from viewport short side", () => {
 
 test("reservation cancellation restores credit and fixed Coming budget", () => {
   const controller = Continuous.createController({ waveCount: 5 });
-  Continuous.beginWaveComing(controller, 0.45);
+  Continuous.beginWaveComing(controller, 0.25, () => 0.5);
   controller.comingCredit = 5000;
   const before = controller.comingRemainingArea;
   const reservation = Continuous.commitSpawn(controller, "fast", 1600);
@@ -191,8 +193,43 @@ test("seeded high-volume decisions never violate caps or negative credit", () =>
       const reservation = Continuous.commitSpawn(controller, "normal", area, Continuous.PHASES.NORMAL);
       if (!reservation) break;
       projected += area / Continuous.capacityArea();
-      assert.ok(projected <= 0.9 + 1e-9);
+      assert.ok(projected <= 0.7 + 1e-9);
       assert.ok(controller.normalCredit >= 0);
     }
   }
+});
+
+test("Wave 1 opening target ramps from 10 to 20 to 25 percent", () => {
+  const controller = Continuous.createController({ waveCount: 5 });
+  controller.waveIndex = 0;
+  controller.combatElapsed = 0;
+  assert.equal(Continuous.effectiveNormalTarget(controller), 0.10);
+  controller.combatElapsed = 2;
+  assert.equal(Continuous.effectiveNormalTarget(controller), 0.20);
+  controller.combatElapsed = 5;
+  assert.equal(Continuous.effectiveNormalTarget(controller), 0.25);
+  controller.waveIndex = 1;
+  controller.combatElapsed = 0;
+  assert.equal(Continuous.effectiveNormalTarget(controller), 0.25);
+});
+
+test("dispatch pulse policies cap Normal at 2 and Coming at 3", () => {
+  const controller = Continuous.createController({ waveCount: 5 });
+  controller.phase = Continuous.PHASES.NORMAL;
+  assert.deepEqual(Continuous.dispatchPolicy(controller.phase), { maximum: 2, interval: 0.20 });
+  Continuous.recordDispatchPulse(controller, 2);
+  assert.equal(Continuous.canDispatchPulse(controller), false);
+  Continuous.updateController(controller, 0.20,
+    { capacityArea: Continuous.capacityArea(), projectedFill: 0.25, visibleFill: 0.25, reservedFill: 0 }, [], viewport);
+  assert.equal(Continuous.canDispatchPulse(controller), true);
+  assert.deepEqual(Continuous.dispatchPolicy(Continuous.PHASES.WAVE_COMING), { maximum: 3, interval: 0.15 });
+});
+
+test("managed regular-enemy accounting is capped at 40 without phantom reservations", () => {
+  const enemies = Array.from({ length: 39 }, () => ({ hp: 1, lifecycle: Continuous.LIFECYCLES.ACTIVE }));
+  assert.equal(Continuous.managedRegularEnemyCount(enemies, 1), 40);
+  assert.equal(Continuous.canReserveManagedEnemy(enemies, 1), false);
+  enemies[0].lifecycle = Continuous.LIFECYCLES.DEAD;
+  assert.equal(Continuous.managedRegularEnemyCount(enemies, 1), 39);
+  assert.equal(Continuous.canReserveManagedEnemy(enemies, 1), true);
 });

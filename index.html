@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CANVA WAR</title>
-  <link rel="stylesheet" href="style.css?v=20260912-continuous-b3">
+  <link rel="stylesheet" href="style.css?v=20260912-combat-c1">
 </head>
 <body>
   <main class="app">
@@ -17,7 +17,17 @@
             <button id="shopButton" type="button">SHOP</button>
             <button id="armoryButton" type="button">ARMORY</button>
             <button id="equipmentButton" type="button">EQUIPMENT</button>
+            <button id="enemyCodexButton" type="button">ENEMY CODEX</button>
           </div>
+          <fieldset id="playtestWeaponSelector" class="playtest-weapon-selector" hidden>
+            <legend>PLAYTEST LOADOUT · CHOOSE 1–2</legend>
+            <label><input type="checkbox" data-weapon-id="starter" checked> Starter</label>
+            <label><input type="checkbox" data-weapon-id="scatter"> Scatter</label>
+            <label><input type="checkbox" data-weapon-id="piercer"> Piercer</label>
+            <label><input type="checkbox" data-weapon-id="burst"> Burst</label>
+            <label><input type="checkbox" data-weapon-id="launcher"> Launcher</label>
+            <label><input type="checkbox" data-weapon-id="arc-blade"> Arc Blade</label>
+          </fieldset>
         </nav>
       </div>
     </section>
@@ -48,6 +58,14 @@
         <h1 id="equipmentTitle">EQUIPMENT</h1>
         <p class="meta-placeholder" id="equipmentStatus"></p>
         <button id="equipmentBackButton" class="back-to-hub" type="button">Back to Hub</button>
+      </div>
+    </section>
+
+    <section id="codexView" class="app-view codex-view" aria-labelledby="codexTitle" hidden>
+      <div class="codex-panel">
+        <header><div><p class="menu-kicker">DISCOVERED ENEMIES</p><h1 id="codexTitle">ENEMY CODEX</h1></div>
+          <button id="codexBackButton" class="back-to-hub" type="button">Back to Hub</button></header>
+        <div id="enemyCodexGrid" class="enemy-codex-grid"></div>
       </div>
     </section>
 
@@ -115,7 +133,10 @@
           <h2 id="buildTitle">BUILD</h2>
           <dl class="build-stats">
             <div class="build-weapon-row"><dt>Weapon</dt><dd id="buildWeaponName">Starter</dd></div>
-            <div><dt>Damage</dt><dd id="buildDamage">1</dd></div>
+            <div class="loadout-row"><dt>Slot A</dt><dd id="slotAValue">Starter</dd></div>
+            <div class="loadout-row"><dt>Slot B</dt><dd id="slotBValue">Empty</dd></div>
+            <div class="loadout-row active-loadout"><dt>Active · Q</dt><dd id="activeWeaponValue">A: Starter</dd></div>
+            <div><dt>Damage</dt><dd id="buildDamage">2</dd></div>
             <div><dt>Fire rate</dt><dd id="buildFireRate">4.0/s</dd></div>
             <div><dt>Projectiles</dt><dd id="buildProjectileCount">1</dd></div>
             <div><dt>Move speed</dt><dd id="buildMoveSpeed">240</dd></div>
@@ -130,17 +151,18 @@
     </section>
   </main>
 
-  <script src="settlement.js?v=20260912-continuous-b3"></script>
-  <script src="battlefields.js?v=20260912-continuous-b3"></script>
-  <script src="encounters.js?v=20260912-continuous-b3"></script>
-  <script src="continuous-encounter.js?v=20260912-continuous-b3"></script>
-  <script src="behaviors.js?v=20260912-continuous-b3"></script>
-  <script src="weapons.js?v=20260912-continuous-b3"></script>
-  <script src="build.js?v=20260912-continuous-b3"></script>
-  <script src="layout.js?v=20260912-continuous-b3"></script>
-  <script src="audio.js?v=20260912-continuous-b3"></script>
-  <script src="telemetry.js?v=20260912-continuous-b3"></script>
-  <script src="telemetry-ui.js?v=20260912-continuous-b3"></script>
-  <script src="game.js?v=20260912-continuous-b3"></script>
+  <script src="settlement.js?v=20260912-combat-c1"></script>
+  <script src="battlefields.js?v=20260912-combat-c1"></script>
+  <script src="encounters.js?v=20260912-combat-c1"></script>
+  <script src="continuous-encounter.js?v=20260912-combat-c1"></script>
+  <script src="behaviors.js?v=20260912-combat-c1"></script>
+  <script src="weapons.js?v=20260912-combat-c1"></script>
+  <script src="build.js?v=20260912-combat-c1"></script>
+  <script src="layout.js?v=20260912-combat-c1"></script>
+  <script src="audio.js?v=20260912-combat-c1"></script>
+  <script src="enemy-discovery.js?v=20260912-combat-c1"></script>
+  <script src="telemetry.js?v=20260912-combat-c1"></script>
+  <script src="telemetry-ui.js?v=20260912-combat-c1"></script>
+  <script src="game.js?v=20260912-combat-c1"></script>
 </body>
 </html>

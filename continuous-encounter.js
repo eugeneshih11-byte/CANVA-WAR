@@ -5,10 +5,10 @@
     viewportWidth: 800,
     viewportHeight: 600,
     playerSpawnExclusionRadius: 100,
-    normalFillMinimum: 0.40,
-    normalFillTarget: 0.45,
-    normalFillMaximum: 0.50,
-    controllerCeiling: 0.90,
+    normalFillMinimum: 0.20,
+    normalFillTarget: 0.25,
+    normalFillMaximum: 0.30,
+    controllerCeiling: 0.70,
     distanceBands: Object.freeze({
       NEAR: Object.freeze([0.08, 0.20]),
       MID: Object.freeze([0.20, 0.40]),
@@ -21,7 +21,18 @@
     normalAreaRate: 0.12,
     comingAreaRate: 0.32,
     creditCapFill: 0.14,
-    waveComingDelta: 0.25,
+    waveComingDeltaMinimum: 0.20,
+    waveComingDeltaMaximum: 0.30,
+    normalDispatchMaximum: 2,
+    normalDispatchInterval: 0.20,
+    comingDispatchMaximum: 3,
+    comingDispatchInterval: 0.15,
+    maxManagedRegularEnemies: 40,
+    openingRamp: Object.freeze([
+      Object.freeze({ until: 2, target: 0.10 }),
+      Object.freeze({ until: 5, target: 0.20 }),
+      Object.freeze({ until: Infinity, target: 0.25 })
+    ]),
     placementAttemptsPerBand: 8,
     placementCandidateScanLimit: 48,
     entryAnchorMinimumInset: 72,
@@ -182,8 +193,11 @@
       normalRefillEnabled: true,
       normalCredit: 0,
       comingCredit: 0,
+      comingStartFill: 0,
+      comingSelectedDelta: 0,
       comingDelta: 0,
       comingTarget: 0,
+      comingPeakProjectedFill: 0,
       comingBudgetArea: 0,
       comingRemainingArea: 0,
       comingCommittedArea: 0,
@@ -191,8 +205,14 @@
       spawnHistory: [],
       pendingReservations: [],
       nextReservationId: 1,
+      combatElapsed: 0,
+      dispatchPulseCooldown: 0,
+      dispatchPulseCount: 0,
+      reservationsLastPulse: 0,
+      peakManagedCount: 0,
       typeRng: createSeededRng((seed ^ 0xa511e9b3) >>> 0),
-      positionRng: createSeededRng((seed ^ 0x63d83595) >>> 0)
+      positionRng: createSeededRng((seed ^ 0x63d83595) >>> 0),
+      comingRng: createSeededRng((seed ^ 0x1b56c4e9) >>> 0)
     };
   }
 
@@ -231,17 +251,25 @@
     return true;
   }
 
-  function beginWaveComing(controller, projectedFill) {
+  function beginWaveComing(controller, projectedFill, rng = controller.comingRng) {
     const start = Math.max(0, projectedFill);
-    const target = Math.min(STRUCTURE.controllerCeiling, start + CALIBRATION.waveComingDelta);
+    const random = rng();
+    if (!Number.isFinite(random) || random < 0 || random >= 1) throw new Error("Invalid Coming RNG value");
+    const selectedDelta = CALIBRATION.waveComingDeltaMinimum +
+      (CALIBRATION.waveComingDeltaMaximum - CALIBRATION.waveComingDeltaMinimum) * random;
+    const target = Math.min(STRUCTURE.controllerCeiling, start + selectedDelta);
     const budget = Math.max(0, (target - start) * capacityArea());
     controller.phase = PHASES.WAVE_COMING;
+    controller.comingStartFill = start;
+    controller.comingSelectedDelta = selectedDelta;
     controller.comingDelta = target - start;
     controller.comingTarget = target;
+    controller.comingPeakProjectedFill = start;
     controller.comingBudgetArea = budget;
     controller.comingRemainingArea = budget;
     controller.comingCommittedArea = 0;
     controller.comingCredit = 0;
+    controller.dispatchPulseCooldown = 0;
     return budget;
   }
 
@@ -284,6 +312,42 @@
       fill.visibleFill <= STRUCTURE.normalFillMaximum + EPSILON && fill.reservedFill <= EPSILON;
   }
 
+  function effectiveNormalTarget(controller, waveIndex = controller.waveIndex) {
+    if (waveIndex !== 0) return STRUCTURE.normalFillTarget;
+    return CALIBRATION.openingRamp.find(step => controller.combatElapsed < step.until)?.target ??
+      STRUCTURE.normalFillTarget;
+  }
+
+  function dispatchPolicy(phase) {
+    return phase === PHASES.WAVE_COMING
+      ? Object.freeze({ maximum: CALIBRATION.comingDispatchMaximum, interval: CALIBRATION.comingDispatchInterval })
+      : Object.freeze({ maximum: CALIBRATION.normalDispatchMaximum, interval: CALIBRATION.normalDispatchInterval });
+  }
+
+  function canDispatchPulse(controller) {
+    return controller.dispatchPulseCooldown <= EPSILON;
+  }
+
+  function recordDispatchPulse(controller, reservationsCommitted) {
+    const committed = Math.max(0, Math.trunc(reservationsCommitted || 0));
+    controller.dispatchPulseCount++;
+    controller.reservationsLastPulse = committed;
+    controller.dispatchPulseCooldown = dispatchPolicy(controller.phase).interval;
+  }
+
+  function isManagedRegularEnemy(enemy) {
+    return Boolean(enemy && enemy.hp > 0 && [LIFECYCLES.ENTERING, LIFECYCLES.ACTIVE,
+      LIFECYCLES.NEAR_OFFSCREEN, LIFECYCLES.RETURNING].includes(enemy.lifecycle));
+  }
+
+  function managedRegularEnemyCount(enemies, pendingReservationCount = 0) {
+    return enemies.filter(isManagedRegularEnemy).length + Math.max(0, Math.trunc(pendingReservationCount || 0));
+  }
+
+  function canReserveManagedEnemy(enemies, pendingReservationCount = 0) {
+    return managedRegularEnemyCount(enemies, pendingReservationCount) < CALIBRATION.maxManagedRegularEnemies;
+  }
+
   function updateLifecycle(enemy, viewport, managementMargin = distanceBandPixels("FAR", viewport.width, viewport.height).maximum) {
     if (enemy.hp <= 0) return enemy.lifecycle = LIFECYCLES.DEAD;
     const rect = visualRect(enemy);
@@ -303,6 +367,12 @@
   }
 
   function updateController(controller, deltaTime, fill, enemies, viewport) {
+    const dt = Math.max(0, Number.isFinite(deltaTime) ? deltaTime : 0);
+    controller.combatElapsed += dt;
+    controller.dispatchPulseCooldown = Math.max(0, controller.dispatchPulseCooldown - dt);
+    if (controller.phase === PHASES.WAVE_COMING) {
+      controller.comingPeakProjectedFill = Math.max(controller.comingPeakProjectedFill, fill.projectedFill);
+    }
     addCredit(controller, deltaTime, fill.capacityArea);
     controller.normalRefillEnabled = shouldEnableNormalRefill(fill.projectedFill, controller.normalRefillEnabled);
     if (controller.phase === PHASES.SETTLING) {
@@ -322,7 +392,9 @@
     minimumSpawnCenterDistance, distanceBandPixels, computeFill, shouldEnableNormalRefill,
     candidateFits, createSeededRng, spawnWeight, selectType, legalTypes, createController,
     addCredit, armProgress, recordKill, beginWaveComing, commitSpawn, cancelSpawn, establishSpawn,
-    canArmProgress, updateLifecycle, updateController });
+    canArmProgress, effectiveNormalTarget, dispatchPolicy, canDispatchPulse, recordDispatchPulse,
+    isManagedRegularEnemy, managedRegularEnemyCount, canReserveManagedEnemy,
+    updateLifecycle, updateController });
   global.ContinuousEncounter = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(globalThis);

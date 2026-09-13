@@ -84,6 +84,22 @@ test("all ten Phase B Enemy identities expose separate footprints, policies, pro
   assert.equal(E.ENEMIES.support.stats.damage, 0);
 });
 
+test("Stage-specific Continuous eligibility cumulatively unlocks the ten Stage 1 Types", () => {
+  const stage = Encounters.STAGES[0];
+  const expected = [
+    ["normal", "fast"],
+    ["normal", "fast", "tank", "gunner"],
+    ["normal", "fast", "tank", "gunner", "interceptor", "trapper"],
+    ["normal", "fast", "tank", "gunner", "interceptor", "trapper", "denier", "support"],
+    ["normal", "fast", "tank", "gunner", "interceptor", "trapper", "denier", "support", "artillery", "tether"]
+  ];
+  assert.deepEqual(stage.continuousEligibility, expected);
+  expected.forEach((pool, index) => assert.deepEqual(Encounters.getContinuousEligibleTypes(stage, index), pool));
+  const independentStage = { continuousEligibility: [["denier"]] };
+  assert.deepEqual(Encounters.getContinuousEligibleTypes(independentStage, 0), ["denier"]);
+  assert.throws(() => Encounters.getContinuousEligibleTypes({ continuousEligibility: [["future"]] }, 0));
+});
+
 test("prototype Waves require exact teaching compositions within every existing safety constraint", () => {
   const prototype = E.PROTOTYPE_STAGES[0];
   const expected = [{}, {}, { interceptor: 1 }, { denier: 1 }, { interceptor: 1, support: 1 }];

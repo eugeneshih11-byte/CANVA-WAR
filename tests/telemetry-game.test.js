@@ -86,7 +86,7 @@ function loadGame(search = "", options = {}) {
   context.globalThis = context;
   context.window = context;
   vm.createContext(context);
-  for (const file of ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js", "layout.js", "audio.js", "telemetry.js"]) {
+  for (const file of ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js", "layout.js", "audio.js", "enemy-discovery.js", "telemetry.js"]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context, { filename: file });
   }
   options.beforeGame?.(context);
@@ -103,6 +103,7 @@ function loadGame(search = "", options = {}) {
       chooseUpgrade, updateLevel, takeDamage, settleRun, observeTelemetry,
       fireWeaponAttack, beginAttack, endAttack, updateWeaponRuntime,
       get telemetry() { return playtestTelemetry; },
+      get discovery() { return enemyDiscovery; },
       get weapon() { return weapon; },
       get build() { return buildState; },
       get choices() { return currentUpgradeChoices; },
@@ -137,7 +138,16 @@ function loadGame(search = "", options = {}) {
   return Object.assign(context.__testGame, {
     context, listeners, elements, storage, writes, warnings,
     getRandomCalls: () => randomCalls,
-    start() { listeners["playButton:click"](); }
+    start({ discoverAll = true } = {}) {
+      listeners["playButton:click"]();
+      for (let guard = 0; guard < 12; guard++) {
+        if (context.__testGame.state.runPhase === "INTRODUCTION_PENDING") context.__testGame.update(0);
+        else if (context.__testGame.state.runPhase === "INTRODUCTION_ACTIVE") context.__testGame.dismissEnemyIntroduction();
+        else break;
+      }
+      if (discoverAll) Object.keys(context.Encounters.ENEMIES).forEach(type =>
+        context.__testGame.discovery.discover(type));
+    }
   });
 }
 
@@ -354,7 +364,7 @@ test("Denier hazard damage repeats periodically, never bursts on overlap, and cl
 
 test("death clears Denier and introduction transients; restart begins clean", () => {
   const game = loadGame("?prototype=combat-variety-v1");
-  game.start();
+  game.start({ discoverAll: false });
   game.hazards.push({ id: 1, phase: "ACTIVE", x: 120, y: 120, radius: 55,
     damage: 1, damageInterval: 1, remaining: 3 });
   game.beginEnemyIntroductions(2);
@@ -374,7 +384,7 @@ test("death clears Denier and introduction transients; restart begins clean", ()
 
 test("Victory cleanup cannot leave an active introduction overlay behind", () => {
   const game = loadGame("?prototype=combat-variety-v1");
-  game.start();
+  game.start({ discoverAll: false });
   game.beginEnemyIntroductions(2);
   game.update(0);
   game.updateArenaPresentation();
@@ -423,7 +433,8 @@ test("Wave start snapshots exact definition, analysis, resolved Player and full 
   assert.equal(encounter.startHp, 5);
   assert.equal(encounter.playerLevelStart, 1);
   assert.deepEqual(plain(encounter.playerStart.weapon), {
-    id: "starter", name: "Starter", damage: 1, fireRate: 4,
+    id: "starter", name: "Starter", attackKind: "projectile",
+    supportedWeaponUpgrades: ["rapid-fire", "heavy-shot", "split-shot"], damage: 2, fireRate: 4,
     bulletSpeed: 480, bulletSize: 10, projectileCount: 1,
     spreadDegrees: 0, pierce: 0
   });
@@ -463,7 +474,8 @@ test("telemetry configuration snapshots immutable Weapon, Upgrade and Player bal
   const configuration = session(game).configuration;
 
   assert.deepEqual(plain(configuration.starterWeapon), {
-    id: "starter", name: "Starter", damage: 1, fireRate: 4,
+    id: "starter", name: "Starter", attackKind: "projectile",
+    supportedWeaponUpgrades: ["rapid-fire", "heavy-shot", "split-shot"], damage: 2, fireRate: 4,
     bulletSpeed: 480, bulletSize: 10, projectileCount: 1,
     spreadDegrees: 0, pierce: 0
   });
@@ -717,7 +729,7 @@ test("Split Shot records one attack event per discharge and projectile-level sho
   game.elements.upgradeChoices.children[0].eventListeners.click();
   assert.equal(game.bullets.length, 0);
   assert.equal(game.weapon.projectileCount, 2);
-  assert.equal(game.weapon.damage, 0.75);
+  assert.equal(game.weapon.damage, 1.5);
 
   primaryAttack(game);
   let encounter = currentEncounter(game);
@@ -733,7 +745,7 @@ test("Split Shot records one attack event per discharge and projectile-level sho
   game.presentUpgradeChoices(["split-shot", "heavy-shot", "swift-feet"]);
   game.listeners.keydown({ key: "1", repeat: false });
   assert.equal(game.weapon.projectileCount, 3);
-  assert.equal(game.weapon.damage, 0.65);
+  assert.equal(game.weapon.damage, 1.3);
 
   primaryAttack(game);
   encounter = currentEncounter(game);
@@ -867,8 +879,12 @@ test("Settlement observes the pipeline result once and telemetry never enters pe
   assert.deepEqual(plain(run.settlement.result), plain(game.state.lastSettlement));
   game.settleRun("death");
   assert.equal(settlementCalls, 1);
-  assert.equal(game.writes.every(([key]) => key === "canva-war-save"), true);
-  for (const [, value] of game.writes) {
+  assert.equal(game.writes.every(([key]) => ["canva-war-save", "canva-war-enemy-discovery-v1"].includes(key)), true);
+  for (const [key, value] of game.writes) {
+    if (key !== "canva-war-save") {
+      assert.deepEqual(Object.keys(JSON.parse(value)).sort(), ["discovered", "version"]);
+      continue;
+    }
     const save = JSON.parse(value);
     assert.deepEqual(Object.keys(save).sort(), ["progression", "statistics", "unlocks", "version"]);
     assert.equal(/telemetry|runSequence|playtest|upgradeHistory|upgradeChoiceHistory/.test(value), false);
@@ -884,7 +900,7 @@ test("completed Run snapshots and exported JSON remain stable through New Runs",
   game.listeners.keydown({ key: "r" });
   game.presentUpgradeChoices(["heavy-shot", "rapid-fire", "vitality"]);
   game.chooseUpgrade("1");
-  assert.equal(game.weapon.damage, 2);
+  assert.equal(game.weapon.damage, 3);
   finishByAbandon(game);
   assert.equal(session(game).runs.length, 2);
   assert.equal(current(game).completed, true);
@@ -915,23 +931,25 @@ test("telemetry observer and context-construction failures cannot stop gameplay 
   assert.equal(game.warnings.length > 0, true);
 });
 
-test("per-spawn Introduction holds one reservation, freezes time, and resumes the same Type", () => {
-  const game = loadGame("?playtest=1"); game.start();
-  game.update(0.2);
+test("new Wave Introduction freezes time and completes before unlocked Types can spawn", () => {
+  const game = loadGame("?playtest=1"); game.start({ discoverAll: false });
+  game.startWave(1);
   assert.equal(game.state.runPhase, "INTRODUCTION_PENDING");
-  const pending = game.state.encounterController.pendingReservations[0];
-  assert.ok(pending?.reservation.area > 0);
-  const heldType = pending.enemy.type;
+  assert.equal(game.state.encounterController.pendingReservations.length, 0);
+  assert.equal(game.enemies.some(candidate => ["tank", "gunner"].includes(candidate.type)), false);
   game.update(0);
   assert.equal(game.state.runPhase, "INTRODUCTION_ACTIVE");
+  assert.equal(game.state.currentEnemyIntroduction.type, "tank");
   const elapsed = game.state.waveRuntime.elapsedTime;
   game.update(99);
   assert.equal(game.state.waveRuntime.elapsedTime, elapsed);
-  assert.equal(game.state.encounterController.pendingReservations.length, 1);
+  game.dismissEnemyIntroduction();
+  assert.equal(game.state.runPhase, "INTRODUCTION_PENDING");
+  game.update(0);
+  assert.equal(game.state.currentEnemyIntroduction.type, "gunner");
   game.dismissEnemyIntroduction();
   assert.equal(game.state.runPhase, "WAVE_ACTIVE");
   assert.equal(game.state.encounterController.pendingReservations.length, 0);
-  assert.equal(game.enemies.at(-1).type, heldType);
 });
 
 test("Continuous Encounter telemetry exposes Fill, placement, lifecycle, credits and immutable Progress fields", () => {

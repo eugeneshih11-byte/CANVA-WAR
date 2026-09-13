@@ -5,16 +5,33 @@ const Weapons = require("../weapons.js");
 const close = (actual, expected, tolerance = 1e-12) =>
   assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} should equal ${expected}`);
 
-test("Starter Weapon is the immutable central combat definition", () => {
+test("six immutable production Weapons expose distinct attack identities", () => {
   assert.deepEqual(Weapons.STARTER, {
-    id: "starter", name: "Starter", damage: 1, fireRate: 4,
+    id: "starter", name: "Starter", attackKind: "projectile",
+    supportedWeaponUpgrades: ["rapid-fire", "heavy-shot", "split-shot"], damage: 2, fireRate: 4,
     bulletSpeed: 480, bulletSize: 10, projectileCount: 1,
     spreadDegrees: 0, pierce: 0
   });
+  assert.deepEqual(Object.keys(Weapons.DEFINITIONS),
+    ["starter", "scatter", "piercer", "burst", "launcher", "arc-blade"]);
+  assert.equal(Weapons.DEFINITIONS.scatter.projectileCount, 5);
+  assert.equal(Weapons.DEFINITIONS.piercer.pierce, 4);
+  assert.equal(Weapons.DEFINITIONS.burst.burstCount, 3);
+  assert.equal(Weapons.DEFINITIONS.launcher.explosionRadius, 80);
+  assert.equal(Weapons.DEFINITIONS["arc-blade"].attackKind, "arc");
   assert.equal(Weapons.DEFINITIONS.starter, Weapons.STARTER);
   assert.equal(Object.isFrozen(Weapons.STARTER), true);
   assert.equal(Object.isFrozen(Weapons.DEFINITIONS), true);
   assert.equal(Weapons.MAX_FIRE_RATE, 12);
+});
+
+test("Scatter fan is wide, symmetric, and deterministic", () => {
+  const scatter = Weapons.DEFINITIONS.scatter;
+  const angles = Weapons.getProjectileAngles(0, scatter.projectileCount, scatter.spreadDegrees);
+  assert.equal(angles.length, 5);
+  assert.equal(angles[0], -angles[4]);
+  assert.equal(angles[1], -angles[3]);
+  assert.equal(angles[2], 0);
 });
 
 test("one projectile follows the exact aim angle", () => {
@@ -47,4 +64,3 @@ test("seeded RNG streams are deterministic and independent", () => {
   assert.notDeepEqual(values, Array.from({ length: 5 }, () => different()));
   assert.ok(values.every(value => value >= 0 && value < 1));
 });
-

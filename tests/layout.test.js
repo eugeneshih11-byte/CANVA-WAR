@@ -124,10 +124,11 @@ test("viewport shell keeps logical Canvas dimensions and isolates overlay input"
   assert.match(styleSource, /\.playtest-panel\s*\{[^}]*position:\s*fixed;[^}]*overflow:\s*auto;/s);
 });
 
-test("Hub and meta views remain viewport-bound with a dominant Play control", () => {
+test("Hub, meta, and Codex views remain viewport-bound with a dominant Play control", () => {
   assert.match(styleSource, /html,\s*body\s*\{[^}]*overflow:\s*hidden;/s);
-  assert.match(styleSource, /\.hub-view,\s*\.meta-view\s*\{[^}]*min-height:\s*100dvh;[^}]*overflow:\s*hidden;/s);
+  assert.match(styleSource, /\.hub-view,\s*\.meta-view,\s*\.codex-view\s*\{[^}]*min-height:\s*100dvh;[^}]*overflow:\s*hidden;/s);
   assert.match(styleSource, /\.hub-panel,\s*\.meta-panel\s*\{[^}]*width:\s*min\(720px, calc\(100vw - 48px\)\);/s);
   assert.match(styleSource, /\.play-button\s*\{[^}]*min-height:\s*82px;/s);
-  assert.match(styleSource, /\.meta-menu\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);/s);
+  assert.match(styleSource, /\.meta-menu\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\);/s);
+  assert.match(styleSource, /\.codex-panel\s*\{[^}]*max-height:\s*calc\(100dvh - 32px\);/s);
 });

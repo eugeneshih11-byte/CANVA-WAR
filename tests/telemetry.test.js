@@ -545,3 +545,64 @@ test("Run and session report envelopes are versioned, serializable plain data", 
   assert.equal(exported.runs[0].encounters[0].attackEvents, 0);
   assert.deepEqual(telemetry.getRunReport(), report);
 });
+
+test("combat-pass telemetry observes density, onboarding, collision, loadout, and per-Weapon outcomes", () => {
+  const telemetry = create();
+  const loadoutPlayer = { ...player, loadout: { slotA: "launcher", slotB: "arc-blade",
+    activeWeapon: "launcher", activeSlot: "A" } };
+  telemetry.startRun({ player: loadoutPlayer });
+  telemetry.startEncounter({ type: "wave", definition: { ...wave,
+    eligibleEnemyTypes: ["normal", "fast"] }, player: loadoutPlayer });
+  telemetry.recordContinuousFrame({ deltaTime: 1,
+    fill: { capacityArea: 448584, visibleFill: 0.2, spawnReservedFill: 0.03,
+      returnReservedFill: 0.01, reservedFill: 0.04, projectedFill: 0.24 },
+    controller: { normalCredit: 5, comingCredit: 7, comingCommittedArea: 11,
+      comingPeakProjectedFill: 0.52, spawnHistory: ["normal"], waveProgressArmed: true,
+      nRef: 8, target: 16, progress: 3, settlingDuration: 0, pendingReservations: [] },
+    lifecycleCounts: { ACTIVE: 9 }, effectiveOpeningTarget: 0.2, managedCount: 12 });
+  telemetry.recordDispatchPulse({ reservationsCommitted: 2 });
+  telemetry.recordSpawnTypeRejected({ reason: "managed-cap" });
+  telemetry.recordSpawnTypeRejected({ type: "tank", reason: "fill" });
+  telemetry.recordWaveComing({ startFill: 0.25, selectedDelta: 0.27,
+    delta: 0.27, target: 0.52, budgetArea: 121118 });
+  telemetry.recordEnemyEligibility({ eligibleTypes: ["normal", "fast", "tank", "gunner"],
+    newlyUnlockedTypes: ["tank", "gunner"], newlyIntroducedTypes: ["tank"],
+    introductionSuppressedTypes: ["gunner"] });
+  telemetry.recordPlayerEnemyOverlap({ penetration: 18, corrections: 4 });
+  telemetry.recordWeaponSwitch({ activeWeapon: "arc-blade" });
+  telemetry.recordWeaponAttack({ weaponId: "launcher" });
+  telemetry.recordWeaponProjectile({ weaponId: "launcher" });
+  telemetry.recordWeaponHit({ weaponId: "launcher", damage: 2 });
+  telemetry.recordWeaponKill({ weaponId: "launcher" });
+  telemetry.recordWeaponPierce({ weaponId: "launcher" });
+  telemetry.recordWeaponExplosion({ weaponId: "launcher", targetCount: 3 });
+  telemetry.recordArcBladeSweep({ weaponId: "launcher", targetCount: 2 });
+  telemetry.recordBurstShot({ weaponId: "launcher" });
+  frame(telemetry, { deltaTime: 2 });
+
+  const encounter = currentEncounter(telemetry);
+  assert.deepEqual(encounter.configuredFillBand, { minimum: 0.2, target: 0.25, maximum: 0.3, ceiling: 0.7 });
+  assert.equal(encounter.effectiveOpeningTarget, 0.2);
+  assert.equal(encounter.managedRegularEnemyCount, 12);
+  assert.equal(encounter.peakManagedRegularEnemyCount, 12);
+  assert.equal(encounter.dispatchPulseCount, 1);
+  assert.deepEqual(encounter.reservationsCommittedByPulse, [2]);
+  assert.equal(encounter.spawnBlockedByManagedCap, 1);
+  assert.equal(encounter.spawnBlockedByFill, 1);
+  assert.equal(encounter.waveComingStartFill, 0.25);
+  assert.equal(encounter.waveComingSelectedDelta, 0.27);
+  assert.equal(encounter.waveComingTarget, 0.52);
+  assert.equal(encounter.waveComingPeakProjectedFill, 0.52);
+  assert.deepEqual(encounter.eligibleEnemyTypes, ["normal", "fast", "tank", "gunner"]);
+  assert.deepEqual(encounter.newlyIntroducedTypes, ["tank"]);
+  assert.equal(encounter.playerEnemyOverlapEvents, 1);
+  assert.equal(encounter.maxPlayerEnemyPenetration, 18);
+  assert.equal(encounter.playerEnemySeparationCorrections, 4);
+  assert.equal(encounter.weaponSlotA, "launcher");
+  assert.equal(encounter.weaponSlotB, "arc-blade");
+  assert.equal(encounter.activeWeapon, "arc-blade");
+  assert.equal(encounter.weaponSwitchCount, 1);
+  assert.deepEqual(encounter.weaponMetrics.launcher, { attacks: 1, projectiles: 1, hits: 1,
+    damage: 2, kills: 1, pierceEvents: 1, explosionTargets: 3,
+    arcBladeTargets: 2, burstShots: 1, killsPerActiveCombatSecond: 0.5 });
+});

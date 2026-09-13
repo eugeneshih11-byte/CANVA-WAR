@@ -49,7 +49,9 @@
     function encounterSnapshot() {
       const data = encounter.data, duration = data.encounterElapsedTime;
       const actualClearTime = data.outcome === "clear" ? duration : null;
-      return copy({ ...data, encounterElapsedTime: duration, actualClearTime, activeCombatTime: duration,
+      const weaponMetrics = Object.fromEntries(Object.entries(data.weaponMetrics).map(([id, metrics]) =>
+        [id, { ...metrics, killsPerActiveCombatSecond: duration > 0 ? metrics.kills / duration : 0 }]));
+      return copy({ ...data, weaponMetrics, encounterElapsedTime: duration, actualClearTime, activeCombatTime: duration,
         clearTimeRatio: actualClearTime !== null && data.analysis.expectedClearTime > 0
           ? actualClearTime / data.analysis.expectedClearTime : null,
         averageActiveEnemyCount: duration > 0 ? encounter.enemyIntegral / duration : 0,
@@ -148,7 +150,15 @@
         visibleFill: 0, spawnReservedFill: 0, returnReservedFill: 0, reservedFill: 0, projectedFill: 0,
         fillIntegral: 0, fillSampleTime: 0, minimumVisibleFill: null, maximumVisibleFill: 0,
         normalRefillEvents: 0, normalRefillRequestedArea: 0,
-        waveComingDelta: 0, waveComingTarget: 0, waveComingBudgetArea: 0, waveComingCommittedArea: 0,
+        configuredFillBand: { minimum: 0.20, target: 0.25, maximum: 0.30, ceiling: 0.70 },
+        effectiveOpeningTarget: 0, managedRegularEnemyCount: 0, peakManagedRegularEnemyCount: 0,
+        dispatchPulseCount: 0, reservationsCommittedByPulse: [], spawnBlockedByFill: 0,
+        spawnBlockedByManagedCap: 0,
+        waveComingStartFill: 0, waveComingSelectedDelta: 0, waveComingDelta: 0,
+        waveComingTarget: 0, waveComingBudgetArea: 0, waveComingCommittedArea: 0,
+        waveComingPeakProjectedFill: 0,
+        eligibleEnemyTypes: source.eligibleEnemyTypes || [], newlyUnlockedTypes: [],
+        newlyIntroducedTypes: [], introductionSuppressedTypes: [],
         spawnCreditNormal: 0, spawnCreditComing: 0, spawnTypeHistory: [],
         spawnTypeRejectedByCap: {}, spawnTypeRejectedByFill: {}, spawnTypeRejectedByPlacement: {},
         spawnPlacementAttempts: 0, spawnPlacementFailures: 0, spawnPlacementFailureReason: {},
@@ -158,6 +168,12 @@
         enteringEnemyCount: 0, nearOffscreenEnemyCount: 0, returningEnemyCount: 0,
         waveProgressArmed: false, N_ref: 0, K_target: 0, currentWaveProgress: 0,
         settlingDuration: 0,
+        playerEnemyOverlapEvents: 0, maxPlayerEnemyPenetration: 0,
+        playerEnemySeparationCorrections: 0,
+        weaponSlotA: playerStart.loadout?.slotA || playerStart.weapon?.id || null,
+        weaponSlotB: playerStart.loadout?.slotB || null,
+        activeWeapon: playerStart.loadout?.activeWeapon || playerStart.weapon?.id || null,
+        weaponSwitchCount: 0, weaponMetrics: {},
         outcome: null };
       encounter = { data, enemyIntegral: 0, threatIntegral: 0, pressureBlocked: false, released: new Set(),
         behaviorEvents: {
@@ -369,8 +385,10 @@
       recordTetherBreak: safe("record Tether break", () => {
         if (encounter) encounter.data.tether.breaks++;
       }),
-      recordWaveComing: safe("record Wave Coming", ({ delta, target, budgetArea } = {}) => {
+      recordWaveComing: safe("record Wave Coming", ({ startFill, selectedDelta, delta, target, budgetArea } = {}) => {
         if (!encounter) return;
+        encounter.data.waveComingStartFill = nonNegative(startFill);
+        encounter.data.waveComingSelectedDelta = nonNegative(selectedDelta);
         encounter.data.waveComingDelta = nonNegative(delta);
         encounter.data.waveComingTarget = nonNegative(target);
         encounter.data.waveComingBudgetArea = nonNegative(budgetArea);
@@ -396,7 +414,10 @@
         increment(encounter.data.spawnTypeRejectedByPlacement, details.selectedType || "unknown");
       }),
       recordSpawnTypeRejected: safe("record rejected spawn type", ({ type, reason } = {}) => {
-        if (!encounter || !type) return;
+        if (!encounter) return;
+        if (reason === "managed-cap") encounter.data.spawnBlockedByManagedCap++;
+        if (reason === "fill") encounter.data.spawnBlockedByFill++;
+        if (!type) return;
         if (reason === "cap") increment(encounter.data.spawnTypeRejectedByCap, type);
         if (reason === "fill") increment(encounter.data.spawnTypeRejectedByFill, type);
       }),
@@ -409,7 +430,8 @@
         encounter.data.K_target = nonNegative(details.target);
         encounter.data.settlingDuration = nonNegative(details.settlingDuration);
       }),
-      recordContinuousFrame: safe("record Continuous Encounter frame", ({ deltaTime, fill, controller, lifecycleCounts } = {}) => {
+      recordContinuousFrame: safe("record Continuous Encounter frame", ({ deltaTime, fill, controller,
+        lifecycleCounts, effectiveOpeningTarget, managedCount } = {}) => {
         if (!encounter || !fill || !controller) return;
         for (const key of ["visibleFill", "spawnReservedFill", "returnReservedFill", "reservedFill", "projectedFill"]) {
           encounter.data[key] = nonNegative(fill[key]);
@@ -423,6 +445,12 @@
         encounter.data.spawnCreditNormal = nonNegative(controller.normalCredit);
         encounter.data.spawnCreditComing = nonNegative(controller.comingCredit);
         encounter.data.waveComingCommittedArea = nonNegative(controller.comingCommittedArea);
+        encounter.data.waveComingPeakProjectedFill = Math.max(encounter.data.waveComingPeakProjectedFill,
+          nonNegative(controller.comingPeakProjectedFill));
+        encounter.data.effectiveOpeningTarget = nonNegative(effectiveOpeningTarget);
+        encounter.data.managedRegularEnemyCount = nonNegative(managedCount);
+        encounter.data.peakManagedRegularEnemyCount = Math.max(encounter.data.peakManagedRegularEnemyCount,
+          nonNegative(managedCount));
         encounter.data.spawnTypeHistory = [...(controller.spawnHistory || [])];
         encounter.data.waveProgressArmed = Boolean(controller.waveProgressArmed);
         encounter.data.N_ref = nonNegative(controller.nRef);
@@ -443,6 +471,70 @@
           encounter.data.normalRefillRequestedArea += nonNegative(area);
         }
         if (type) increment(encounter.data.enemyComposition, type);
+      }),
+      recordDispatchPulse: safe("record dispatch pulse", ({ reservationsCommitted } = {}) => {
+        if (!encounter) return;
+        encounter.data.dispatchPulseCount++;
+        encounter.data.reservationsCommittedByPulse.push(nonNegative(reservationsCommitted));
+      }),
+      recordEnemyEligibility: safe("record Enemy eligibility", (details = {}) => {
+        if (!encounter) return;
+        encounter.data.eligibleEnemyTypes = [...(details.eligibleTypes || [])];
+        encounter.data.newlyUnlockedTypes = [...(details.newlyUnlockedTypes || [])];
+        encounter.data.newlyIntroducedTypes = [...(details.newlyIntroducedTypes || [])];
+        encounter.data.introductionSuppressedTypes = [...(details.introductionSuppressedTypes || [])];
+      }),
+      recordPlayerEnemyOverlap: safe("record Player Enemy overlap", ({ penetration, corrections } = {}) => {
+        if (!encounter) return;
+        encounter.data.playerEnemyOverlapEvents++;
+        encounter.data.maxPlayerEnemyPenetration = Math.max(encounter.data.maxPlayerEnemyPenetration,
+          nonNegative(penetration));
+        encounter.data.playerEnemySeparationCorrections += nonNegative(corrections);
+      }),
+      recordWeaponSwitch: safe("record Weapon switch", ({ activeWeapon } = {}) => {
+        if (!encounter) return;
+        encounter.data.weaponSwitchCount++;
+        encounter.data.activeWeapon = activeWeapon || encounter.data.activeWeapon;
+      }),
+      recordWeaponAttack: safe("record Weapon attack", ({ weaponId } = {}) => {
+        if (!encounter || !weaponId) return;
+        const metrics = encounter.data.weaponMetrics[weaponId] ||= { attacks: 0, projectiles: 0,
+          hits: 0, damage: 0, kills: 0, pierceEvents: 0, explosionTargets: 0,
+          arcBladeTargets: 0, burstShots: 0 };
+        metrics.attacks++;
+      }),
+      recordWeaponProjectile: safe("record Weapon projectile", ({ weaponId } = {}) => {
+        if (!encounter || !weaponId) return;
+        const metrics = encounter.data.weaponMetrics[weaponId] ||= { attacks: 0, projectiles: 0,
+          hits: 0, damage: 0, kills: 0, pierceEvents: 0, explosionTargets: 0,
+          arcBladeTargets: 0, burstShots: 0 };
+        metrics.projectiles++;
+      }),
+      recordWeaponHit: safe("record Weapon hit", ({ weaponId, damage } = {}) => {
+        if (!encounter || !weaponId) return;
+        const metrics = encounter.data.weaponMetrics[weaponId] ||= { attacks: 0, projectiles: 0,
+          hits: 0, damage: 0, kills: 0, pierceEvents: 0, explosionTargets: 0,
+          arcBladeTargets: 0, burstShots: 0 };
+        metrics.hits++; metrics.damage += nonNegative(damage);
+      }),
+      recordWeaponKill: safe("record Weapon kill", ({ weaponId } = {}) => {
+        if (!encounter || !weaponId) return;
+        const metrics = encounter.data.weaponMetrics[weaponId] ||= { attacks: 0, projectiles: 0,
+          hits: 0, damage: 0, kills: 0, pierceEvents: 0, explosionTargets: 0,
+          arcBladeTargets: 0, burstShots: 0 };
+        metrics.kills++;
+      }),
+      recordWeaponPierce: safe("record Weapon pierce", ({ weaponId } = {}) => {
+        if (encounter?.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].pierceEvents++;
+      }),
+      recordWeaponExplosion: safe("record Weapon explosion", ({ weaponId, targetCount } = {}) => {
+        if (encounter?.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].explosionTargets += nonNegative(targetCount);
+      }),
+      recordArcBladeSweep: safe("record Arc Blade sweep", ({ weaponId, targetCount } = {}) => {
+        if (encounter?.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].arcBladeTargets += nonNegative(targetCount);
+      }),
+      recordBurstShot: safe("record Burst shot", ({ weaponId } = {}) => {
+        if (encounter?.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].burstShots++;
       }),
       recordEnemyIntroduction: safe("record Enemy introduction", ({ enemyType } = {}) => {
         if (run && typeof enemyType === "string" && enemyType && !run.enemyIntroductionsShown.includes(enemyType)) {

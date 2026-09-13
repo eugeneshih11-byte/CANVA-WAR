@@ -146,12 +146,21 @@
   const STAGES = freeze([{
     id: "stage-1", battlefieldId: "stage-1-field-a", waveCount: 5, enemyPool: ["normal", "fast", "tank"],
     continuousEnemyTypes: ["normal", "fast", "tank", "interceptor", "denier", "support", "gunner", "artillery", "trapper", "tether"],
+    continuousEligibility: [
+      ["normal", "fast"],
+      ["normal", "fast", "tank", "gunner"],
+      ["normal", "fast", "tank", "gunner", "interceptor", "trapper"],
+      ["normal", "fast", "tank", "gunner", "interceptor", "trapper", "denier", "support"],
+      ["normal", "fast", "tank", "gunner", "interceptor", "trapper", "denier", "support", "artillery", "tether"]
+    ],
     templatePool: Object.keys(TEMPLATES), threatCurve: [8, 10, 12, 14, 17],
     maxActiveThreatCurve: [6, 7, 8.5, 10, 12],
     availability: [["normal"], ["normal", "fast"], ["normal", "fast", "tank"],
       ["normal", "fast", "tank"], ["normal", "fast", "tank"]],
     templates: [["basic"], ["basic", "rush"], ["basic", "rush", "heavy"],
       ["rush", "heavy", "escalation"], ["heavy", "escalation", "mixed"]],
+    introductions: [["normal", "fast"], ["tank", "gunner"], ["interceptor", "trapper"],
+      ["denier", "support"], ["artillery", "tether"]],
     mechanics: [], enemyScaling: { hpMultiplier: 1, damageMultiplier: 1, speedMultiplier: 1 }, boss: "boss-1"
   }]);
   const PROTOTYPE_STAGES = freeze([{
@@ -454,7 +463,14 @@
   function getStagesForSearch(search = "") {
     return isPrototypeEnabled(search) ? PROTOTYPE_STAGES : STAGES;
   }
+  function getContinuousEligibleTypes(stage, waveIndex) {
+    const pool = stage?.continuousEligibility?.[waveIndex];
+    if (!Array.isArray(pool) || !pool.length || pool.some(type => !ENEMIES[type])) {
+      throw new Error("Invalid Continuous Encounter eligibility");
+    }
+    return pool.slice();
+  }
   global.Encounters = Object.freeze({ CONFIG, COMBAT_VARIETY_V1, ENEMIES, TEMPLATES, STAGES, PROTOTYPE_STAGES, BOSSES,
-    isPrototypeEnabled, getStagesForSearch, templateWeight,
+    isPrototypeEnabled, getStagesForSearch, getContinuousEligibleTypes, templateWeight,
     validateWave, analyzeWave, generateWave, safeFallback, createWaveRuntime, syncWaveRuntime, updateWaveRuntime, getScaledEnemyStats });
 })(globalThis);
