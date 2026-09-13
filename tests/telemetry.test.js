@@ -558,7 +558,9 @@ test("combat-pass telemetry observes density, onboarding, collision, loadout, an
       returnReservedFill: 0.01, reservedFill: 0.04, projectedFill: 0.24 },
     controller: { normalCredit: 5, comingCredit: 7, comingCommittedArea: 11,
       comingPeakProjectedFill: 0.52, spawnHistory: ["normal"], waveProgressArmed: true,
-      nRef: 8, target: 16, progress: 3, settlingDuration: 0, pendingReservations: [] },
+      nRef: 8, target: 16, progress: 3, settlingDuration: 0,
+      waveProgressReadinessStableTime: 0.5,
+      waveProgressReadinessBlockedReason: "armed", pendingReservations: [] },
     lifecycleCounts: { ACTIVE: 9 }, effectiveOpeningTarget: 0.2, managedCount: 12 });
   telemetry.recordDispatchPulse({ reservationsCommitted: 2 });
   telemetry.recordSpawnTypeRejected({ reason: "managed-cap" });
@@ -581,8 +583,10 @@ test("combat-pass telemetry observes density, onboarding, collision, loadout, an
   frame(telemetry, { deltaTime: 2 });
 
   const encounter = currentEncounter(telemetry);
-  assert.deepEqual(encounter.configuredFillBand, { minimum: 0.2, target: 0.25, maximum: 0.3, ceiling: 0.7 });
+  assert.deepEqual(encounter.configuredFillBand, { minimum: 0.15, target: 0.2, maximum: 0.25, ceiling: 0.7 });
   assert.equal(encounter.effectiveOpeningTarget, 0.2);
+  assert.equal(encounter.waveProgressReadinessStableTime, 0.5);
+  assert.equal(encounter.waveProgressReadinessBlockedReason, "armed");
   assert.equal(encounter.managedRegularEnemyCount, 12);
   assert.equal(encounter.peakManagedRegularEnemyCount, 12);
   assert.equal(encounter.dispatchPulseCount, 1);

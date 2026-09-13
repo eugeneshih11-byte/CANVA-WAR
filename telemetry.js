@@ -150,7 +150,7 @@
         visibleFill: 0, spawnReservedFill: 0, returnReservedFill: 0, reservedFill: 0, projectedFill: 0,
         fillIntegral: 0, fillSampleTime: 0, minimumVisibleFill: null, maximumVisibleFill: 0,
         normalRefillEvents: 0, normalRefillRequestedArea: 0,
-        configuredFillBand: { minimum: 0.20, target: 0.25, maximum: 0.30, ceiling: 0.70 },
+        configuredFillBand: { minimum: 0.15, target: 0.20, maximum: 0.25, ceiling: 0.70 },
         effectiveOpeningTarget: 0, managedRegularEnemyCount: 0, peakManagedRegularEnemyCount: 0,
         dispatchPulseCount: 0, reservationsCommittedByPulse: [], spawnBlockedByFill: 0,
         spawnBlockedByManagedCap: 0,
@@ -167,7 +167,8 @@
         lifecycleTransitions: {}, lifecycleCounts: {}, reservedEnemyCount: 0,
         enteringEnemyCount: 0, nearOffscreenEnemyCount: 0, returningEnemyCount: 0,
         waveProgressArmed: false, N_ref: 0, K_target: 0, currentWaveProgress: 0,
-        settlingDuration: 0,
+        settlingDuration: 0, waveProgressReadinessStableTime: 0,
+        waveProgressReadinessBlockedReason: "opening-ramp",
         playerEnemyOverlapEvents: 0, maxPlayerEnemyPenetration: 0,
         playerEnemySeparationCorrections: 0,
         weaponSlotA: playerStart.loadout?.slotA || playerStart.weapon?.id || null,
@@ -429,6 +430,9 @@
         encounter.data.N_ref = nonNegative(details.nRef);
         encounter.data.K_target = nonNegative(details.target);
         encounter.data.settlingDuration = nonNegative(details.settlingDuration);
+        encounter.data.waveProgressReadinessStableTime = nonNegative(details.waveProgressReadinessStableTime);
+        encounter.data.waveProgressReadinessBlockedReason =
+          details.waveProgressReadinessBlockedReason || encounter.data.waveProgressReadinessBlockedReason;
       }),
       recordContinuousFrame: safe("record Continuous Encounter frame", ({ deltaTime, fill, controller,
         lifecycleCounts, effectiveOpeningTarget, managedCount } = {}) => {
@@ -457,6 +461,10 @@
         encounter.data.K_target = nonNegative(controller.target);
         encounter.data.currentWaveProgress = nonNegative(controller.progress);
         encounter.data.settlingDuration = nonNegative(controller.settlingDuration);
+        encounter.data.waveProgressReadinessStableTime =
+          nonNegative(controller.waveProgressReadinessStableTime);
+        encounter.data.waveProgressReadinessBlockedReason =
+          controller.waveProgressReadinessBlockedReason || encounter.data.waveProgressReadinessBlockedReason;
         encounter.data.enteringEnemyCount = lifecycleCounts?.ENTERING || 0;
         encounter.data.nearOffscreenEnemyCount = lifecycleCounts?.NEAR_OFFSCREEN || 0;
         encounter.data.returningEnemyCount = lifecycleCounts?.RETURNING || 0;

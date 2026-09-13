@@ -1262,6 +1262,7 @@ test("Abandon overlay pauses, cancels, and settles only the checkpoint", () => {
 
 test("canonical reset clears encounter timers/history and preserves persistent meta", () => {
   const game = loadGame(); startGame(game);
+  game.getState().encounterController.waveProgressReadinessStableTime = 0.4;
   finishWave(game);
   game.startBossEncounter(); game.update(0.5);
   game.getSaveData().progression.points = 25;
@@ -1274,6 +1275,8 @@ test("canonical reset clears encounter timers/history and preserves persistent m
   assert.equal(state.waveRuntime.activeThreat, 0); assert.equal(state.waveRuntime.damageTaken, 0);
   assert.equal(state.intermissionTimer, 0); assert.equal(state.stageClearTimer, 0);
   assert.equal(state.bossRuntime, null); assert.equal(state.boss, null);
+  assert.equal(state.encounterController.waveProgressReadinessStableTime, 0);
+  assert.equal(state.encounterController.waveProgressReadinessBlockedReason, "opening-ramp");
   assert.equal(JSON.stringify(game.getSaveData()), saved);
 });
 
@@ -1328,6 +1331,7 @@ test("Death uses current state while Abandon uses the secured checkpoint during 
   for (const phase of ["WAVE_COMING", "SETTLING"]) {
     const death = loadGame(); startGame(death); finishWave(death);
     death.getState().encounterController.phase = phase;
+    death.getState().encounterController.waveProgressReadinessStableTime = 0.4;
     const checkpointScore = death.getRunSettlementState().securedCheckpoint.score;
     death.settlement.awardScore(death.getRunSettlementState(), "enemyKill", 9);
     death.player.hp = 1;
@@ -1335,6 +1339,8 @@ test("Death uses current state while Abandon uses the secured checkpoint during 
       width: 20, height: 20, visualWidth: 20, visualHeight: 20, hp: 1, lifecycle: "ACTIVE", speed: 0 }));
     death.handlePlayerEnemyCollisions();
     assert.equal(death.getState().runPhase, "RUN_DEAD");
+    assert.equal(death.getState().encounterController.waveProgressReadinessStableTime, 0);
+    assert.equal(death.getState().encounterController.waveProgressReadinessBlockedReason, "run-ended");
     assert.equal(death.getLastSettlement().finalScore, checkpointScore + 9, `death ${phase}`);
 
     const abandon = loadGame(); startGame(abandon); finishWave(abandon);
@@ -1817,14 +1823,22 @@ test("all ten Introduction previews use the shared renderer without gameplay or 
 test("moving-Camera Continuous Encounter stress stays bounded and leaves no pending reservation", () => {
   const game = loadGame(); startGame(game);
   let peakCount = 0;
-  for (let frame = 0; frame < 180; frame++) {
+  let sawReturnLifecycleWhileSettling = false;
+  let lastFill = null;
+  for (let frame = 0; frame < 600; frame++) {
     game.player.x = 780 + Math.sin(frame / 30) * 360;
     game.player.y = 580 + Math.cos(frame / 36) * 260;
     game.updateCameraRuntime();
     const fill = game.updateContinuousEncounter(1 / 30);
+    lastFill = fill;
     if (game.getState().runPhase === "INTRODUCTION_PENDING") game.update(0);
     if (game.getState().runPhase === "INTRODUCTION_ACTIVE") game.dismissEnemyIntroduction();
     peakCount = Math.max(peakCount, game.enemies.length);
+    if (!game.getState().encounterController.waveProgressArmed &&
+        game.enemies.some(enemy => [game.continuousEncounter.LIFECYCLES.NEAR_OFFSCREEN,
+          game.continuousEncounter.LIFECYCLES.RETURNING].includes(enemy.lifecycle))) {
+      sawReturnLifecycleWhileSettling = true;
+    }
     assert.ok(fill.projectedFill >= 0);
     assert.ok(game.getState().encounterController.normalCredit >= 0);
     assert.ok(game.getState().encounterController.comingCredit >= 0);
@@ -1834,6 +1848,10 @@ test("moving-Camera Continuous Encounter stress stays bounded and leaves no pend
   }
   const controller = game.getState().encounterController;
   assert.equal(controller.pendingReservations.length, 0);
+  assert.equal(sawReturnLifecycleWhileSettling, true);
+  assert.equal(controller.waveProgressArmed, true);
+  assert.ok(controller.nRef > 0);
+  assert.ok(controller.target > 0);
   assert.ok(peakCount > 10);
   const counts = game.enemies.reduce((result, enemy) => {
     result[enemy.type] = (result[enemy.type] || 0) + 1; return result;
@@ -1843,6 +1861,13 @@ test("moving-Camera Continuous Encounter stress stays bounded and leaves no pend
   for (const [type, cap] of Object.entries(game.continuousEncounter.CALIBRATION.mechanicCaps)) {
     assert.ok((counts[type] || 0) <= cap, type);
   }
+  for (let kill = 1; kill < controller.target; kill++) {
+    assert.equal(game.continuousEncounter.recordKill(controller, true), false);
+  }
+  assert.equal(game.continuousEncounter.recordKill(controller, true), true);
+  game.handleLogicalWaveComplete(lastFill);
+  assert.equal(game.getState().stageRuntime.waveIndex, 1);
+  assert.equal(controller.phase, game.continuousEncounter.PHASES.WAVE_COMING);
 });
 
 test("all living carried enemies update and collide independent of original Wave id", () => {

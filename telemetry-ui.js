@@ -62,7 +62,7 @@
           const row = element("tr");
           const values = [encounter.type === "boss" ? encounter.bossId : `Wave ${encounter.waveIndex + 1}`,
             encounter.type === "boss" ? "Boss" : (encounter.templateId || "continuous"), encounter.type === "boss" ? "—" :
-              `V/P ${format(encounter.visibleFill)}/${format(encounter.projectedFill)} · avg ${format(encounter.averageVisibleFill)} · K ${format(encounter.currentWaveProgress)}/${format(encounter.K_target)} · N ${format(encounter.N_ref)}`,
+              `V/P ${format(encounter.visibleFill)}/${format(encounter.projectedFill)} · avg ${format(encounter.averageVisibleFill)} · K ${format(encounter.currentWaveProgress)}/${format(encounter.K_target)} · N ${format(encounter.N_ref)} · Arm ${encounter.waveProgressReadinessBlockedReason || "unknown"} ${seconds(encounter.waveProgressReadinessStableTime)}`,
             encounterTimeSummary(encounter), encounterClearRatio(encounter),
             `${format(encounter.attackEvents)} / ${format(encounter.shotsFired)}`,
             format(encounter.damageTaken), format(encounter.peakActiveEnemyCount),

@@ -5,9 +5,9 @@
     viewportWidth: 800,
     viewportHeight: 600,
     playerSpawnExclusionRadius: 100,
-    normalFillMinimum: 0.20,
-    normalFillTarget: 0.25,
-    normalFillMaximum: 0.30,
+    normalFillMinimum: 0.15,
+    normalFillTarget: 0.20,
+    normalFillMaximum: 0.25,
     controllerCeiling: 0.70,
     distanceBands: Object.freeze({
       NEAR: Object.freeze([0.08, 0.20]),
@@ -28,10 +28,11 @@
     comingDispatchMaximum: 3,
     comingDispatchInterval: 0.15,
     maxManagedRegularEnemies: 40,
+    progressReadinessDuration: 0.5,
     openingRamp: Object.freeze([
-      Object.freeze({ until: 2, target: 0.10 }),
-      Object.freeze({ until: 5, target: 0.20 }),
-      Object.freeze({ until: Infinity, target: 0.25 })
+      Object.freeze({ until: 2, target: 0.05 }),
+      Object.freeze({ until: 5, target: 0.15 }),
+      Object.freeze({ until: Infinity, target: 0.20 })
     ]),
     placementAttemptsPerBand: 8,
     placementCandidateScanLimit: 48,
@@ -202,6 +203,8 @@
       comingRemainingArea: 0,
       comingCommittedArea: 0,
       settlingDuration: 0,
+      waveProgressReadinessStableTime: 0,
+      waveProgressReadinessBlockedReason: "opening-ramp",
       spawnHistory: [],
       pendingReservations: [],
       nextReservationId: 1,
@@ -234,13 +237,25 @@
       const full = visualArea(enemy);
       return sum + (full > 0 ? intersectionArea(visualRect(enemy), viewport) / full : 0);
     }, 0);
+    const target = Math.ceil(nRef * CALIBRATION.turnoverCycles);
+    if (!(nRef > 0) || !(target > 0)) {
+      throw new Error("Cannot arm Wave Progress without a populated N_ref snapshot");
+    }
     controller.nRef = nRef;
-    controller.target = Math.max(1, Math.ceil(nRef * CALIBRATION.turnoverCycles));
+    controller.target = target;
     controller.progress = 0;
     controller.waveProgressArmed = true;
     controller.phase = PHASES.NORMAL;
     controller.settlingDuration = 0;
+    controller.waveProgressReadinessStableTime = 0;
+    controller.waveProgressReadinessBlockedReason = "armed";
     return controller.target;
+  }
+
+  function resetProgressReadiness(controller, reason = "opening-ramp") {
+    if (!controller) return;
+    controller.waveProgressReadinessStableTime = 0;
+    controller.waveProgressReadinessBlockedReason = reason;
   }
 
   function recordKill(controller, countsTowardEncounterProgress = true) {
@@ -248,6 +263,7 @@
     controller.progress += 1;
     if (controller.progress < controller.target) return false;
     controller.waveProgressArmed = false;
+    resetProgressReadiness(controller, "wave-transition");
     return true;
   }
 
@@ -270,6 +286,7 @@
     controller.comingCommittedArea = 0;
     controller.comingCredit = 0;
     controller.dispatchPulseCooldown = 0;
+    resetProgressReadiness(controller, "wave-transition");
     return budget;
   }
 
@@ -307,9 +324,29 @@
     return true;
   }
 
-  function canArmProgress(fill) {
-    return fill.visibleFill >= STRUCTURE.normalFillMinimum - EPSILON &&
-      fill.visibleFill <= STRUCTURE.normalFillMaximum + EPSILON && fill.reservedFill <= EPSILON;
+  function openingRampComplete(controller) {
+    if (controller.waveIndex !== 0) return true;
+    const lastRampBoundary = CALIBRATION.openingRamp
+      .filter(step => Number.isFinite(step.until)).at(-1)?.until || 0;
+    return controller.combatElapsed >= lastRampBoundary - EPSILON;
+  }
+
+  function progressReadiness(controller, fill, enemies = []) {
+    if (!openingRampComplete(controller)) return { ready: false, reason: "opening-ramp" };
+    if (fill.projectedFill < STRUCTURE.normalFillMinimum - EPSILON) {
+      return { ready: false, reason: "projected-fill-low" };
+    }
+    if (fill.projectedFill > STRUCTURE.normalFillMaximum + EPSILON) {
+      return { ready: false, reason: "projected-fill-high" };
+    }
+    const unresolvedReserved = controller.pendingReservations.length > 0 ||
+      enemies.some(enemy => enemy?.hp > 0 && enemy.lifecycle === LIFECYCLES.RESERVED);
+    if (unresolvedReserved) return { ready: false, reason: "unresolved-reserved" };
+    return { ready: true, reason: "ready-stabilizing" };
+  }
+
+  function canArmProgress(controller, fill, enemies = []) {
+    return progressReadiness(controller, fill, enemies).ready;
   }
 
   function effectiveNormalTarget(controller, waveIndex = controller.waveIndex) {
@@ -377,12 +414,22 @@
     controller.normalRefillEnabled = shouldEnableNormalRefill(fill.projectedFill, controller.normalRefillEnabled);
     if (controller.phase === PHASES.SETTLING) {
       controller.settlingDuration += Math.max(0, deltaTime);
-      if (canArmProgress(fill)) armProgress(controller, enemies, viewport);
+      const readiness = progressReadiness(controller, fill, enemies);
+      controller.waveProgressReadinessBlockedReason = readiness.reason;
+      if (readiness.ready) {
+        controller.waveProgressReadinessStableTime += dt;
+        if (controller.waveProgressReadinessStableTime + EPSILON >= CALIBRATION.progressReadinessDuration) {
+          armProgress(controller, enemies, viewport);
+        }
+      } else {
+        controller.waveProgressReadinessStableTime = 0;
+      }
     }
     if (controller.phase === PHASES.WAVE_COMING && controller.comingRemainingArea <= EPSILON &&
         !controller.pendingReservations.length) {
       controller.phase = PHASES.SETTLING;
       controller.settlingDuration = 0;
+      resetProgressReadiness(controller, controller.waveIndex === 0 ? "opening-ramp" : "ready-stabilizing");
     }
     return controller;
   }
@@ -391,8 +438,8 @@
     capacityArea, visualArea, visualRect, intersectionArea, isFullyInside,
     minimumSpawnCenterDistance, distanceBandPixels, computeFill, shouldEnableNormalRefill,
     candidateFits, createSeededRng, spawnWeight, selectType, legalTypes, createController,
-    addCredit, armProgress, recordKill, beginWaveComing, commitSpawn, cancelSpawn, establishSpawn,
-    canArmProgress, effectiveNormalTarget, dispatchPolicy, canDispatchPulse, recordDispatchPulse,
+    addCredit, armProgress, resetProgressReadiness, recordKill, beginWaveComing, commitSpawn, cancelSpawn, establishSpawn,
+    openingRampComplete, progressReadiness, canArmProgress, effectiveNormalTarget, dispatchPolicy, canDispatchPulse, recordDispatchPulse,
     isManagedRegularEnemy, managedRegularEnemyCount, canReserveManagedEnemy,
     updateLifecycle, updateController });
   global.ContinuousEncounter = api;

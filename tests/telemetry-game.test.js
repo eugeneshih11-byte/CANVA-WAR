@@ -958,7 +958,8 @@ test("Continuous Encounter telemetry exposes Fill, placement, lifecycle, credits
   for (const key of ["visibleFill", "spawnReservedFill", "returnReservedFill", "reservedFill", "projectedFill",
     "spawnCreditNormal", "spawnCreditComing", "spawnPlacementAttempts", "spawnPlacementFailures",
     "enteringEnemyCount", "nearOffscreenEnemyCount", "returningEnemyCount", "N_ref", "K_target",
-    "currentWaveProgress", "settlingDuration", "reservedEnemyCount", "placementRetryCount"]) {
+    "currentWaveProgress", "settlingDuration", "waveProgressReadinessStableTime",
+    "reservedEnemyCount", "placementRetryCount"]) {
     assert.equal(typeof encounter[key], "number", key);
   }
   assert.ok(encounter.spawnPlacementAttempts > 0);
@@ -966,6 +967,7 @@ test("Continuous Encounter telemetry exposes Fill, placement, lifecycle, credits
   assert.equal(Array.isArray(encounter.spawnTypeHistory), true);
   assert.equal(typeof encounter.spawnPlacementFailureReason, "object");
   assert.equal(typeof encounter.lifecycleCounts, "object");
+  assert.equal(typeof encounter.waveProgressReadinessBlockedReason, "string");
   assert.equal(typeof encounter.selectedType, "string");
   assert.equal(typeof encounter.preferredDistanceTag, "string");
 });

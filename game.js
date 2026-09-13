@@ -513,6 +513,8 @@ function startWave(index) {
       performanceAllowance: 0, scoreCapacity: 0, calibrationPending: "continuous-encounter" }) });
   stageRuntime.waveIndex = index;
   encounterController.waveIndex = index;
+  ContinuousEncounter.resetProgressReadiness(encounterController,
+    index === 0 ? "opening-ramp" : "wave-transition");
   waveRuntime = { waveId: currentWave.id, elapsedTime: 0, damageTaken: 0, analysis: currentWave.analysis,
     aliveEnemyCount: enemies.filter(enemy => enemy.hp > 0).length, isComplete: false,
     groupDelayElapsed: 0, nextSpawnGroupIndex: 0, spawnedEnemyCount: 0, activeThreat: 0 };
@@ -1190,7 +1192,9 @@ function updateContinuousEncounter(deltaTime) {
   ContinuousEncounter.updateController(encounterController, deltaTime, fill, enemies, viewport);
   if (phaseBefore !== encounterController.phase) observeTelemetry("recordEncounterPhase", () => ({
     from: phaseBefore, to: encounterController.phase, settlingDuration: encounterController.settlingDuration,
-    nRef: encounterController.nRef, target: encounterController.target }));
+    nRef: encounterController.nRef, target: encounterController.target,
+    waveProgressReadinessStableTime: encounterController.waveProgressReadinessStableTime,
+    waveProgressReadinessBlockedReason: encounterController.waveProgressReadinessBlockedReason }));
   const mayRefill = encounterController.phase === ContinuousEncounter.PHASES.WAVE_COMING ||
     ([ContinuousEncounter.PHASES.NORMAL, ContinuousEncounter.PHASES.SETTLING].includes(encounterController.phase) &&
       encounterController.normalRefillEnabled);
@@ -1807,6 +1811,7 @@ function settleRun(endReason) {
     return lastSettlement;
   }
 
+  ContinuousEncounter.resetProgressReadiness(encounterController, "run-ended");
   clearInput();
 
   const settlementState = selectSettlementState(runSettlementState, endReason);

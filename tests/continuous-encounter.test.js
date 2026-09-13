@@ -3,6 +3,15 @@ const assert = require("node:assert/strict");
 const Continuous = require("../continuous-encounter.js");
 
 const viewport = { x: 0, y: 0, width: 800, height: 600 };
+const fillAt = (projectedFill, overrides = {}) => ({
+  capacityArea: Continuous.capacityArea(), visibleFill: projectedFill,
+  spawnReservedFill: 0, returnReservedFill: 0, reservedFill: 0, projectedFill,
+  ...overrides
+});
+const visibleEnemy = (lifecycle = Continuous.LIFECYCLES.ACTIVE) => ({
+  x: 100, y: 100, width: 40, height: 40, visualWidth: 40, visualHeight: 40,
+  hp: 1, lifecycle, countsTowardEncounterProgress: true
+});
 
 test("Fill capacity and additive visible occupancy use visual footprints", () => {
   const expected = 800 * 600 - Math.PI * 100 ** 2;
@@ -42,11 +51,15 @@ test("spawn exclusion includes visual half diagonal", () => {
   assert.equal(Continuous.minimumSpawnCenterDistance({ visualWidth: 60, visualHeight: 80 }), 150);
 });
 
-test("normal refill uses the 20/25/30 density band", () => {
-  assert.equal(Continuous.shouldEnableNormalRefill(0.19, false), true);
-  assert.equal(Continuous.shouldEnableNormalRefill(0.22, true), true);
-  assert.equal(Continuous.shouldEnableNormalRefill(0.25, true), false);
-  assert.equal(Continuous.shouldEnableNormalRefill(0.29, false), false);
+test("normal refill uses the exact 15/20/25 density band", () => {
+  assert.deepEqual({ minimum: Continuous.STRUCTURE.normalFillMinimum,
+    target: Continuous.STRUCTURE.normalFillTarget,
+    maximum: Continuous.STRUCTURE.normalFillMaximum },
+  { minimum: 0.15, target: 0.20, maximum: 0.25 });
+  assert.equal(Continuous.shouldEnableNormalRefill(0.14, false), true);
+  assert.equal(Continuous.shouldEnableNormalRefill(0.17, true), true);
+  assert.equal(Continuous.shouldEnableNormalRefill(0.20, true), false);
+  assert.equal(Continuous.shouldEnableNormalRefill(0.24, false), false);
 });
 
 test("controller ceiling rejects commitments above 70 percent", () => {
@@ -109,15 +122,82 @@ test("Wave Progress snapshots N_ref and immutable K_target", () => {
   assert.equal(controller.progress, 0);
   assert.equal(Continuous.recordKill(controller, true), false);
   assert.equal(Continuous.recordKill(controller, true), false);
+  controller.waveProgressReadinessStableTime = 0.4;
   assert.equal(Continuous.recordKill(controller, true), true);
   assert.equal(controller.waveProgressArmed, false);
+  assert.equal(controller.waveProgressReadinessStableTime, 0);
+  assert.equal(controller.waveProgressReadinessBlockedReason, "wave-transition");
 });
 
-test("Progress only arms in visible 20-30 percent with zero reservation", () => {
-  assert.equal(Continuous.canArmProgress({ visibleFill: 0.2, reservedFill: 0 }), true);
-  assert.equal(Continuous.canArmProgress({ visibleFill: 0.3, reservedFill: 0 }), true);
-  assert.equal(Continuous.canArmProgress({ visibleFill: 0.19, reservedFill: 0 }), false);
-  assert.equal(Continuous.canArmProgress({ visibleFill: 0.25, reservedFill: 0.001 }), false);
+test("Progress readiness waits for the opening ramp and 0.5 stable seconds", () => {
+  const controller = Continuous.createController({ waveCount: 5 });
+  const enemies = [visibleEnemy()];
+  Continuous.updateController(controller, 4.9, fillAt(0.2), enemies, viewport);
+  assert.equal(controller.waveProgressArmed, false);
+  assert.equal(controller.waveProgressReadinessStableTime, 0);
+  assert.equal(controller.waveProgressReadinessBlockedReason, "opening-ramp");
+
+  Continuous.updateController(controller, 0.1, fillAt(0.2), enemies, viewport);
+  assert.equal(controller.waveProgressReadinessStableTime, 0.1);
+  assert.equal(controller.waveProgressReadinessBlockedReason, "ready-stabilizing");
+  Continuous.updateController(controller, 0.39, fillAt(0.2), enemies, viewport);
+  assert.equal(controller.waveProgressArmed, false);
+  Continuous.updateController(controller, 0.01, fillAt(0.2), enemies, viewport);
+  assert.equal(controller.waveProgressArmed, true);
+  assert.ok(controller.nRef > 0);
+  assert.ok(controller.target > 0);
+  assert.equal(controller.waveProgressReadinessBlockedReason, "armed");
+});
+
+test("transient invalid readiness resets its stability timer", () => {
+  const controller = Continuous.createController({ waveCount: 5 });
+  controller.combatElapsed = 5;
+  const enemies = [visibleEnemy()];
+  Continuous.updateController(controller, 0.3, fillAt(0.2), enemies, viewport);
+  assert.equal(controller.waveProgressReadinessStableTime, 0.3);
+  Continuous.updateController(controller, 0.1, fillAt(0.14), enemies, viewport);
+  assert.equal(controller.waveProgressReadinessStableTime, 0);
+  assert.equal(controller.waveProgressReadinessBlockedReason, "projected-fill-low");
+  Continuous.updateController(controller, 0.3, fillAt(0.2), enemies, viewport);
+  Continuous.updateController(controller, 0.19, fillAt(0.2), enemies, viewport);
+  assert.equal(controller.waveProgressArmed, false);
+  Continuous.updateController(controller, 0.01, fillAt(0.2), enemies, viewport);
+  assert.equal(controller.waveProgressArmed, true);
+});
+
+test("only unresolved RESERVED placement blocks lifecycle readiness", () => {
+  for (const lifecycle of [Continuous.LIFECYCLES.ENTERING, Continuous.LIFECYCLES.NEAR_OFFSCREEN,
+    Continuous.LIFECYCLES.RETURNING]) {
+    const controller = Continuous.createController({ waveCount: 5 });
+    controller.combatElapsed = 5;
+    const enemies = [visibleEnemy(), { ...visibleEnemy(lifecycle), x: 180 }];
+    Continuous.updateController(controller, 0.5, fillAt(0.2), enemies, viewport);
+    assert.equal(controller.waveProgressArmed, true, lifecycle);
+  }
+
+  const pending = Continuous.createController({ waveCount: 5 });
+  pending.combatElapsed = 5;
+  pending.pendingReservations.push({ reservation: { status: "PENDING" } });
+  Continuous.updateController(pending, 1, fillAt(0.2), [visibleEnemy()], viewport);
+  assert.equal(pending.waveProgressArmed, false);
+  assert.equal(pending.waveProgressReadinessBlockedReason, "unresolved-reserved");
+
+  const reservedEnemy = Continuous.createController({ waveCount: 5 });
+  reservedEnemy.combatElapsed = 5;
+  Continuous.updateController(reservedEnemy, 1, fillAt(0.2),
+    [visibleEnemy(), visibleEnemy(Continuous.LIFECYCLES.RESERVED)], viewport);
+  assert.equal(reservedEnemy.waveProgressArmed, false);
+  assert.equal(reservedEnemy.waveProgressReadinessBlockedReason, "unresolved-reserved");
+});
+
+test("return-reserved Fill does not block Projected Fill readiness", () => {
+  const controller = Continuous.createController({ waveCount: 5 });
+  controller.combatElapsed = 5;
+  const fill = fillAt(0.2, { visibleFill: 0.1, returnReservedFill: 0.1, reservedFill: 0.1 });
+  Continuous.updateController(controller, 0.5, fill, [visibleEnemy()], viewport);
+  assert.equal(controller.waveProgressArmed, true);
+  assert.ok(controller.nRef > 0);
+  assert.ok(controller.target > 0);
 });
 
 test("spawn selection suppression stays soft and type RNG is position-independent", () => {
@@ -199,18 +279,18 @@ test("seeded high-volume decisions never violate caps or negative credit", () =>
   }
 });
 
-test("Wave 1 opening target ramps from 10 to 20 to 25 percent", () => {
+test("Wave 1 opening target ramps from 5 to 15 to 20 percent", () => {
   const controller = Continuous.createController({ waveCount: 5 });
   controller.waveIndex = 0;
   controller.combatElapsed = 0;
-  assert.equal(Continuous.effectiveNormalTarget(controller), 0.10);
+  assert.equal(Continuous.effectiveNormalTarget(controller), 0.05);
   controller.combatElapsed = 2;
-  assert.equal(Continuous.effectiveNormalTarget(controller), 0.20);
+  assert.equal(Continuous.effectiveNormalTarget(controller), 0.15);
   controller.combatElapsed = 5;
-  assert.equal(Continuous.effectiveNormalTarget(controller), 0.25);
+  assert.equal(Continuous.effectiveNormalTarget(controller), 0.20);
   controller.waveIndex = 1;
   controller.combatElapsed = 0;
-  assert.equal(Continuous.effectiveNormalTarget(controller), 0.25);
+  assert.equal(Continuous.effectiveNormalTarget(controller), 0.20);
 });
 
 test("dispatch pulse policies cap Normal at 2 and Coming at 3", () => {
