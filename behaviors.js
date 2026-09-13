@@ -288,16 +288,43 @@
   function updateGunner(enemy, definition, context, deltaTime) {
     const runtime = enemy.behaviorRuntime, config = definition.behavior;
     runtime.attackCooldown = Math.max(0, runtime.attackCooldown - deltaTime);
-    const range = distance(enemy, context.player);
     if (runtime.behaviorState === STATES.CHASE) {
-      if (range < config.preferredRange[0] || range > config.preferredRange[1]) context.moveChase(enemy, deltaTime);
-      if (runtime.attackCooldown <= EPSILON && context.hasLineOfSight?.(enemy, context.player) !== false) {
-        setState(runtime, STATES.TELEGRAPH); runtime.shotsRemaining = config.burstCount;
+      let range = distance(enemy, context.player);
+      let hasLos = context.hasLineOfSight?.(enemy, context.player) !== false;
+      const inPreferredRange = range >= config.preferredRange[0] && range <= config.preferredRange[1];
+      if (!inPreferredRange) emit(context, "recordGunnerRangeBlocked", { enemyId: enemy.runtimeId, duration: deltaTime });
+      if (!hasLos) emit(context, "recordGunnerLosBlocked", { enemyId: enemy.runtimeId, duration: deltaTime });
+      if (!inPreferredRange || !hasLos) {
+        if (context.moveToRange) context.moveToRange(enemy, config.preferredRange, deltaTime, { range, hasLos });
+        else context.moveChase(enemy, deltaTime);
+        range = distance(enemy, context.player);
+        hasLos = context.hasLineOfSight?.(enemy, context.player) !== false;
+      }
+      if (runtime.attackCooldown <= EPSILON && hasLos &&
+          range >= config.preferredRange[0] && range <= config.preferredRange[1]) {
+        setState(runtime, STATES.TELEGRAPH);
+        runtime.shotsRemaining = config.burstCount;
+        emit(context, "recordGunnerTelegraph", { enemyId: enemy.runtimeId });
       }
     } else if (runtime.behaviorState === STATES.TELEGRAPH) {
       runtime.stateElapsed += deltaTime;
-      if (runtime.stateElapsed >= config.telegraphDuration) { setState(runtime, STATES.STRIKE); runtime.shotTimer = 0; }
+      if (runtime.stateElapsed >= config.telegraphDuration) {
+        if (context.hasLineOfSight?.(enemy, context.player) === false) {
+          runtime.shotsRemaining = 0;
+          setState(runtime, STATES.CHASE);
+          emit(context, "recordGunnerTelegraphCancel", { enemyId: enemy.runtimeId, reason: "line-of-sight" });
+        } else {
+          setState(runtime, STATES.STRIKE);
+          runtime.shotTimer = 0;
+        }
+      }
     } else if (runtime.behaviorState === STATES.STRIKE) {
+      if (context.hasLineOfSight?.(enemy, context.player) === false) {
+        runtime.shotsRemaining = 0;
+        setState(runtime, STATES.CHASE);
+        emit(context, "recordGunnerTelegraphCancel", { enemyId: enemy.runtimeId, reason: "line-of-sight" });
+        return;
+      }
       runtime.shotTimer -= deltaTime;
       while (runtime.shotsRemaining > 0 && runtime.shotTimer <= EPSILON) {
         spawnEnemyProjectile(enemy, config, context); runtime.shotsRemaining--; runtime.shotTimer += config.shotSpacing;
@@ -424,8 +451,15 @@
       const hazard = hazards[index];
       if (!hazard) continue;
       if (hazard.kind === "enemy-projectile") {
-        hazard.x += hazard.directionX * hazard.speed * deltaTime;
-        hazard.y += hazard.directionY * hazard.speed * deltaTime;
+        const movementX = hazard.directionX * hazard.speed * deltaTime;
+        const movementY = hazard.directionY * hazard.speed * deltaTime;
+        if (context.moveEnemyProjectile) {
+          const movement = context.moveEnemyProjectile(hazard, movementX, movementY) || {};
+          if (movement.blocked) { hazards.splice(index, 1); continue; }
+        } else {
+          hazard.x += movementX;
+          hazard.y += movementY;
+        }
         hazard.remaining -= deltaTime;
         if (context.overlaps?.(hazard, context.player)) {
           context.damagePlayer?.(hazard.damage, "gunner"); hazards.splice(index, 1); continue;

@@ -22,6 +22,16 @@ function fixture(types = ["interceptor"], movement = {}) {
     enemies, definitions: E.ENEMIES, hazards, player, playerVelocity, deltaTime, combatActive,
     arena: { width: 800, height: 600 }, isActive: candidate => active.has(candidate) && candidate.hp > 0,
     moveChase(candidate, dt) { candidate.x += candidate.speed * dt; },
+    moveToRange(candidate, preferredRange, dt, status) {
+      if (movement.moveToRange) return movement.moveToRange(candidate, preferredRange, dt, status);
+      const candidateCenter = { x: candidate.x + candidate.width / 2, y: candidate.y + candidate.height / 2 };
+      const playerCenter = { x: player.x + player.width / 2, y: player.y + player.height / 2 };
+      const dx = playerCenter.x - candidateCenter.x, dy = playerCenter.y - candidateCenter.y;
+      const length = Math.hypot(dx, dy) || 1;
+      const direction = status.range < preferredRange[0] ? -1 : 1;
+      candidate.x += dx / length * candidate.speed * dt * direction;
+      candidate.y += dy / length * candidate.speed * dt * direction;
+    },
     moveCharge(candidate, x, y, speed, dt) {
       if (movement.moveCharge) return movement.moveCharge(candidate, x, y, speed, dt);
       const before = { x: candidate.x, y: candidate.y };
@@ -29,7 +39,11 @@ function fixture(types = ["interceptor"], movement = {}) {
       candidate.y += y * speed * dt;
       return { distance: Math.hypot(candidate.x - before.x, candidate.y - before.y), reachedBoundary: false };
     },
-    hasLineOfSight() { return movement.hasLineOfSight?.() ?? true; },
+    hasLineOfSight(first, second) { return movement.hasLineOfSight?.(first, second) ?? true; },
+    moveEnemyProjectile(projectile, movementX, movementY) {
+      if (movement.moveEnemyProjectile) return movement.moveEnemyProjectile(projectile, movementX, movementY);
+      projectile.x += movementX; projectile.y += movementY; return { blocked: false };
+    },
     resolvePlayablePoint(point) { return point; },
     overlaps(first, second) {
       return first.x < second.x + second.width && first.x + first.width > second.x &&
@@ -90,6 +104,87 @@ test("Gunner fires two spaced projectiles and Artillery resolves its warning", (
   artillery.update(E.ENEMIES.artillery.behavior.telegraphDuration);
   assert.equal(artillery.hazards[0].phase, "ACTIVE");
   assert.deepEqual(artillery.damage, [{ amount: 1, type: "artillery" }]);
+});
+
+test("Gunner preserves its authored range, telegraph, burst, projectile, and cooldown values", () => {
+  const config = E.ENEMIES.gunner.behavior;
+  assert.deepEqual(config.preferredRange, [220, 320]);
+  assert.equal(config.telegraphDuration, 0.3);
+  assert.equal(config.burstCount, 2);
+  assert.equal(config.shotSpacing, 0.15);
+  assert.equal(config.projectileSpeed, 300);
+  assert.equal(config.cooldown, 1.6);
+});
+
+test("Gunner repositions from too close and too far before firing", () => {
+  for (const setup of [
+    { playerX: 380, enemyX: 300, expectedDirection: -1 },
+    { playerX: 650, enemyX: 100, expectedDirection: 1 }
+  ]) {
+    const f = fixture(["gunner"]), gunner = f.enemies[0];
+    f.player.x = setup.playerX; f.player.y = 100;
+    gunner.x = setup.enemyX;
+    gunner.behaviorRuntime.attackCooldown = 0;
+    const startX = gunner.x;
+    for (let frame = 0; frame < 400 && f.hazards.length < 2; frame++) f.update(1 / 60);
+    assert.equal(Math.sign(gunner.x - startX), setup.expectedDirection);
+    assert.equal(f.hazards.filter(hazard => hazard.kind === "enemy-projectile").length, 2,
+      `playerX ${setup.playerX}, gunnerX ${gunner.x}, state ${gunner.behaviorRuntime.behaviorState}`);
+    assert.ok(f.events.some(event => event.name === "recordGunnerRangeBlocked"));
+    assert.ok(f.events.some(event => event.name === "recordGunnerTelegraph"));
+  }
+});
+
+test("temporary LOS obstruction cancels safely, repositions, and later fires", () => {
+  let hasLos = false;
+  const f = fixture(["gunner"], { hasLineOfSight: () => hasLos });
+  const gunner = f.enemies[0];
+  gunner.behaviorRuntime.attackCooldown = 0;
+  f.update(0.5);
+  assert.equal(gunner.behaviorRuntime.behaviorState, B.STATES.CHASE);
+  assert.ok(f.events.some(event => event.name === "recordGunnerLosBlocked"));
+  hasLos = true;
+  for (let frame = 0; frame < 400 && f.hazards.length < 2; frame++) f.update(1 / 60);
+  assert.equal(f.hazards.filter(hazard => hazard.kind === "enemy-projectile").length, 2);
+
+  const interrupted = fixture(["gunner"], { hasLineOfSight: () => hasLos });
+  interrupted.enemies[0].behaviorRuntime.attackCooldown = 0;
+  interrupted.update(0);
+  hasLos = false;
+  interrupted.update(0.3);
+  assert.equal(interrupted.enemies[0].behaviorRuntime.behaviorState, B.STATES.CHASE);
+  assert.equal(interrupted.events.filter(event => event.name === "recordGunnerTelegraphCancel").length, 1);
+  hasLos = true;
+  for (let frame = 0; frame < 400 && interrupted.hazards.length < 2; frame++) interrupted.update(1 / 60);
+  assert.equal(interrupted.hazards.filter(hazard => hazard.kind === "enemy-projectile").length, 2);
+});
+
+test("ordinary movement does not reset a Gunner telegraph forever", () => {
+  const f = fixture(["gunner"]), gunner = f.enemies[0];
+  gunner.behaviorRuntime.attackCooldown = 0;
+  f.update(0);
+  for (let frame = 0; frame < 30 && f.hazards.length < 2; frame++) {
+    f.player.x += 0.5;
+    f.update(1 / 60);
+  }
+  assert.equal(f.events.filter(event => event.name === "recordGunnerTelegraph").length, 1);
+  assert.equal(f.events.filter(event => event.name === "recordGunnerTelegraphCancel").length, 0);
+  assert.equal(f.hazards.filter(hazard => hazard.kind === "enemy-projectile").length, 2);
+});
+
+test("Gunner projectiles stop when the movement context reports blocking terrain", () => {
+  let movements = 0;
+  const f = fixture(["gunner"], { moveEnemyProjectile(projectile, movementX, movementY) {
+    movements++;
+    projectile.x += movementX / 2; projectile.y += movementY / 2;
+    return { blocked: true };
+  } });
+  f.enemies[0].behaviorRuntime.attackCooldown = 0;
+  f.update(0); f.update(0.3); f.update(0);
+  assert.equal(f.hazards.filter(hazard => hazard.kind === "enemy-projectile").length, 1);
+  f.update(1 / 60);
+  assert.equal(movements, 1);
+  assert.equal(f.hazards.filter(hazard => hazard.kind === "enemy-projectile").length, 0);
 });
 
 test("Trapper arms a route hazard and Tether connects, ticks, and breaks", () => {

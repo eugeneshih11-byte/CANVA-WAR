@@ -137,14 +137,20 @@ test("report UI shows numeric clear time and ratio for a cleared encounter", () 
   assert.ok(cells.includes("0.44"));
 });
 
-test("report UI exposes Interceptor, Denier, and Support behavior outcomes", () => {
+test("report UI exposes special behavior and enemy-separation outcomes", () => {
   const fixture = loadUi([encounter({
     interceptor: { attempts: 4, chargeContacts: 1, missedCharges: 3 },
     denier: { hazardsCreated: 2, hazardContacts: 1, hazardDamageEvents: 4 },
-    support: { affectedEnemyTime: 5.25, affectedSpecialActions: 2, linksCreated: 3 }
+    support: { affectedEnemyTime: 5.25, affectedSpecialActions: 2, linksCreated: 3 },
+    gunner: { bursts: 2, telegraphs: 2, telegraphCancels: 1,
+      rangeBlockedTime: 1.25, losBlockedTime: 0.5 },
+    enteringEnemyCount: 3, nearOffscreenEnemyCount: 2, returningEnemyCount: 1,
+    enemyEnemyOverlapEvents: 8, enemyEnemySeparationCorrections: 12,
+    maxEnemyEnemyPenetration: 17
   })]);
   const cells = fixture.nodes().filter(node => node.tagName === "TD").map(node => node.textContent);
-  assert.ok(cells.includes("I 4/1/3 · D 2/1/4 · S 5.25s/2/3"));
+  assert.ok(cells.includes("I 4/1/3 · D 2/1/4 · S 5.25s/2/3 · G 2/2/1 · Block 1.25s/0.5s"));
+  assert.ok(cells.includes("E 3 · N 2 · R 1 · Sep 8/12/17"));
 });
 
 test("fixed report closes and reopens without either control changing report content", () => {

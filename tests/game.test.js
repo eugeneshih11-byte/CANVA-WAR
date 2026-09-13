@@ -37,7 +37,7 @@ globalThis.__gameTest = {
   startWave, startBossEncounter, completeBossEncounter, updateLevel, openAbandon, closeAbandon, abandonRun,
   handleLogicalWaveComplete, updateContinuousEncounter,
   updateBullets, positionEnemyForSpawn, isValidSpawnPosition, tryMoveEnemy,
-  recoverEnemyOverlap, moveEnemyCharge, moveBossCharge,
+  recoverEnemyOverlap, resolveEnemyEnemyOverlaps, moveEnemyCharge, moveBossCharge,
   encounters: Encounters,
   setAwards(hook) { getEncounterAwards = hook; },
   setReward(hook) { handleStageReward = hook; },
@@ -493,6 +493,23 @@ function makeEnemy(game, type = "normal", overrides = {}) {
     ...ENEMY_TEST_STATS[type],
     ...overrides
   };
+}
+
+function makeBehaviorEnemy(game, type, runtimeId, overrides = {}) {
+  const definition = game.encounters.ENEMIES[type];
+  return { type, runtimeId, waveId: game.getState().currentWave?.id,
+    x: 100, y: 100, ...definition.stats,
+    lifecycle: game.continuousEncounter.LIFECYCLES.ACTIVE,
+    behaviorRuntime: game.enemyBehaviors.createRuntime(definition),
+    countsTowardEncounterProgress: true, ...overrides };
+}
+
+function pairPenetration(first, second) {
+  const overlapX = Math.min(first.x + first.width - second.x,
+    second.x + second.width - first.x);
+  const overlapY = Math.min(first.y + first.height - second.y,
+    second.y + second.height - first.y);
+  return overlapX > 0 && overlapY > 0 ? Math.min(overlapX, overlapY) : 0;
 }
 
 function rectanglesOverlap(a, b) {
@@ -1908,6 +1925,121 @@ test("two living enemies that start overlapped deterministically separate", () =
     assert.ok(enemy.x !== origins[index].x || enemy.y !== origins[index].y);
     assert.equal(game.isInsideCanvas(enemy), true);
   });
+});
+
+test("compressed mixed-size enemy clusters separate with bounded finite corrections", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  const cluster = [
+    makeBehaviorEnemy(game, "tank", 1),
+    makeBehaviorEnemy(game, "normal", 2),
+    makeBehaviorEnemy(game, "fast", 3),
+    makeBehaviorEnemy(game, "gunner", 4),
+    makeBehaviorEnemy(game, "normal", 5)
+  ];
+  game.enemies.push(...cluster);
+  const origins = cluster.map(enemy => ({ x: enemy.x, y: enemy.y }));
+  const result = game.resolveEnemyEnemyOverlaps();
+  assert.ok(result.overlapEvents >= 4);
+  assert.ok(result.separationCorrections > 0);
+  assert.ok(result.maxPenetration >= 40);
+  cluster.forEach((enemy, index) => {
+    assert.equal(Number.isFinite(enemy.x) && Number.isFinite(enemy.y), true);
+    assert.ok(Math.hypot(enemy.x - origins[index].x, enemy.y - origins[index].y) <= 50);
+    assert.equal(game.isInsideCanvas(enemy), true);
+  });
+  for (let frame = 0; frame < 180; frame++) game.resolveEnemyEnemyOverlaps();
+  const deepest = Math.max(0, ...cluster.flatMap((enemy, index) =>
+    cluster.slice(index + 1).map(other => pairPenetration(enemy, other))));
+  assert.ok(deepest < 4, `remaining penetration ${deepest}`);
+});
+
+test("enemy separation respects obstacles and world edges", () => {
+  for (const placement of ["obstacle", "edge"]) {
+    const game = loadGame(); startGame(game);
+    game.enemies.length = 0;
+    const definition = game.getBattlefieldRuntime().definition;
+    const obstacle = definition.obstacles[0];
+    const x = placement === "edge" ? 0 : Math.max(0, obstacle.x - 42);
+    const y = placement === "edge" ? 0 : Math.max(0, Math.min(obstacle.y, definition.bounds.height - 40));
+    const cluster = [1, 2, 3].map(id => makeBehaviorEnemy(game, "normal", id, { x, y }));
+    if (placement === "obstacle" && !Battlefields.isStaticPositionValid(cluster[0], game.getBattlefieldRuntime())) {
+      cluster.forEach(enemy => { enemy.x = obstacle.x + obstacle.width + 2; });
+    }
+    game.enemies.push(...cluster);
+    for (let frame = 0; frame < 180; frame++) game.resolveEnemyEnemyOverlaps();
+    cluster.forEach(enemy => {
+      assert.equal(Battlefields.isStaticPositionValid(enemy, game.getBattlefieldRuntime()), true, placement);
+      assert.equal(game.isInsideCanvas(enemy), true, placement);
+    });
+    const deepest = Math.max(...cluster.flatMap((enemy, index) =>
+      cluster.slice(index + 1).map(other => pairPenetration(enemy, other))));
+    assert.ok(deepest < 4, `${placement} penetration ${deepest}`);
+  }
+});
+
+test("committed Fast and Interceptor movement is followed by overlap cleanup", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  const fast = makeBehaviorEnemy(game, "fast", 1, { x: 100, y: 100 });
+  const interceptor = makeBehaviorEnemy(game, "interceptor", 2, { x: 100, y: 100 });
+  const normal = makeBehaviorEnemy(game, "normal", 3, { x: 100, y: 100 });
+  fast.behaviorRuntime.behaviorState = game.enemyBehaviors.STATES.STRIKE;
+  fast.behaviorRuntime.chargeDirectionX = 1; fast.behaviorRuntime.chargeDirectionY = 0;
+  interceptor.behaviorRuntime.behaviorState = game.enemyBehaviors.STATES.CHARGE;
+  interceptor.behaviorRuntime.chargeDirectionX = 1; interceptor.behaviorRuntime.chargeDirectionY = 0;
+  game.enemies.push(fast, interceptor, normal);
+  const fastStart = fast.x, interceptorStart = interceptor.x;
+  for (let frame = 0; frame < 180; frame++) game.updateEnemies(1 / 60);
+  assert.ok(fast.x > fastStart || interceptor.x > interceptorStart);
+  assert.ok(pairPenetration(fast, interceptor) < 4);
+  assert.ok(pairPenetration(fast, normal) < 4);
+  assert.ok(pairPenetration(interceptor, normal) < 4);
+});
+
+test("crowded real Gunner behavior separates and produces a burst", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  const playerCenter = { x: game.player.x + game.player.width / 2,
+    y: game.player.y + game.player.height / 2 };
+  const gunnerDefinition = game.encounters.ENEMIES.gunner;
+  const candidatePositions = [[260, 0], [-260, 0], [0, 260], [0, -260]]
+    .map(([x, y]) => ({ x: playerCenter.x + x - gunnerDefinition.stats.width / 2,
+      y: playerCenter.y + y - gunnerDefinition.stats.height / 2 }));
+  const position = candidatePositions.find(candidate => {
+    const body = { ...candidate, width: gunnerDefinition.stats.width, height: gunnerDefinition.stats.height };
+    return Battlefields.isStaticPositionValid(body, game.getBattlefieldRuntime()) &&
+      Battlefields.hasLineOfTravel(body, game.player, game.getBattlefieldRuntime());
+  });
+  assert.ok(position, "expected one clear authored-range Gunner position");
+  const gunner = makeBehaviorEnemy(game, "gunner", 1, { ...position });
+  gunner.behaviorRuntime.attackCooldown = 0;
+  const crowd = [2, 3, 4, 5].map(id => makeBehaviorEnemy(game, "normal", id, { ...position }));
+  game.enemies.push(gunner, ...crowd);
+  const initialPenetration = Math.max(...crowd.map(enemy => pairPenetration(gunner, enemy)));
+  for (let frame = 0; frame < 360 &&
+      game.hazards.filter(hazard => hazard.kind === "enemy-projectile").length < 2; frame++) {
+    game.updateEnemies(1 / 60);
+  }
+  assert.ok(game.hazards.filter(hazard => hazard.kind === "enemy-projectile").length > 0);
+  const remainingPenetration = Math.max(...crowd.map(enemy => pairPenetration(gunner, enemy)));
+  assert.ok(remainingPenetration < initialPenetration / 2,
+    `${remainingPenetration} should be below half of ${initialPenetration}`);
+});
+
+test("real Gunner projectiles stop at projectile-blocking Battlefield geometry", () => {
+  const game = loadGame(); startGame(game);
+  game.enemies.length = 0;
+  const obstacle = game.getBattlefieldRuntime().definition.obstacles
+    .find(candidate => candidate.blocksProjectiles);
+  assert.ok(obstacle);
+  const fromLeft = obstacle.x >= 20;
+  game.hazards.push({ id: 1, kind: "enemy-projectile", phase: "ACTIVE",
+    x: fromLeft ? obstacle.x - 15 : obstacle.x + obstacle.width + 5,
+    y: obstacle.y + Math.max(0, obstacle.height / 2 - 5), width: 10, height: 10,
+    directionX: fromLeft ? 1 : -1, directionY: 0, speed: 300, damage: 1, remaining: 4 });
+  game.updateEnemies(0.25);
+  assert.equal(game.hazards.length, 0);
 });
 
 test("enemy collision still rejects movement that would create a new stack", () => {

@@ -223,6 +223,8 @@ const SPAWN_PLACEMENT_ATTEMPTS = 16;
 const MAX_DETERMINISTIC_SPAWN_CANDIDATES = 256;
 const COLLISION_EPSILON = 1e-7;
 const ENEMY_SPATIAL_CELL_SIZE = 120;
+const ENEMY_SEPARATION_MAX_PASSES = 4;
+const ENEMY_SEPARATION_STEP = 3;
 let enemySpatialHash = new Map();
 const RUN_PHASES = Object.freeze(Object.fromEntries([
   "STAGE_ENTER", "WAVE_ACTIVE", "INTERMISSION", "INTRODUCTION_PENDING", "INTRODUCTION_ACTIVE",
@@ -2162,6 +2164,87 @@ function recoverEnemyOverlap(enemy, distance) {
   return true;
 }
 
+function enemyEnemyPenetration(first, second) {
+  const overlapX = Math.min(first.x + first.width - second.x,
+    second.x + second.width - first.x);
+  const overlapY = Math.min(first.y + first.height - second.y,
+    second.y + second.height - first.y);
+  if (overlapX <= 0 || overlapY <= 0) return null;
+  return { x: overlapX, y: overlapY, depth: Math.min(overlapX, overlapY) };
+}
+
+function separateEnemyPair(first, second, maximumStep = ENEMY_SEPARATION_STEP) {
+  const initial = enemyEnemyPenetration(first, second);
+  if (!initial) return 0;
+  const axes = initial.x <= initial.y ? ["x", "y"] : ["y", "x"];
+  const firstOrder = Number.isFinite(first.runtimeId) ? first.runtimeId : enemies.indexOf(first);
+  const secondOrder = Number.isFinite(second.runtimeId) ? second.runtimeId : enemies.indexOf(second);
+  for (const axis of axes) {
+    const firstCenter = axis === "x" ? first.x + first.width / 2 : first.y + first.height / 2;
+    const secondCenter = axis === "x" ? second.x + second.width / 2 : second.y + second.height / 2;
+    const direction = firstCenter === secondCenter
+      ? (firstOrder <= secondOrder ? -1 : 1)
+      : (firstCenter < secondCenter ? -1 : 1);
+    const penetration = axis === "x" ? initial.x : initial.y;
+    const correction = Math.min(maximumStep, penetration + COLLISION_EPSILON);
+    let corrections = 0;
+    const firstStep = correction / 2;
+    if (tryMoveEnemy(first, axis === "x" ? direction * firstStep : 0,
+      axis === "y" ? direction * firstStep : 0)) {
+      corrections++;
+      rebuildEnemySpatialHash();
+    }
+    const remaining = enemyEnemyPenetration(first, second);
+    if (remaining) {
+      const secondStep = corrections ? correction / 2 : correction;
+      if (tryMoveEnemy(second, axis === "x" ? -direction * secondStep : 0,
+        axis === "y" ? -direction * secondStep : 0)) {
+        corrections++;
+        rebuildEnemySpatialHash();
+      }
+    }
+    if (corrections) return corrections;
+  }
+  if (recoverEnemyOverlap(first, maximumStep)) return 1;
+  if (recoverEnemyOverlap(second, maximumStep)) return 1;
+  return 0;
+}
+
+function resolveEnemyEnemyOverlaps() {
+  const order = new Map(enemies.map((enemy, index) => [enemy, index]));
+  let overlapEvents = 0;
+  let separationCorrections = 0;
+  let maxPenetration = 0;
+  for (let pass = 0; pass < ENEMY_SEPARATION_MAX_PASSES; pass++) {
+    rebuildEnemySpatialHash();
+    const visitedPairs = new Set();
+    let passCorrections = 0;
+    for (const first of enemies) {
+      if (!isCurrentEncounterEnemy(first)) continue;
+      for (const second of nearbyEnemies(first)) {
+        if (first === second || !isCurrentEncounterEnemy(second)) continue;
+        const firstIndex = order.get(first), secondIndex = order.get(second);
+        const lower = Math.min(firstIndex, secondIndex), upper = Math.max(firstIndex, secondIndex);
+        const pairKey = `${lower}:${upper}`;
+        if (visitedPairs.has(pairKey)) continue;
+        visitedPairs.add(pairKey);
+        const penetration = enemyEnemyPenetration(first, second);
+        if (!penetration) continue;
+        if (pass === 0) {
+          overlapEvents++;
+          maxPenetration = Math.max(maxPenetration, penetration.depth);
+        }
+        const corrections = separateEnemyPair(first, second);
+        passCorrections += corrections;
+        separationCorrections += corrections;
+      }
+    }
+    if (passCorrections === 0) break;
+  }
+  rebuildEnemySpatialHash();
+  return { overlapEvents, separationCorrections, maxPenetration };
+}
+
 function moveEnemyTowardPlayer(enemy, deltaTime) {
   enemy.navigationRuntime ||= Battlefields.createNavigationRuntime(enemy.runtimeId);
   const rejoinsAtAnchor = [ContinuousEncounter.LIFECYCLES.ENTERING, ContinuousEncounter.LIFECYCLES.RETURNING].includes(enemy.lifecycle);
@@ -2210,6 +2293,28 @@ function moveEnemyTowardPlayer(enemy, deltaTime) {
   }
 }
 
+function moveEnemyToRange(enemy, preferredRange, deltaTime, hasLineOfSight) {
+  const enemyCenterX = enemy.x + enemy.width / 2;
+  const enemyCenterY = enemy.y + enemy.height / 2;
+  const playerCenterX = player.x + player.width / 2;
+  const playerCenterY = player.y + player.height / 2;
+  const offsetX = enemyCenterX - playerCenterX;
+  const offsetY = enemyCenterY - playerCenterY;
+  const distance = Math.hypot(offsetX, offsetY);
+  if (distance >= preferredRange[0] || distance <= COLLISION_EPSILON) {
+    moveEnemyTowardPlayer(enemy, deltaTime);
+    return;
+  }
+  const directionX = offsetX / distance;
+  const directionY = offsetY / distance;
+  const step = enemy.speed * deltaTime;
+  if (tryMoveEnemy(enemy, directionX * step, directionY * step)) return;
+  if (tryMoveEnemy(enemy, directionX * step, 0)) return;
+  if (tryMoveEnemy(enemy, 0, directionY * step)) return;
+  const turn = (enemy.runtimeId || 0) % 2 ? 1 : -1;
+  tryMoveEnemy(enemy, -directionY * step * turn, directionX * step * turn);
+}
+
 function moveEnemyCharge(enemy, directionX, directionY, speed, deltaTime) {
   const startX = enemy.x;
   const startY = enemy.y;
@@ -2245,17 +2350,30 @@ function emitBehaviorTelemetry(method, details) {
   }
 }
 
+function moveEnemyProjectile(projectile, movementX, movementY) {
+  const movement = Battlefields.traceMovement(projectile, movementX, movementY, battlefieldRuntime);
+  projectile.x = movement.x;
+  projectile.y = movement.y;
+  return { blocked: movement.reachedBoundary || Boolean(movement.collision?.blocksProjectiles) };
+}
+
 function updateEnemies(deltaTime) {
   const bounds = battlefieldRuntime.definition.bounds;
   EnemyBehaviors.updateEnemies({ enemies, definitions: Encounters.ENEMIES, hazards,
     player, playerVelocity, deltaTime, arena: bounds,
     isActive: canEnemyAct, moveChase: moveEnemyTowardPlayer,
+    moveToRange: moveEnemyToRange,
     moveCharge: moveEnemyCharge,
     damagePlayer: takeDamage,
     overlaps: isOverlapping,
+    moveEnemyProjectile,
     hasLineOfSight: (enemy, target) => Battlefields.hasLineOfTravel(enemy, target, battlefieldRuntime),
     resolvePlayablePoint: point => Battlefields.nearestPlayablePoint(point, battlefieldRuntime),
     emit: emitBehaviorTelemetry });
+  const separation = resolveEnemyEnemyOverlaps();
+  if (separation.overlapEvents > 0) {
+    observeTelemetry("recordEnemyEnemyOverlap", () => separation);
+  }
 }
 
 function lockBossChargeDirection() {

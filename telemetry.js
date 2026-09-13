@@ -138,7 +138,8 @@
         denier: { casts: 0, hazardsCreated: 0, hazardContacts: 0, hazardDamageEvents: 0, activeHazardTime: 0 },
         support: { activeTime: 0, affectedEnemyTime: 0, affectedSpecialActions: 0, linksCreated: 0 },
         fast: { telegraphs: 0 }, tank: { telegraphs: 0, impacts: 0 },
-        gunner: { bursts: 0 }, artillery: { warnings: 0, impacts: 0 },
+        gunner: { bursts: 0, rangeBlockedTime: 0, losBlockedTime: 0,
+          telegraphs: 0, telegraphCancels: 0 }, artillery: { warnings: 0, impacts: 0 },
         trapper: { arms: 0, triggers: 0 }, tether: { connects: 0, breaks: 0 },
         peakActiveEnemyCount: 0, peakActiveThreat: 0, configuredSpawnFloor: spawnGroups.reduce((sum, g) => sum + g.delay, 0),
         groupReleaseTimes: [], lastSpawnGroupReleaseTime: null, actualLastGroupReleaseTime: null,
@@ -171,6 +172,8 @@
         waveProgressReadinessBlockedReason: "opening-ramp",
         playerEnemyOverlapEvents: 0, maxPlayerEnemyPenetration: 0,
         playerEnemySeparationCorrections: 0,
+        enemyEnemyOverlapEvents: 0, maxEnemyEnemyPenetration: 0,
+        enemyEnemySeparationCorrections: 0,
         weaponSlotA: playerStart.loadout?.slotA || playerStart.weapon?.id || null,
         weaponSlotB: playerStart.loadout?.slotB || null,
         activeWeapon: playerStart.loadout?.activeWeapon || playerStart.weapon?.id || null,
@@ -368,6 +371,18 @@
       recordGunnerBurst: safe("record Gunner burst", () => {
         if (encounter) encounter.data.gunner.bursts++;
       }),
+      recordGunnerRangeBlocked: safe("record Gunner range block", ({ duration } = {}) => {
+        if (encounter) encounter.data.gunner.rangeBlockedTime += nonNegative(duration);
+      }),
+      recordGunnerLosBlocked: safe("record Gunner LOS block", ({ duration } = {}) => {
+        if (encounter) encounter.data.gunner.losBlockedTime += nonNegative(duration);
+      }),
+      recordGunnerTelegraph: safe("record Gunner telegraph", () => {
+        if (encounter) encounter.data.gunner.telegraphs++;
+      }),
+      recordGunnerTelegraphCancel: safe("record Gunner telegraph cancel", () => {
+        if (encounter) encounter.data.gunner.telegraphCancels++;
+      }),
       recordArtilleryWarning: safe("record Artillery warning", () => {
         if (encounter) encounter.data.artillery.warnings++;
       }),
@@ -499,6 +514,14 @@
           nonNegative(penetration));
         encounter.data.playerEnemySeparationCorrections += nonNegative(corrections);
       }),
+      recordEnemyEnemyOverlap: safe("record Enemy Enemy overlap",
+        ({ overlapEvents, separationCorrections, maxPenetration } = {}) => {
+          if (!encounter) return;
+          encounter.data.enemyEnemyOverlapEvents += nonNegative(overlapEvents);
+          encounter.data.enemyEnemySeparationCorrections += nonNegative(separationCorrections);
+          encounter.data.maxEnemyEnemyPenetration = Math.max(encounter.data.maxEnemyEnemyPenetration,
+            nonNegative(maxPenetration));
+        }),
       recordWeaponSwitch: safe("record Weapon switch", ({ activeWeapon } = {}) => {
         if (!encounter) return;
         encounter.data.weaponSwitchCount++;

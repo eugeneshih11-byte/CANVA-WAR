@@ -81,7 +81,8 @@ test("behavior telemetry records interpretable metrics once per action or hazard
     affectedSpecialActions: 1, linksCreated: 1 });
   assert.deepEqual(encounter.fast, { telegraphs: 1 });
   assert.deepEqual(encounter.tank, { telegraphs: 1, impacts: 1 });
-  assert.deepEqual(encounter.gunner, { bursts: 1 });
+  assert.deepEqual(encounter.gunner, { bursts: 1, rangeBlockedTime: 0,
+    losBlockedTime: 0, telegraphs: 0, telegraphCancels: 0 });
   assert.deepEqual(encounter.artillery, { warnings: 1, impacts: 1 });
   assert.deepEqual(encounter.trapper, { arms: 1, triggers: 1 });
   assert.deepEqual(encounter.tether, { connects: 1, breaks: 1 });
@@ -571,6 +572,12 @@ test("combat-pass telemetry observes density, onboarding, collision, loadout, an
     newlyUnlockedTypes: ["tank", "gunner"], newlyIntroducedTypes: ["tank"],
     introductionSuppressedTypes: ["gunner"] });
   telemetry.recordPlayerEnemyOverlap({ penetration: 18, corrections: 4 });
+  telemetry.recordEnemyEnemyOverlap({ overlapEvents: 3, separationCorrections: 7, maxPenetration: 22 });
+  telemetry.recordGunnerRangeBlocked({ duration: 1.25 });
+  telemetry.recordGunnerLosBlocked({ duration: 0.5 });
+  telemetry.recordGunnerTelegraph();
+  telemetry.recordGunnerTelegraphCancel();
+  telemetry.recordGunnerBurst();
   telemetry.recordWeaponSwitch({ activeWeapon: "arc-blade" });
   telemetry.recordWeaponAttack({ weaponId: "launcher" });
   telemetry.recordWeaponProjectile({ weaponId: "launcher" });
@@ -602,6 +609,11 @@ test("combat-pass telemetry observes density, onboarding, collision, loadout, an
   assert.equal(encounter.playerEnemyOverlapEvents, 1);
   assert.equal(encounter.maxPlayerEnemyPenetration, 18);
   assert.equal(encounter.playerEnemySeparationCorrections, 4);
+  assert.equal(encounter.enemyEnemyOverlapEvents, 3);
+  assert.equal(encounter.enemyEnemySeparationCorrections, 7);
+  assert.equal(encounter.maxEnemyEnemyPenetration, 22);
+  assert.deepEqual(encounter.gunner, { bursts: 1, rangeBlockedTime: 1.25,
+    losBlockedTime: 0.5, telegraphs: 1, telegraphCancels: 1 });
   assert.equal(encounter.weaponSlotA, "launcher");
   assert.equal(encounter.weaponSlotB, "arc-blade");
   assert.equal(encounter.activeWeapon, "arc-blade");

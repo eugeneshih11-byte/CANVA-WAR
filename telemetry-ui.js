@@ -67,7 +67,8 @@
             `${format(encounter.attackEvents)} / ${format(encounter.shotsFired)}`,
             format(encounter.damageTaken), format(encounter.peakActiveEnemyCount),
             `${format(encounter.spawnPlacementFailures)}/${format(encounter.spawnPlacementAttempts)} · fallback ${JSON.stringify(encounter.fallbackSpawnDistanceBand || {})}`,
-            `E ${format(encounter.enteringEnemyCount)} · N ${format(encounter.nearOffscreenEnemyCount)} · R ${format(encounter.returningEnemyCount)}`,
+            `E ${format(encounter.enteringEnemyCount)} · N ${format(encounter.nearOffscreenEnemyCount)} · R ${format(encounter.returningEnemyCount)} · ` +
+              `Sep ${format(encounter.enemyEnemyOverlapEvents)}/${format(encounter.enemyEnemySeparationCorrections)}/${format(encounter.maxEnemyEnemyPenetration)}`,
             `Path ${format(encounter.pathRequests)}/${format(encounter.pathFailures)} · ` +
               `Recover ${format(encounter.forcedRepaths)}/${format(encounter.stuckRecoveries)} · ` +
               `No-progress ${seconds(encounter.maxNoProgressDuration)} · ` +
@@ -77,7 +78,9 @@
             encounter.type === "boss" ? "—" :
               `I ${format(encounter.interceptor?.attempts)}/${format(encounter.interceptor?.chargeContacts)}/${format(encounter.interceptor?.missedCharges)} · ` +
               `D ${format(encounter.denier?.hazardsCreated)}/${format(encounter.denier?.hazardContacts)}/${format(encounter.denier?.hazardDamageEvents)} · ` +
-              `S ${seconds(encounter.support?.affectedEnemyTime)}/${format(encounter.support?.affectedSpecialActions)}/${format(encounter.support?.linksCreated)}`,
+              `S ${seconds(encounter.support?.affectedEnemyTime)}/${format(encounter.support?.affectedSpecialActions)}/${format(encounter.support?.linksCreated)} · ` +
+              `G ${format(encounter.gunner?.bursts)}/${format(encounter.gunner?.telegraphs)}/${format(encounter.gunner?.telegraphCancels)} · ` +
+              `Block ${seconds(encounter.gunner?.rangeBlockedTime)}/${seconds(encounter.gunner?.losBlockedTime)}`,
             encounter.outcome];
           values.forEach(value => row.append(element("td", String(value))));
           body.append(row);
