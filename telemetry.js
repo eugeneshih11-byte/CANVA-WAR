@@ -81,7 +81,8 @@
       finishEncounter({ outcome: ["death", "abandon"].includes(endReason) ? endReason : "run-ended-other", player: endPlayer });
       const finished = copy({ ...run, endedAt: timestamp(), endReason, completed: true,
         victory: endReason === "victory", finalPlayerHp: endPlayer.playerHp,
-        finalPlayerLevel: endPlayer.playerLevel, settlement: settlementSnapshot });
+        finalPlayerLevel: endPlayer.playerLevel, finalBuildSummary: endPlayer.build || run.finalBuildSummary,
+        settlement: settlementSnapshot });
       completedRuns.push(finished);
       if (completedRuns.length > 20) completedRuns.shift();
       run = null;
@@ -95,9 +96,13 @@
       run = { runSequence: ++sequence, startedAt: timestamp(), endedAt: null, endReason: null,
         completed: false, stageReached: null, waveReached: 0, bossReached: false, victory: false,
         battlefieldId, battlefieldSeed, worldWidth, worldHeight, obstacleCount,
-        playerStart, finalPlayerHp: playerStart.playerHp, finalPlayerLevel: playerStart.playerLevel,
+        playerStart, startingLoadout: playerStart.loadout || null,
+        rewardRng: playerStart.rewardRng || null,
+        finalBuildSummary: playerStart.build || null,
+        finalPlayerHp: playerStart.playerHp, finalPlayerLevel: playerStart.playerLevel,
         totalActiveCombatTime: 0, totalIntermissionTime: 0, encounters: [], upgradeHistory: [],
-        upgradeChoiceHistory: [], enemyIntroductionsShown: [], settlement: null };
+        upgradeChoiceHistory: [], evolutionAcquisitions: [], comboDiscoveries: [],
+        enemyIntroductionsShown: [], settlement: null };
     }
     function startEncounter({ type, definition, stageId, waveIndex, battlefieldId,
       battlefieldSeed, worldWidth, worldHeight, obstacleCount, player }) {
@@ -254,13 +259,34 @@
       run.upgradeHistory.push(copy({ ...details,
         encounterIndex: encounter ? run.encounters.length : null, activeCombatTime: run.totalActiveCombatTime }));
       run.finalPlayerLevel = playerLevel;
+      if (details.build) run.finalBuildSummary = copy(details.build);
       if (encounter) encounter.data.playerLevelEnd = playerLevel;
     }
-    function recordUpgradeChoice({ playerLevel, offeredUpgradeIds, selectedUpgradeId } = {}) {
+    function recordUpgradeChoice({ playerLevel, offeredUpgradeIds, selectedUpgradeId,
+      offeredRewards, selectedRewardId, rewardRng } = {}) {
       if (!run) return;
       run.upgradeChoiceHistory.push(copy({ playerLevel,
-        offeredUpgradeIds: Array.isArray(offeredUpgradeIds) ? offeredUpgradeIds : [],
-        selectedUpgradeId: typeof selectedUpgradeId === "string" ? selectedUpgradeId : null }));
+        offeredRewards: Array.isArray(offeredRewards) ? offeredRewards :
+          (Array.isArray(offeredUpgradeIds) ? offeredUpgradeIds.map(id => ({ id, category: null, weaponId: null })) : []),
+        selectedRewardId: typeof selectedRewardId === "string" ? selectedRewardId :
+          (typeof selectedUpgradeId === "string" ? selectedUpgradeId : null),
+        rewardRng: rewardRng || null }));
+      if (rewardRng) run.rewardRng = copy(rewardRng);
+    }
+    function recordComboDiscovery(details = {}) {
+      if (!run || typeof details.comboId !== "string") return;
+      if (!run.comboDiscoveries.some(entry => entry.comboId === details.comboId)) {
+        run.comboDiscoveries.push(copy({ ...details, activeCombatTime: run.totalActiveCombatTime }));
+      }
+      if (details.build) run.finalBuildSummary = copy(details.build);
+    }
+    function recordEvolutionAcquisition(details = {}) {
+      if (!run || typeof details.evolutionId !== "string" || typeof details.weaponId !== "string") return;
+      if (!run.evolutionAcquisitions.some(entry => entry.evolutionId === details.evolutionId &&
+          entry.weaponId === details.weaponId)) {
+        run.evolutionAcquisitions.push(copy({ ...details, activeCombatTime: run.totalActiveCombatTime }));
+      }
+      if (details.build) run.finalBuildSummary = copy(details.build);
     }
     function recordAttack() {
       if (encounter) encounter.data.attackEvents++;
@@ -574,6 +600,8 @@
       }),
       recordUpgrade: safe("record upgrade", recordUpgrade),
       recordUpgradeChoice: safe("record upgrade choice", recordUpgradeChoice),
+      recordEvolutionAcquisition: safe("record evolution acquisition", recordEvolutionAcquisition),
+      recordComboDiscovery: safe("record combo discovery", recordComboDiscovery),
       finishEncounter: safe("finish encounter", finishEncounter), finishRun: safe("finish run", finishRun),
       getCurrentRun: safe("current run snapshot", runSnapshot),
       getRunReport: safe("run report", () => { const current = runSnapshot(); return report(current ? [current] : []); }),

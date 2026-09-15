@@ -126,7 +126,7 @@ function loadGame(search = "", options = {}) {
         if ("waveRuntime" in values) waveRuntime = values.waveRuntime;
       },
       presentUpgradeChoices(ids) {
-        currentUpgradeChoices = ids.map(id => RunBuild.UPGRADES[id]);
+        currentUpgradeChoices = ids.map(id => RunBuild.REWARDS[id]);
         isChoosingUpgrade = true;
         renderUpgradeChoices();
       },
@@ -435,15 +435,18 @@ test("Wave start snapshots exact definition, analysis, resolved Player and full 
   assert.deepEqual(plain(encounter.playerStart.weapon), {
     id: "starter", name: "Starter", attackKind: "projectile",
     supportedWeaponUpgrades: ["rapid-fire", "heavy-shot", "split-shot"], damage: 2, fireRate: 4,
+    buildTags: ["Projectile"], playerDamage: 2,
     bulletSpeed: 480, bulletSize: 10, projectileCount: 1,
     spreadDegrees: 0, pierce: 0
   });
   assert.equal(encounter.playerStart.playerXp, 0);
   assert.equal(encounter.playerStart.playerSpeed, 240);
   assert.equal(encounter.playerStart.playerMaxHp, 5);
-  assert.deepEqual(plain(encounter.playerStart.build), { upgradeStacks: {
-    "rapid-fire": 0, "heavy-shot": 0, "split-shot": 0, vitality: 0, "swift-feet": 0
-  } });
+  assert.deepEqual(plain(encounter.playerStart.build), {
+    sharedUpgrades: { "rapid-fire": 0, "heavy-shot": 0, "split-shot": 0 },
+    weaponModsByWeaponId: {}, weaponEvolutionByWeaponId: {}, passives: {}, discoveredCombos: []
+  });
+  assert.deepEqual(plain(current(game).startingLoadout), plain(encounter.playerStart.loadout));
   assert.equal(encounter.spawnGroups.length, wave.spawnGroups.length);
   assert.equal(encounter.configuredSpawnFloor, wave.spawnGroups.reduce((sum, group) => sum + group.delay, 0));
   assert.equal(Object.isFrozen(wave), true);
@@ -476,26 +479,17 @@ test("telemetry configuration snapshots immutable Weapon, Upgrade and Player bal
   assert.deepEqual(plain(configuration.starterWeapon), {
     id: "starter", name: "Starter", attackKind: "projectile",
     supportedWeaponUpgrades: ["rapid-fire", "heavy-shot", "split-shot"], damage: 2, fireRate: 4,
+    buildTags: ["Projectile"],
     bulletSpeed: 480, bulletSize: 10, projectileCount: 1,
     spreadDegrees: 0, pierce: 0
   });
-  assert.deepEqual(plain(configuration.playerBaseStats), { maxHp: 5, speed: 240 });
+  assert.deepEqual(plain(configuration.playerBaseStats), { maxHp: 5, speed: 240, damage: 2 });
   assert.equal(configuration.technicalFireRateCap, 12);
-  assert.deepEqual(Object.keys(configuration.upgrades).sort(),
-    ["heavy-shot", "rapid-fire", "split-shot", "swift-feet", "vitality"]);
-  assert.deepEqual(Object.fromEntries(Object.entries(configuration.upgrades)
-    .map(([id, upgrade]) => [id, upgrade.maxStacks])), {
-    "rapid-fire": 4, "heavy-shot": 4, "split-shot": 2, vitality: 3, "swift-feet": 4
-  });
-  assert.deepEqual(plain(configuration.upgrades["rapid-fire"].effects), { fireRateMultiplier: 1.2 });
-  assert.deepEqual(plain(configuration.upgrades["heavy-shot"].effects), {
-    damageAdd: 1, bulletSizeAdd: 1, fireRateMultiplier: 0.92
-  });
-  assert.deepEqual(plain(configuration.upgrades["split-shot"].effects), {
-    projectileCountAdd: 1, spreadDegrees: 12, damageMultipliers: [1, 0.75, 0.65]
-  });
-  assert.deepEqual(plain(configuration.upgrades.vitality.effects), { maxHpAdd: 1, healOnSelect: 1 });
-  assert.deepEqual(plain(configuration.upgrades["swift-feet"].effects), { speedMultiplier: 1.08 });
+  assert.deepEqual(Object.keys(configuration.buildContent.rewards).sort(),
+    ["cyclone-blade", "heavy-shot", "rapid-fire", "split-shot", "swift-feet", "vitality", "wide-arc"]);
+  assert.equal(configuration.buildContent.rewards["cyclone-blade"].category, "weapon-evolution");
+  assert.equal(configuration.buildContent.rewards["wide-arc"].weaponId, "arc-blade");
+  assert.equal(configuration.buildContent.combos["blade-dance"].hidden, true);
   assert.equal(JSON.stringify(configuration).includes("function"), false);
 });
 
@@ -696,7 +690,8 @@ test("formal Upgrade choices record the selected displayed ID and resolved Weapo
     const entry = current(game).upgradeHistory.at(-1);
     assert.equal(entry.upgradeId, selected.id);
     assert.equal(entry.upgradeName, selected.name);
-    assert.equal(entry.upgradeStack, game.build.upgradeStacks[selected.id]);
+    assert.equal(entry.upgradeStack, game.context.RunBuild.getRewardRank(game.build, selected.id));
+    assert.equal(entry.rewardCategory, selected.category);
     assert.deepEqual(plain(entry.weapon), plain(game.weapon));
     assert.deepEqual(plain(entry.build), plain(game.build));
     assert.deepEqual(plain(entry.player.weapon), plain(game.weapon));
@@ -705,8 +700,12 @@ test("formal Upgrade choices record the selected displayed ID and resolved Weapo
     assert.equal(entry.player.playerMaxHp, game.player.maxHp);
     assert.deepEqual(plain(current(game).upgradeChoiceHistory.at(-1)), {
       playerLevel: entry.playerLevel,
-      offeredUpgradeIds: plain(offeredUpgradeIds),
-      selectedUpgradeId: selected.id
+      offeredRewards: plain(offeredUpgradeIds.map(id => {
+        const reward = game.context.RunBuild.REWARDS[id];
+        return { id, category: reward.category, weaponId: reward.weaponId || null };
+      })),
+      selectedRewardId: selected.id,
+      rewardRng: { seed: current(game).playerStart.rewardRng.seed, state: null }
     });
     assert.equal(game.getRandomCalls(), randomCallsBeforeSelection);
     assert.equal(choiceRngCalls, choiceRngCallsBeforeSelection);
@@ -715,7 +714,7 @@ test("formal Upgrade choices record the selected displayed ID and resolved Weapo
   const history = current(game).upgradeHistory;
   assert.equal(history.length, 3);
   assert.deepEqual(plain(history.map(entry => entry.upgradeId)), selectedIds);
-  assert.equal(history.every(entry => Object.hasOwn(game.context.RunBuild.UPGRADES, entry.upgradeId)), true);
+  assert.equal(history.every(entry => Object.hasOwn(game.context.RunBuild.REWARDS, entry.upgradeId)), true);
   assert.equal(history.every(entry => entry.playerLevel >= 2), true);
   assert.equal(current(game).upgradeChoiceHistory.length, 3);
 });
@@ -737,7 +736,7 @@ test("Split Shot records one attack event per discharge and projectile-level sho
   assert.equal(encounter.shotsFired, 2);
   assert.equal(game.bullets.length, 2);
   assert.equal(current(game).upgradeHistory[0].upgradeId, "split-shot");
-  assert.equal(current(game).upgradeHistory[0].build.upgradeStacks["split-shot"], 1);
+  assert.equal(current(game).upgradeHistory[0].build.sharedUpgrades["split-shot"], 1);
   assert.deepEqual(plain(current(game).upgradeHistory[0].player.weapon), plain(game.weapon));
 
   game.bullets.length = 0;
@@ -755,7 +754,7 @@ test("Split Shot records one attack event per discharge and projectile-level sho
   const secondUpgrade = current(game).upgradeHistory.at(-1);
   assert.equal(secondUpgrade.upgradeId, "split-shot");
   assert.equal(secondUpgrade.upgradeStack, 2);
-  assert.equal(secondUpgrade.build.upgradeStacks["split-shot"], 2);
+  assert.equal(secondUpgrade.build.sharedUpgrades["split-shot"], 2);
   assert.deepEqual(plain(secondUpgrade.weapon), plain(game.weapon));
   assert.deepEqual(plain(secondUpgrade.player.weapon), plain(game.weapon));
 });

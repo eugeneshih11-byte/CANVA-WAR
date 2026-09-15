@@ -120,7 +120,10 @@ test("viewport shell keeps logical Canvas dimensions and isolates overlay input"
   assert.match(styleSource, /\.game-screen\s*\{[^}]*height:\s*100dvh;/s);
   assert.match(styleSource, /\.arena-overlay\s*\{[^}]*pointer-events:\s*none;/s);
   assert.match(styleSource, /\.intermission-banner\s*\{[^}]*pointer-events:\s*none;/s);
-  assert.match(styleSource, /\.abandon-overlay,\s*\.upgrade-overlay\s*\{[^}]*pointer-events:\s*auto;/s);
+  assert.match(
+    styleSource,
+    /\.abandon-overlay,\s*\.upgrade-overlay,\s*\.build-detail-overlay\s*\{[^}]*pointer-events:\s*auto;/s,
+  );
   assert.match(styleSource, /\.playtest-panel\s*\{[^}]*position:\s*fixed;[^}]*overflow:\s*auto;/s);
 });
 

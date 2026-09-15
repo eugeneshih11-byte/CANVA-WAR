@@ -126,24 +126,32 @@
                 <div id="upgradeChoices" class="upgrade-choices"></div>
               </div>
             </div>
+            <div id="buildDetailOverlay" class="build-detail-overlay" role="dialog" aria-modal="true" aria-labelledby="buildDetailTitle" hidden>
+              <div class="build-detail-dialog">
+                <header><h2 id="buildDetailTitle">BUILD DETAIL</h2><button id="buildDetailClose" type="button">CLOSE · B / ESC</button></header>
+                <div id="buildDetailContent" class="build-detail-content"></div>
+              </div>
+            </div>
+            <div id="comboNotification" class="combo-notification" role="status" hidden></div>
           </div>
         </section>
 
         <aside class="build-panel" aria-labelledby="buildTitle">
-          <h2 id="buildTitle">BUILD</h2>
+          <div class="build-panel-heading"><h2 id="buildTitle">BUILD</h2><button id="buildDetailButton" type="button">DETAIL · B</button></div>
+          <button id="playtestBuildDemoButton" class="playtest-build-demo" type="button" hidden>DEMO BUILD STEP</button>
           <button id="playtestWaveComingButton" class="playtest-build-demo" type="button" hidden>DEMO WAVE COMING</button>
           <dl class="build-stats">
             <div class="build-weapon-row"><dt>Weapon</dt><dd id="buildWeaponName">Starter</dd></div>
             <div class="loadout-row"><dt>Slot A</dt><dd id="slotAValue">Starter</dd></div>
             <div class="loadout-row"><dt>Slot B</dt><dd id="slotBValue">Empty</dd></div>
             <div class="loadout-row active-loadout"><dt>Active · Q</dt><dd id="activeWeaponValue">A: Starter</dd></div>
-            <div><dt>Damage</dt><dd id="buildDamage">2</dd></div>
+            <div><dt>Player Damage</dt><dd id="buildDamage">2</dd></div>
             <div><dt>Fire rate</dt><dd id="buildFireRate">4.0/s</dd></div>
             <div><dt>Projectiles</dt><dd id="buildProjectileCount">1</dd></div>
             <div><dt>Move speed</dt><dd id="buildMoveSpeed">240</dd></div>
             <div><dt>Max HP</dt><dd id="buildMaxHp">5</dd></div>
           </dl>
-          <h3 class="build-upgrades-title">Upgrades</h3>
+          <h3 class="build-upgrades-title">Current Build</h3>
           <ul id="buildUpgradeList" class="build-upgrade-list">
             <li class="build-empty">No upgrades yet.</li>
           </ul>

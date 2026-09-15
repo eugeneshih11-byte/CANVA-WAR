@@ -350,10 +350,37 @@ test("Upgrade choice history preserves offers separately from selected Upgrade h
   offeredUpgradeIds[0] = "changed";
   const run = telemetry.getCurrentRun();
   assert.deepEqual(run.upgradeChoiceHistory, [{ playerLevel: 3,
-    offeredUpgradeIds: ["rapid-fire", "split-shot", "vitality"], selectedUpgradeId: "split-shot" }]);
+    offeredRewards: ["rapid-fire", "split-shot", "vitality"].map(id => ({ id, category: null, weaponId: null })),
+    selectedRewardId: "split-shot", rewardRng: null }]);
   assert.equal(run.upgradeHistory.length, 1);
   assert.equal(run.upgradeHistory[0].upgradeId, "split-shot");
   assert.equal(Object.hasOwn(run.upgradeHistory[0], "offeredUpgradeIds"), false);
+});
+test("Build telemetry reconstructs loadout, categorized rewards, Evolution, Combo, RNG, and final Build", () => {
+  const telemetry = create();
+  const initialBuild = { sharedUpgrades: { "rapid-fire": 2 }, weaponModsByWeaponId: {
+    "arc-blade": { "wide-arc": 2 } }, weaponEvolutionByWeaponId: {}, passives: {}, discoveredCombos: [] };
+  telemetry.startRun({ player: { ...player, loadout: { slotA: "arc-blade", slotB: "starter" },
+    build: initialBuild, rewardRng: { seed: 42, state: 42 } } });
+  telemetry.startEncounter({ type: "wave", definition: wave, player });
+  telemetry.recordUpgradeChoice({ playerLevel: 2,
+    offeredRewards: [{ id: "cyclone-blade", category: "weapon-evolution", weaponId: "arc-blade" }],
+    selectedRewardId: "cyclone-blade", rewardRng: { seed: 42, state: 1083814273 } });
+  const evolved = { ...initialBuild, weaponEvolutionByWeaponId: { "arc-blade": "cyclone-blade" } };
+  telemetry.recordUpgrade({ playerLevel: 2, upgradeId: "cyclone-blade", rewardCategory: "weapon-evolution",
+    weaponId: "arc-blade", rankBefore: 0, rankAfter: 1, build: evolved });
+  telemetry.recordEvolutionAcquisition({ evolutionId: "cyclone-blade", weaponId: "arc-blade", build: evolved });
+  const finalBuild = { ...evolved, passives: { "swift-feet": 2 }, discoveredCombos: ["blade-dance"] };
+  telemetry.recordComboDiscovery({ comboId: "blade-dance", comboName: "Blade Dance", build: finalBuild });
+  telemetry.finishRun({ endReason: "death", player: { ...player, build: finalBuild } });
+  const run = telemetry.getSessionReport().runs[0];
+  assert.deepEqual(run.startingLoadout, { slotA: "arc-blade", slotB: "starter" });
+  assert.deepEqual(run.upgradeChoiceHistory[0].rewardRng, { seed: 42, state: 1083814273 });
+  assert.equal(run.upgradeHistory[0].rewardCategory, "weapon-evolution");
+  assert.equal(run.upgradeHistory[0].weaponId, "arc-blade");
+  assert.deepEqual(run.evolutionAcquisitions.map(entry => entry.evolutionId), ["cyclone-blade"]);
+  assert.deepEqual(run.comboDiscoveries.map(entry => entry.comboId), ["blade-dance"]);
+  assert.deepEqual(run.finalBuildSummary, finalBuild);
 });
 test("Wave Clear finalizes exactly once and later hooks cannot change it", () => {
   const telemetry = start();

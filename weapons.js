@@ -22,16 +22,16 @@
       projectileCount: 1, spreadDegrees: 0, pierce: 0, explosionRadius: 80 },
     "arc-blade": { damage: 2, fireRate: 1.5, sweepRange: 105, sweepHalfAngleDegrees: 55 }
   });
-  const makeWeapon = (id, name, attackKind, supportedWeaponUpgrades, extra = {}) => freeze({
-    id, name, attackKind, supportedWeaponUpgrades, ...WEAPON_CALIBRATION[id], ...extra
+  const makeWeapon = (id, name, attackKind, supportedWeaponUpgrades, buildTags, extra = {}) => freeze({
+    id, name, attackKind, supportedWeaponUpgrades, buildTags, ...WEAPON_CALIBRATION[id], ...extra
   });
   const DEFINITIONS = freeze({
-    starter: makeWeapon("starter", "Starter", "projectile", ["rapid-fire", "heavy-shot", "split-shot"]),
-    scatter: makeWeapon("scatter", "Scatter", "projectile", ["rapid-fire", "heavy-shot", "split-shot"]),
-    piercer: makeWeapon("piercer", "Piercer", "projectile", ["rapid-fire", "heavy-shot", "split-shot"]),
-    burst: makeWeapon("burst", "Burst", "burst", ["rapid-fire", "heavy-shot"]),
-    launcher: makeWeapon("launcher", "Launcher", "launcher", ["rapid-fire", "heavy-shot"]),
-    "arc-blade": makeWeapon("arc-blade", "Arc Blade", "arc", ["rapid-fire", "heavy-shot"], {
+    starter: makeWeapon("starter", "Starter", "projectile", ["rapid-fire", "heavy-shot", "split-shot"], ["Projectile"]),
+    scatter: makeWeapon("scatter", "Scatter", "projectile", ["rapid-fire", "heavy-shot", "split-shot"], ["Projectile", "Multi-hit"]),
+    piercer: makeWeapon("piercer", "Piercer", "projectile", ["rapid-fire", "heavy-shot", "split-shot"], ["Projectile", "Pierce"]),
+    burst: makeWeapon("burst", "Burst", "burst", ["rapid-fire", "heavy-shot"], ["Projectile", "Multi-hit"]),
+    launcher: makeWeapon("launcher", "Launcher", "launcher", ["rapid-fire", "heavy-shot"], ["Projectile", "AoE"]),
+    "arc-blade": makeWeapon("arc-blade", "Arc Blade", "arc", ["rapid-fire", "heavy-shot"], ["Melee", "AoE"], {
       bulletSpeed: 0, bulletSize: 0, projectileCount: 0, spreadDegrees: 0, pierce: 0
     })
   });

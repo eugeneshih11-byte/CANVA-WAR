@@ -58,6 +58,10 @@ globalThis.__gameTest = {
   chooseUpgrade,
   renderUpgradeChoices,
   renderBuildPanel,
+  renderBuildDetail,
+  openBuildDetail,
+  closeBuildDetail,
+  preparePlaytestBuildDemoStep,
   clearInput,
   spawnEnemy,
   updateEnemies,
@@ -85,7 +89,6 @@ globalThis.__gameTest = {
   updateArenaPresentation: typeof updateArenaPresentation === "function" ? updateArenaPresentation : null,
   setBuildState(value) {
     buildState = RunBuild.createBuildState(value);
-    weaponSlots[activeWeaponSlotIndex].buildState = buildState;
     weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId], buildState);
     playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
     player.speed = playerStats.speed;
@@ -94,7 +97,7 @@ globalThis.__gameTest = {
     renderBuildPanel();
   },
   setUpgradeChoices(ids) {
-    currentUpgradeChoices = ids.map(id => RunBuild.UPGRADES[id]);
+    currentUpgradeChoices = ids.map(id => RunBuild.REWARDS[id]);
     isChoosingUpgrade = currentUpgradeChoices.length > 0;
     if (isChoosingUpgrade) renderUpgradeChoices();
   },
@@ -137,6 +140,7 @@ globalThis.__gameTest = {
       isGameOver,
       isVictory,
       isChoosingUpgrade,
+      isBuildDetailOpen,
       score,
       level,
       xp,
@@ -158,6 +162,7 @@ globalThis.__gameTest = {
     if ("isVictory" in values) isVictory = values.isVictory;
     if ("isAbandoned" in values) isAbandoned = values.isAbandoned;
     if ("isChoosingUpgrade" in values) isChoosingUpgrade = values.isChoosingUpgrade;
+    if ("isBuildDetailOpen" in values) isBuildDetailOpen = values.isBuildDetailOpen;
     if ("score" in values) score = values.score;
     if ("level" in values) level = values.level;
     if ("xp" in values) xp = values.xp;
@@ -317,6 +322,12 @@ function loadGame(initialStorage = {}, options = {}) {
     buildMoveSpeed: createElement("buildMoveSpeed"),
     buildMaxHp: createElement("buildMaxHp"),
     buildUpgradeList: createElement("buildUpgradeList"),
+    buildDetailButton: createElement("buildDetailButton"),
+    buildDetailOverlay: createElement("buildDetailOverlay"),
+    buildDetailClose: createElement("buildDetailClose"),
+    buildDetailContent: createElement("buildDetailContent"),
+    comboNotification: createElement("comboNotification"),
+    playtestBuildDemoButton: createElement("playtestBuildDemoButton"),
     playtestWaveComingButton: createElement("playtestWaveComingButton"),
     arenaRegion: createElement("arenaRegion"),
     canvasStage: createElement("canvasStage"),
@@ -365,6 +376,9 @@ function loadGame(initialStorage = {}, options = {}) {
   elements.canvasStage.clientHeight = options.stageHeight ?? 600;
   elements.abandonOverlay.hidden = true;
   elements.upgradeOverlay.hidden = true;
+  elements.buildDetailOverlay.hidden = true;
+  elements.comboNotification.hidden = true;
+  elements.playtestBuildDemoButton.hidden = true;
   elements.playtestWaveComingButton.hidden = true;
   elements.intermissionBanner.hidden = true;
   elements.enemyIntroduction.hidden = true;
@@ -559,7 +573,9 @@ function assertResetState(game) {
     name: "Starter",
     attackKind: "projectile",
     supportedWeaponUpgrades: ["rapid-fire", "heavy-shot", "split-shot"],
+    buildTags: ["Projectile"],
     damage: 2,
+    playerDamage: 2,
     fireRate: 4,
     bulletSpeed: 480,
     bulletSize: 10,
@@ -567,16 +583,13 @@ function assertResetState(game) {
     spreadDegrees: 0,
     pierce: 0
   });
-  assert.deepEqual({ ...game.buildState.upgradeStacks }, {
-    "rapid-fire": 0,
-    "heavy-shot": 0,
-    "split-shot": 0,
-    vitality: 0,
-    "swift-feet": 0
+  assert.deepEqual(JSON.parse(JSON.stringify(game.buildState)), {
+    sharedUpgrades: { "rapid-fire": 0, "heavy-shot": 0, "split-shot": 0 },
+    weaponModsByWeaponId: {}, weaponEvolutionByWeaponId: {}, passives: {}, discoveredCombos: []
   });
   assert.deepEqual({ ...game.weaponRuntime }, { timeUntilNextShot: 0, attackHeld: false,
     burstShotsRemaining: 0, burstShotTimer: 0, burstAimAngle: 0,
-    burstWeapon: null, burstAttackId: null });
+    arcAttackCount: 0, burstWeapon: null, burstAttackId: null });
   assert.equal(state.boss, null);
   assert.equal(state.hasBossSpawned, false);
   assert.equal(state.isBossDefeated, false);
@@ -1627,12 +1640,12 @@ test("Upgrade cards show three numbered choices and card clicks select without f
   assert.equal(game.elements.upgradeOverlay.hidden, false);
   assert.equal(cards.length, 3);
   assert.match(cards[0].textContent, /1 · RAPID FIRE/);
-  assert.match(cards[0].textContent, /\+20% Fire Rate/);
+  assert.match(cards[0].textContent, /\+20% Attack Rate/);
   assert.match(cards[0].textContent, /0 \/ 4/);
   assert.match(cards[1].getAttribute("aria-label"), /^2\. Heavy Shot\./);
   assert.equal(game.bullets.length, 0);
   cards[1].click();
-  assert.equal(game.buildState.upgradeStacks["heavy-shot"], 1);
+  assert.equal(game.buildState.sharedUpgrades["heavy-shot"], 1);
   assert.equal(game.getState().isChoosingUpgrade, false);
   assert.equal(game.elements.upgradeOverlay.hidden, true);
   assert.equal(game.bullets.length, 0);
@@ -1645,9 +1658,9 @@ test("keyboard 1, 2, and 3 select the matching displayed Upgrade", () => {
     const game = loadGame(); startGame(game);
     game.setUpgradeChoices(ids);
     game.listeners.keydown({ key: String(index + 1), repeat: false });
-    assert.equal(game.buildState.upgradeStacks[expectedId], 1);
+    assert.equal(game.buildState.sharedUpgrades[expectedId], 1);
     for (const otherId of ids.filter(id => id !== expectedId)) {
-      assert.equal(game.buildState.upgradeStacks[otherId], 0);
+      assert.equal(game.buildState.sharedUpgrades[otherId], 0);
     }
   });
 });
@@ -1730,6 +1743,80 @@ test("restart clears the Run Build and restores its panel", () => {
   assert.equal(game.elements.buildProjectileCount.textContent, "1");
   assert.equal(game.elements.buildUpgradeList.children.length, 1);
   assert.equal(game.elements.buildUpgradeList.children[0].textContent, "No upgrades yet.");
+});
+
+test("one shared Upgrade state follows both equipped Weapons without duplication", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["starter", "piercer"]);
+  game.setBuildState({ sharedUpgrades: { "rapid-fire": 1 } });
+  assert.equal(game.weapon.fireRate, 4.8);
+  assert.equal(game.buildState.sharedUpgrades["rapid-fire"], 1);
+  game.activateWeaponSlot(1);
+  assert.equal(game.weapon.fireRate, 2.16);
+  assert.equal(game.buildState.sharedUpgrades["rapid-fire"], 1);
+  assert.equal(Object.hasOwn(game.weaponSlots[0], "buildState"), false);
+  assert.equal(Object.hasOwn(game.weaponSlots[1], "buildState"), false);
+});
+
+test("production projectiles take base damage from Player Damage, not legacy Weapon damage", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["piercer"]);
+  game.setBuildState({});
+  game.weaponRuntime.timeUntilNextShot = 0;
+  game.setMouse(game.player.x + 300, game.player.y);
+  game.fireWeaponAttack();
+  assert.equal(game.weapon.playerDamage, 2);
+  assert.equal(game.bullets[0].damage, 2);
+});
+
+test("Build Detail pauses simulation and reveals COMBOS only after discovery", () => {
+  const game = loadGame(); startGame(game);
+  game.keys.d = true;
+  const beforeX = game.player.x;
+  assert.equal(game.openBuildDetail(), true);
+  assert.equal(game.getState().isBuildDetailOpen, true);
+  game.update(1);
+  assert.equal(game.player.x, beforeX);
+  assert.equal(game.elements.buildDetailContent.children.some(section => section.dataset.section === "combos"), false);
+  game.closeBuildDetail();
+  game.configureWeaponLoadout(["arc-blade"]);
+  game.setBuildState({ sharedUpgrades: { "rapid-fire": 2 },
+    weaponModsByWeaponId: { "arc-blade": { "wide-arc": 2 } },
+    weaponEvolutionByWeaponId: { "arc-blade": "cyclone-blade" },
+    passives: { "swift-feet": 2 }, discoveredCombos: ["blade-dance"] });
+  game.openBuildDetail();
+  const combos = game.elements.buildDetailContent.children.find(section => section.dataset.section === "combos");
+  assert.ok(combos);
+  assert.match(combos.textContent, /Blade Dance/);
+  assert.match(combos.textContent, /every 2nd/i);
+});
+
+test("Cyclone full sweep damages each target once and Blade Dance changes cadence", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["arc-blade"]);
+  game.setBuildState({ sharedUpgrades: { "rapid-fire": 2 },
+    weaponModsByWeaponId: { "arc-blade": { "wide-arc": 2 } },
+    weaponEvolutionByWeaponId: { "arc-blade": "cyclone-blade" } });
+  const behind = makeEnemy(game, "tank", { x: game.player.x - 70, y: game.player.y,
+    width: 20, height: 20, hp: 20, maxHp: 20, speed: 0 });
+  game.enemies.push(behind);
+  game.setMouse(game.player.x + 300, game.player.y);
+  for (let attack = 0; attack < 3; attack++) {
+    game.weaponRuntime.timeUntilNextShot = 0;
+    game.fireWeaponAttack();
+  }
+  assert.equal(behind.hp, 18);
+  assert.equal(game.weaponEffects.at(-1).fullSweep, true);
+
+  game.setBuildState({ ...game.buildState, passives: { "swift-feet": 2 }, discoveredCombos: ["blade-dance"] });
+  game.weaponRuntime.arcAttackCount = 0;
+  behind.hp = 20;
+  for (let attack = 0; attack < 2; attack++) {
+    game.weaponRuntime.timeUntilNextShot = 0;
+    game.fireWeaponAttack();
+  }
+  assert.equal(behind.hp, 18);
+  assert.equal(game.weaponEffects.at(-1).fullSweep, true);
 });
 
 test("Normal, Fast, and Tank enemies advance toward the Player at their own speed", () => {
@@ -3023,6 +3110,23 @@ test("production starts Starter-only while playtest selection equips one or two 
   inputs[2].checked = true;
   playtest.listeners["playtestWeaponSelector:change"]({ target: inputs[2] });
   assert.equal(inputs.filter(input => input.checked).length, 2);
+});
+
+test("playtest-only Build demo deterministically exercises Evolution then Combo discovery", () => {
+  const production = loadGame();
+  assert.equal(production.elements.playtestBuildDemoButton.hidden, true);
+  const game = loadGame({}, { search: "?playtest=1" }); startGame(game);
+  assert.equal(game.elements.playtestBuildDemoButton.hidden, false);
+  game.listeners["playtestBuildDemoButton:click"]();
+  assert.deepEqual(Array.from(game.currentUpgradeChoices, reward => reward.id), ["cyclone-blade"]);
+  game.chooseUpgrade("1");
+  assert.equal(game.buildState.weaponEvolutionByWeaponId["arc-blade"], "cyclone-blade");
+  game.listeners["playtestBuildDemoButton:click"]();
+  assert.deepEqual(Array.from(game.currentUpgradeChoices, reward => reward.id), ["swift-feet"]);
+  game.chooseUpgrade("1");
+  assert.deepEqual(Array.from(game.buildState.discoveredCombos), ["blade-dance"]);
+  assert.equal(game.elements.comboNotification.hidden, false);
+  assert.equal(game.elements.comboNotification.textContent, "COMBO DISCOVERED — BLADE DANCE");
 });
 
 test("playtest-only Wave Coming demo uses the real non-modal transition", () => {

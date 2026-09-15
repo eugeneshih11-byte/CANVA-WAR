@@ -9,6 +9,7 @@ test("six immutable production Weapons expose distinct attack identities", () =>
   assert.deepEqual(Weapons.STARTER, {
     id: "starter", name: "Starter", attackKind: "projectile",
     supportedWeaponUpgrades: ["rapid-fire", "heavy-shot", "split-shot"], damage: 2, fireRate: 4,
+    buildTags: ["Projectile"],
     bulletSpeed: 480, bulletSize: 10, projectileCount: 1,
     spreadDegrees: 0, pierce: 0
   });
@@ -19,6 +20,7 @@ test("six immutable production Weapons expose distinct attack identities", () =>
   assert.equal(Weapons.DEFINITIONS.burst.burstCount, 3);
   assert.equal(Weapons.DEFINITIONS.launcher.explosionRadius, 80);
   assert.equal(Weapons.DEFINITIONS["arc-blade"].attackKind, "arc");
+  assert.deepEqual(Weapons.DEFINITIONS["arc-blade"].buildTags, ["Melee", "AoE"]);
   assert.equal(Weapons.DEFINITIONS.starter, Weapons.STARTER);
   assert.equal(Object.isFrozen(Weapons.STARTER), true);
   assert.equal(Object.isFrozen(Weapons.DEFINITIONS), true);

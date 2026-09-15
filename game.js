@@ -40,6 +40,12 @@ const upgradeChoices = document.getElementById("upgradeChoices");
 const slotAValue = document.getElementById("slotAValue");
 const slotBValue = document.getElementById("slotBValue");
 const activeWeaponValue = document.getElementById("activeWeaponValue");
+const buildDetailButton = document.getElementById("buildDetailButton");
+const buildDetailOverlay = document.getElementById("buildDetailOverlay");
+const buildDetailClose = document.getElementById("buildDetailClose");
+const buildDetailContent = document.getElementById("buildDetailContent");
+const comboNotification = document.getElementById("comboNotification");
+const playtestBuildDemoButton = document.getElementById("playtestBuildDemoButton");
 const playtestWaveComingButton = document.getElementById("playtestWaveComingButton");
 const APP_VIEWS = Object.freeze({
   HUB: "hub",
@@ -200,12 +206,15 @@ let buildState = RunBuild.createBuildState();
 let weapon = RunBuild.resolveWeaponStats(Weapons.STARTER, buildState);
 let playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
 let upgradeRng = null;
+let rewardRngSeed = null;
 let currentUpgradeChoices = [];
 let weaponRuntime = createWeaponRuntime();
-let weaponSlots = [{ weaponId: Weapons.STARTER.id, buildState, runtime: weaponRuntime }];
+let weaponSlots = [{ weaponId: Weapons.STARTER.id, runtime: weaponRuntime }];
 let activeWeaponSlotIndex = 0;
 const weaponEffects = [];
 let nextWeaponAttackId = 1;
+let isBuildDetailOpen = false;
+let comboNotificationTimer = 0;
 const enemyStats = Object.fromEntries(Object.entries(Encounters.ENEMIES)
   .map(([type, definition]) => [type, definition.stats]));
 const enemyColors = {
@@ -259,16 +268,15 @@ const abandonOverlay = document.getElementById("abandonOverlay");
 
 function createWeaponRuntime() {
   return { timeUntilNextShot: 0, attackHeld: false, burstShotsRemaining: 0,
-    burstShotTimer: 0, burstAimAngle: 0 };
+    burstShotTimer: 0, burstAimAngle: 0, arcAttackCount: 0 };
 }
 
 function configureWeaponLoadout(ids = [Weapons.STARTER.id]) {
   const selected = [...new Set(ids)].filter(id => Weapons.DEFINITIONS[id]).slice(0, 2);
   if (!selected.length) selected.push(Weapons.STARTER.id);
-  weaponSlots = selected.map(weaponId => ({ weaponId,
-    buildState: RunBuild.createBuildState(), runtime: createWeaponRuntime() }));
+  buildState = RunBuild.createBuildState();
+  weaponSlots = selected.map(weaponId => ({ weaponId, runtime: createWeaponRuntime() }));
   activeWeaponSlotIndex = 0;
-  buildState = weaponSlots[0].buildState;
   weaponRuntime = weaponSlots[0].runtime;
   weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[weaponSlots[0].weaponId], buildState);
   playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
@@ -287,7 +295,6 @@ function activateWeaponSlot(index, { record = true } = {}) {
   weaponRuntime.attackHeld = false;
   activeWeaponSlotIndex = index;
   const slot = weaponSlots[index];
-  buildState = slot.buildState;
   weaponRuntime = slot.runtime;
   weaponRuntime.attackHeld = false;
   weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[slot.weaponId], buildState);
@@ -318,28 +325,9 @@ function clearWeaponActions({ ready = false } = {}) {
   weaponEffects.length = 0;
 }
 
-function synchronizePlayerUpgrade(upgradeId) {
-  if (!RunBuild.PLAYER_UPGRADE_IDS.includes(upgradeId)) return;
-  const stacks = RunBuild.getUpgradeStacks(buildState, upgradeId);
-  for (const slot of weaponSlots) {
-    if (slot.buildState === buildState) continue;
-    slot.buildState = RunBuild.createBuildState(slot.buildState);
-    slot.buildState.upgradeStacks[upgradeId] = stacks;
-  }
-}
-
 function createUpgradeRng() {
-  let seed = 0x43414e56;
-  try {
-    if (typeof globalThis.crypto?.getRandomValues === "function") {
-      const values = new Uint32Array(1);
-      globalThis.crypto.getRandomValues(values);
-      seed = values[0];
-    }
-  } catch {
-    // A deterministic private stream is a safe fallback and never consumes Wave RNG.
-  }
-  return Weapons.createSeededRng(seed);
+  rewardRngSeed = ((battlefieldRuntime?.seed ?? 0x43414e56) ^ 0x72657764) >>> 0;
+  return RunBuild.createRewardRng(rewardRngSeed);
 }
 
 function clearInput({ weaponReady = false } = {}) {
@@ -781,6 +769,12 @@ document.getElementById("armoryBackButton").addEventListener("click", requestHub
 document.getElementById("equipmentBackButton").addEventListener("click", requestHub);
 codexBackButton.addEventListener("click", requestHub);
 backToHubButton.addEventListener("click", requestHub);
+buildDetailButton?.addEventListener("click", () => openBuildDetail());
+buildDetailClose?.addEventListener("click", () => closeBuildDetail());
+if (playtestBuildDemoButton) {
+  playtestBuildDemoButton.hidden = !isPlaytestMode;
+  playtestBuildDemoButton.addEventListener("click", preparePlaytestBuildDemoStep);
+}
 if (playtestWaveComingButton) {
   playtestWaveComingButton.hidden = !isPlaytestMode;
   playtestWaveComingButton.addEventListener("click", () => {
@@ -839,7 +833,7 @@ function updateAim(event) {
 
 function canAttack() {
   return currentView === APP_VIEWS.GAME && isGameStarted && !isGameOver && !isVictory && !isChoosingUpgrade &&
-    !isAbandonConfirmOpen && !isAbandoned &&
+    !isAbandonConfirmOpen && !isBuildDetailOpen && !isAbandoned &&
     [RUN_PHASES.WAVE_ACTIVE, RUN_PHASES.BOSS_ACTIVE].includes(runPhase);
 }
 
@@ -876,7 +870,9 @@ function fireProjectileSet(weaponSnapshot, aimAngle, attackId) {
 
 function fireArcBlade(weaponSnapshot, aimAngle, attackId) {
   const centerX = player.x + player.width / 2, centerY = player.y + player.height / 2;
-  const halfAngle = weaponSnapshot.sweepHalfAngleDegrees * Math.PI / 180;
+  weaponRuntime.arcAttackCount++;
+  const sweep = RunBuild.getArcBladeSweep(buildState, weaponRuntime.arcAttackCount);
+  const halfAngle = sweep.halfAngleDegrees * Math.PI / 180;
   const targets = [...enemies.slice().filter(isCurrentEncounterEnemy),
     ...(runPhase === RUN_PHASES.BOSS_ACTIVE && boss ? [boss] : [])].filter(target => {
     const dx = target.x + target.width / 2 - centerX, dy = target.y + target.height / 2 - centerY;
@@ -895,7 +891,7 @@ function fireArcBlade(weaponSnapshot, aimAngle, attackId) {
     if (result.waveCompleted || isChoosingUpgrade || isGameOver) break;
   }
   weaponEffects.push({ kind: "arc", x: centerX, y: centerY, angle: aimAngle,
-    range: weaponSnapshot.sweepRange, halfAngle, elapsed: 0, duration: 0.16 });
+    range: weaponSnapshot.sweepRange, halfAngle, fullSweep: sweep.fullSweep, elapsed: 0, duration: 0.16 });
   observeTelemetry("recordArcBladeSweep", () => ({ weaponId: weaponSnapshot.id, targetCount: hitCount, attackId }));
   audioManager.play("arcBladeSweep", { world: true, pan: worldAudioPan(player), concurrency: 2 });
 }
@@ -991,7 +987,8 @@ if (typeof ResizeObserver === "function" && arenaRegion) {
 
 canvas.addEventListener("click", () => {
   // Click is intentionally not a firing trigger; cadence is owned by Weapon Runtime.
-  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandonConfirmOpen || isAbandoned) {
+  if (!isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandonConfirmOpen ||
+      isBuildDetailOpen || isAbandoned) {
     return;
   }
 });
@@ -1017,6 +1014,11 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (isBuildDetailOpen) {
+    if (!event.repeat && ["b", "escape"].includes(key)) closeBuildDetail();
+    return;
+  }
+
   if (!isGameStarted || isGameOver || isVictory || isAbandoned) {
     return;
   }
@@ -1034,6 +1036,12 @@ document.addEventListener("keydown", (event) => {
     if (!event.repeat) {
       chooseUpgrade(key);
     }
+    return;
+  }
+
+  if (key === "b" && !event.repeat) {
+    event.preventDefault?.();
+    openBuildDetail();
     return;
   }
 
@@ -1094,9 +1102,13 @@ function resetGame() {
   isGameOver = false;
   isVictory = false;
   isChoosingUpgrade = false;
+  isBuildDetailOpen = false;
+  comboNotificationTimer = 0;
   currentUpgradeChoices = [];
   upgradeOverlay.hidden = true;
   upgradeChoices.textContent = "";
+  if (buildDetailOverlay) buildDetailOverlay.hidden = true;
+  if (comboNotification) comboNotification.hidden = true;
   upgradeRng = createUpgradeRng();
   clearWeaponActions({ ready: true });
   score = 0;
@@ -1244,9 +1256,12 @@ function updateContinuousEncounter(deltaTime) {
 }
 
 function update(deltaTime) {
-  if (currentView !== APP_VIEWS.GAME || !isGameStarted || isGameOver || isVictory || isChoosingUpgrade || isAbandonConfirmOpen || isAbandoned) {
+  if (currentView !== APP_VIEWS.GAME || !isGameStarted || isGameOver || isVictory || isChoosingUpgrade ||
+      isAbandonConfirmOpen || isBuildDetailOpen || isAbandoned) {
     return;
   }
+  comboNotificationTimer = Math.max(0, comboNotificationTimer - deltaTime);
+  if (comboNotification) comboNotification.hidden = comboNotificationTimer <= 0;
 
   if (runPhase === RUN_PHASES.STAGE_CLEAR) {
     stageClearTimer += deltaTime;
@@ -1875,11 +1890,11 @@ function updateLevel() {
     const nextXpRequirement = previousXpRequirement + xpToNextLevel;
     previousXpRequirement = xpToNextLevel;
     xpToNextLevel = nextXpRequirement;
-    currentUpgradeChoices = RunBuild.generateUpgradeChoices(
+    currentUpgradeChoices = RunBuild.generateRewardChoices(
       buildState,
       3,
       upgradeRng || (upgradeRng = createUpgradeRng()),
-      Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId]
+      weaponSlots.map(slot => slot.weaponId)
     );
 
     if (currentUpgradeChoices.length === 0) {
@@ -1903,35 +1918,52 @@ function chooseUpgrade(key) {
   const upgrade = Number.isInteger(choiceIndex) ? currentUpgradeChoices[choiceIndex] : null;
   if (!upgrade) return;
 
-  const result = RunBuild.applyUpgrade(buildState, upgrade.id, {
+  const result = RunBuild.applyReward(buildState, upgrade.id, {
     playerHp: player.hp,
     basePlayer: RunBuild.PLAYER_BASE_STATS,
-    baseWeapon: Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId]
+    loadout: weaponSlots.map(slot => slot.weaponId)
   });
   if (!result.applied) return;
 
   buildState = result.buildState;
-  weaponSlots[activeWeaponSlotIndex].buildState = buildState;
-  synchronizePlayerUpgrade(upgrade.id);
   weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId], buildState);
   playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
   player.speed = playerStats.speed;
   player.maxHp = playerStats.maxHp;
   player.hp = Math.min(player.maxHp, result.playerHp ?? player.hp);
+  if (result.discoveries.length) {
+    comboNotificationTimer = 2.6;
+    comboNotification.textContent = `COMBO DISCOVERED — ${result.discoveries[0].name.toUpperCase()}`;
+    comboNotification.hidden = false;
+    for (const combo of result.discoveries) observeTelemetry("recordComboDiscovery", () => ({
+      comboId: combo.id, comboName: combo.name, build: buildState
+    }));
+  }
   observeTelemetry("recordUpgradeChoice", () => ({
     playerLevel: level,
-    offeredUpgradeIds: currentUpgradeChoices.map(choice => choice.id),
-    selectedUpgradeId: upgrade.id
+    offeredRewards: currentUpgradeChoices.map(choice => ({ id: choice.id, category: choice.category,
+      weaponId: choice.weaponId || null })),
+    selectedRewardId: upgrade.id,
+    rewardRng: { seed: rewardRngSeed, state: upgradeRng?.getState?.() ?? null }
   }));
   observeTelemetry("recordUpgrade", () => ({
     playerLevel: level,
     upgradeId: upgrade.id,
     upgradeName: upgrade.name,
-    upgradeStack: RunBuild.getUpgradeStacks(buildState, upgrade.id),
+    rewardCategory: upgrade.category,
+    weaponId: upgrade.weaponId || null,
+    rankBefore: result.rankBefore,
+    rankAfter: result.rankAfter,
+    upgradeStack: result.rankAfter,
     weapon,
     player: telemetryPlayer(),
     build: buildState
   }));
+  if (upgrade.category === RunBuild.REWARD_CATEGORIES.WEAPON_EVOLUTION) {
+    observeTelemetry("recordEvolutionAcquisition", () => ({
+      evolutionId: upgrade.id, weaponId: upgrade.weaponId, playerLevel: level, build: buildState
+    }));
+  }
   isChoosingUpgrade = false;
   currentUpgradeChoices = [];
   upgradeOverlay.hidden = true;
@@ -2748,21 +2780,121 @@ function textElement(tagName, className, text) {
   return element;
 }
 
+function addBuildDetailSection(title, entries) {
+  const section = document.createElement("section");
+  section.className = "build-detail-section";
+  section.dataset.section = title.toLowerCase().replaceAll(" ", "-");
+  const list = document.createElement("ul");
+  for (const entry of entries.length ? entries : ["Empty"]) {
+    list.append(textElement("li", entries.length ? "" : "empty", entry));
+  }
+  section.append(textElement("h3", "", title.toUpperCase()), list);
+  buildDetailContent.append(section);
+  return section;
+}
+
+function renderBuildDetail() {
+  if (!buildDetailContent) return;
+  clearElement(buildDetailContent);
+  addBuildDetailSection("Shared Upgrades", Object.values(RunBuild.SHARED_UPGRADES)
+    .filter(item => RunBuild.getSharedUpgradeRank(buildState, item.id) > 0)
+    .map(item => `${item.name} · Rank ${RunBuild.getSharedUpgradeRank(buildState, item.id)}`));
+  for (const slot of weaponSlots) {
+    const definition = Weapons.DEFINITIONS[slot.weaponId];
+    const mods = Object.values(RunBuild.WEAPON_MODS)
+      .filter(item => item.weaponId === slot.weaponId && RunBuild.getWeaponModRank(buildState, slot.weaponId, item.id) > 0)
+      .map(item => `${item.name} · Rank ${RunBuild.getWeaponModRank(buildState, slot.weaponId, item.id)}`);
+    const evolutionId = RunBuild.getWeaponEvolution(buildState, slot.weaponId);
+    if (evolutionId) mods.push(`Evolution · ${RunBuild.WEAPON_EVOLUTIONS[evolutionId].name}`);
+    addBuildDetailSection(`${definition.name} Mods`, mods);
+  }
+  const passiveEntries = Object.values(RunBuild.PASSIVES)
+    .filter(item => RunBuild.getPassiveRank(buildState, item.id) > 0)
+    .map(item => `${item.name} · Rank ${RunBuild.getPassiveRank(buildState, item.id)}`);
+  while (passiveEntries.length < 3) passiveEntries.push("Empty Passive Slot");
+  addBuildDetailSection("Passives", passiveEntries);
+  if (buildState.discoveredCombos.length) {
+    addBuildDetailSection("Combos", buildState.discoveredCombos.map(id => {
+      const combo = RunBuild.COMBOS[id];
+      return `${combo.name} · ${combo.description}`;
+    }));
+  }
+}
+
+function openBuildDetail() {
+  if (!isGameStarted || isGameOver || isVictory || isAbandoned || isChoosingUpgrade ||
+      isAbandonConfirmOpen || [RUN_PHASES.INTRODUCTION_PENDING, RUN_PHASES.INTRODUCTION_ACTIVE].includes(runPhase)) return false;
+  isBuildDetailOpen = true;
+  clearInput();
+  renderBuildDetail();
+  buildDetailOverlay.hidden = false;
+  buildDetailClose.focus?.();
+  return true;
+}
+
+function closeBuildDetail() {
+  if (!isBuildDetailOpen) return false;
+  isBuildDetailOpen = false;
+  buildDetailOverlay.hidden = true;
+  clearInput();
+  buildDetailButton?.focus?.();
+  return true;
+}
+
+// Playtest-only deterministic setup for exercising the authored Evolution and
+// Combo through the real Level-Up selection path without a long XP grind.
+function preparePlaytestBuildDemoStep() {
+  if (!isPlaytestMode || !isGameStarted || isChoosingUpgrade || isBuildDetailOpen) return false;
+  if (!weaponSlots.some(slot => slot.weaponId === "arc-blade")) {
+    configureWeaponLoadout(["arc-blade", weaponSlots[0]?.weaponId || "starter"]);
+  }
+  const equipped = weaponSlots.map(slot => slot.weaponId);
+  const applyUntil = (rewardId, targetRank) => {
+    while (RunBuild.getRewardRank(buildState, rewardId) < targetRank) {
+      const result = RunBuild.applyReward(buildState, rewardId, { loadout: equipped, playerHp: player.hp });
+      if (!result.applied) break;
+      buildState = result.buildState;
+    }
+  };
+  if (!RunBuild.getWeaponEvolution(buildState, "arc-blade")) {
+    applyUntil("rapid-fire", 2);
+    applyUntil("wide-arc", 2);
+    currentUpgradeChoices = [RunBuild.WEAPON_EVOLUTIONS["cyclone-blade"]];
+  } else if (!RunBuild.hasDiscoveredCombo(buildState, "blade-dance")) {
+    applyUntil("swift-feet", 1);
+    currentUpgradeChoices = [RunBuild.PASSIVES["swift-feet"]];
+  } else {
+    comboNotificationTimer = 2.6;
+    comboNotification.textContent = "COMBO ACTIVE — BLADE DANCE";
+    comboNotification.hidden = false;
+    return true;
+  }
+  weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId], buildState);
+  playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
+  player.speed = playerStats.speed;
+  player.maxHp = playerStats.maxHp;
+  isChoosingUpgrade = true;
+  clearInput();
+  renderBuildPanel();
+  renderUpgradeChoices();
+  return true;
+}
+
 function renderUpgradeChoices() {
   clearElement(upgradeChoices);
   upgradeTitle.textContent = "LEVEL UP";
   upgradeMessage.textContent = "Choose one upgrade. Press 1, 2, or 3.";
   currentUpgradeChoices.forEach((upgrade, index) => {
-    const currentStack = RunBuild.getUpgradeStacks(buildState, upgrade.id);
+    const currentStack = RunBuild.getRewardRank(buildState, upgrade.id);
     const card = document.createElement("button");
     card.type = "button";
     card.className = "upgrade-card";
     card.dataset.choiceIndex = String(index);
-    card.setAttribute?.("aria-label", `${index + 1}. ${upgrade.name}. ${upgrade.effectLines.join(". ")}. ${currentStack} of ${upgrade.maxStacks}`);
+    card.setAttribute?.("aria-label", `${index + 1}. ${upgrade.displayName || upgrade.name}. ${upgrade.effectLines.join(". ")}. ${currentStack} of ${upgrade.maxRank}`);
     card.append(
-      textElement("span", "upgrade-card-name", `${index + 1} · ${upgrade.name.toUpperCase()}`),
+      textElement("span", "upgrade-card-name", `${index + 1} · ${(upgrade.displayName || upgrade.name).toUpperCase()}`),
       textElement("span", "upgrade-card-effect", upgrade.effectLines.join(" · ")),
-      textElement("span", "upgrade-card-stack", `${currentStack} / ${upgrade.maxStacks}`)
+      textElement("span", "upgrade-card-stack", `${upgrade.category.toUpperCase()} · ${currentStack} / ${upgrade.maxRank}`)
     );
     card.addEventListener("click", () => chooseUpgrade(String(index + 1)));
     upgradeChoices.append(card);
@@ -2773,7 +2905,7 @@ function renderUpgradeChoices() {
 
 function renderBuildPanel() {
   document.getElementById("buildWeaponName").textContent = weapon.name;
-  document.getElementById("buildDamage").textContent = formatNumber(weapon.damage);
+  document.getElementById("buildDamage").textContent = formatNumber(playerStats.damage);
   document.getElementById("buildFireRate").textContent = `${weapon.fireRate.toFixed(1)}/s`;
   document.getElementById("buildProjectileCount").textContent = weapon.projectileCount;
   document.getElementById("buildMoveSpeed").textContent = Math.round(player.speed);
@@ -2784,18 +2916,29 @@ function renderBuildPanel() {
 
   const list = document.getElementById("buildUpgradeList");
   clearElement(list);
-  const owned = RunBuild.UPGRADE_LIST.filter(upgrade =>
-    RunBuild.getUpgradeStacks(buildState, upgrade.id) > 0);
+  const owned = [];
+  for (const upgrade of Object.values(RunBuild.SHARED_UPGRADES)) {
+    const value = RunBuild.getSharedUpgradeRank(buildState, upgrade.id);
+    if (value) owned.push(`${upgrade.name} ×${value}`);
+  }
+  for (const passive of Object.values(RunBuild.PASSIVES)) {
+    const value = RunBuild.getPassiveRank(buildState, passive.id);
+    if (value) owned.push(`${passive.name} ×${value}`);
+  }
+  for (const slot of weaponSlots) for (const mod of Object.values(RunBuild.WEAPON_MODS)) {
+    const value = RunBuild.getWeaponModRank(buildState, slot.weaponId, mod.id);
+    if (value) owned.push(`${mod.displayName} ×${value}`);
+  }
+  for (const [weaponId, evolutionId] of Object.entries(buildState.weaponEvolutionByWeaponId)) {
+    owned.push(`${Weapons.DEFINITIONS[weaponId].name} → ${RunBuild.WEAPON_EVOLUTIONS[evolutionId].name}`);
+  }
   if (owned.length === 0) {
     list.append(textElement("li", "build-empty", "No upgrades yet."));
     return;
   }
-  for (const upgrade of owned) {
-    const stacks = RunBuild.getUpgradeStacks(buildState, upgrade.id);
-    list.append(textElement("li", "", `${upgrade.name} ×${stacks}`));
-  }
-  if (RunBuild.UPGRADE_LIST.every(upgrade => !RunBuild.canSelectUpgrade(buildState, upgrade.id,
-    Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId]))) {
+  for (const entry of owned) list.append(textElement("li", "", entry));
+  if (RunBuild.REWARD_LIST.every(reward => !RunBuild.canSelectReward(buildState, reward.id,
+    weaponSlots.map(slot => slot.weaponId)))) {
     list.append(textElement("li", "build-maxed", "BUILD MAXED"));
   }
 }
@@ -2808,7 +2951,7 @@ function updateHud() {
   document.getElementById("stageValue").textContent = `STAGE ${stageIndex + 1}`;
   document.getElementById("waveValue").textContent = runPhase === RUN_PHASES.BOSS_ACTIVE ? "BOSS 1" :
     `WAVE ${(stageRuntime?.waveIndex ?? 0) + 1} / ${stageRuntime?.definition.waveCount ?? 0}`;
-  backToHubButton.hidden = isChoosingUpgrade || isAbandonConfirmOpen ||
+  backToHubButton.hidden = isChoosingUpgrade || isAbandonConfirmOpen || isBuildDetailOpen ||
     [RUN_PHASES.INTRODUCTION_PENDING, RUN_PHASES.INTRODUCTION_ACTIVE].includes(runPhase);
 }
 
@@ -2885,11 +3028,12 @@ function drawPhasePresentation() {
 // Optional observers never participate in gameplay decisions or consume generation RNG.
 function telemetryPlayer() {
   return { playerHp: player.hp, playerMaxHp: player.maxHp, playerLevel: level, playerXp: xp,
-    playerSpeed: player.speed, speed: player.speed, maxHp: player.maxHp,
+    playerSpeed: player.speed, speed: player.speed, maxHp: player.maxHp, damage: playerStats.damage,
     weapon: { ...weapon },
     loadout: { slotA: weaponSlots[0]?.weaponId || null, slotB: weaponSlots[1]?.weaponId || null,
       activeWeapon: weapon.id, activeSlot: activeWeaponSlotIndex === 0 ? "A" : "B" },
-    build: { upgradeStacks: { ...buildState.upgradeStacks } } };
+    build: RunBuild.createBuildState(buildState),
+    rewardRng: { seed: rewardRngSeed, state: upgradeRng?.getState?.() ?? null } };
 }
 function initializePlaytestTelemetry() {
   try {
@@ -2915,7 +3059,10 @@ function initializePlaytestTelemetry() {
         weapons: Weapons.DEFINITIONS,
         continuousEncounter: { structure: ContinuousEncounter.STRUCTURE,
           calibration: ContinuousEncounter.CALIBRATION },
-        upgrades: Object.fromEntries(RunBuild.UPGRADE_LIST.map(upgrade => [upgrade.id, upgrade])),
+        buildContent: {
+          rewards: Object.fromEntries(RunBuild.REWARD_LIST.map(reward => [reward.id, reward])),
+          combos: RunBuild.COMBOS
+        },
         technicalFireRateCap: Weapons.MAX_FIRE_RATE }
     });
     if (typeof PlaytestUI !== "undefined") {
