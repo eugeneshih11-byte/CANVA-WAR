@@ -317,6 +317,7 @@ function loadGame(initialStorage = {}, options = {}) {
     buildMoveSpeed: createElement("buildMoveSpeed"),
     buildMaxHp: createElement("buildMaxHp"),
     buildUpgradeList: createElement("buildUpgradeList"),
+    playtestWaveComingButton: createElement("playtestWaveComingButton"),
     arenaRegion: createElement("arenaRegion"),
     canvasStage: createElement("canvasStage"),
     intermissionBanner: createElement("intermissionBanner"),
@@ -364,6 +365,7 @@ function loadGame(initialStorage = {}, options = {}) {
   elements.canvasStage.clientHeight = options.stageHeight ?? 600;
   elements.abandonOverlay.hidden = true;
   elements.upgradeOverlay.hidden = true;
+  elements.playtestWaveComingButton.hidden = true;
   elements.intermissionBanner.hidden = true;
   elements.enemyIntroduction.hidden = true;
   const resizeObservers = [];
@@ -1303,12 +1305,14 @@ test("storage errors cannot stop combat or settlement", () => {
   assert.doesNotThrow(() => game.saveGame());
   assert.doesNotThrow(() => game.settleRun("death"));
 });
-test("held movement repeats cannot leak across encounter transitions", () => {
+test("held movement continues across non-modal logical Wave transitions", () => {
   const game = loadGame(); startGame(game);
   game.listeners.keydown({ key: "d" }); assert.equal(game.keys.d, true);
-  finishWave(game); assert.equal(game.keys.d, false);
-  game.listeners.keydown({ key: "d", repeat: true }); assert.equal(game.keys.d, false);
-  game.listeners.keyup({ key: "d" }); game.listeners.keydown({ key: "d", repeat: false });
+  finishWave(game); assert.equal(game.keys.d, true);
+  game.listeners.keydown({ key: "d", repeat: true }); assert.equal(game.keys.d, true);
+  game.listeners.keyup({ key: "d" });
+  assert.equal(game.keys.d, false);
+  game.listeners.keydown({ key: "d", repeat: false });
   assert.equal(game.keys.d, true);
 });
 
@@ -1437,8 +1441,18 @@ test("Level choice and Abandon freeze Weapon cooldown and clear held attack", ()
 
 test("Wave Coming remains non-modal and combat firing stays active", () => {
   const game = loadGame(); startGame(game);
+  game.keys.d = true;
+  game.weaponRuntime.attackHeld = true;
+  game.weaponRuntime.timeUntilNextShot = 0.25;
   finishWave(game);
   assert.equal(game.getState().encounterController.phase, "WAVE_COMING");
+  assert.equal(game.keys.d, true);
+  assert.equal(game.weaponRuntime.attackHeld, true);
+  assert.equal(game.weaponRuntime.timeUntilNextShot, 0.25);
+  const playerX = game.player.x;
+  game.update(0.1);
+  assert.ok(game.player.x > playerX);
+  assert.ok(game.weaponRuntime.timeUntilNextShot < 0.25);
   game.weaponRuntime.timeUntilNextShot = 0;
   pressPrimary(game);
   assert.equal(game.bullets.length, 1);
@@ -2394,7 +2408,7 @@ test("Wave Coming banner is compact, non-countdown transition presentation", () 
   game.updateArenaPresentation();
   assert.equal(game.elements.intermissionBanner.hidden, false);
   assert.equal(game.elements.intermissionTitle.textContent, "WAVE COMING");
-  assert.equal(game.elements.intermissionDetail.textContent, "REINFORCEMENTS INBOUND");
+  assert.equal(game.elements.intermissionDetail.textContent, "");
   assert.equal(game.elements.intermissionCountdown.textContent, "");
   assert.equal(game.elements.intermissionBanner.classList.contains("wave-coming"), true);
   assert.equal(game.elements.intermissionBanner.classList.contains("boss-incoming"), false);
@@ -2420,6 +2434,11 @@ test("reinforcement edge cues aggregate only real Coming reservations and clear 
   game.enemies.length = 0;
   game.updateArenaPresentation();
   assert.equal(indicators.find(item => item.dataset.edge === "top").dataset.count, undefined);
+  game.enemies.push(makeEnemy(game, "fast", { lifecycle: "ENTERING", reservationPhase: "WAVE_COMING",
+    spawnSide: "bottom" }));
+  game.setState({ isGameOver: true });
+  game.updateArenaPresentation();
+  assert.equal(indicators.find(item => item.dataset.edge === "bottom").dataset.count, undefined);
 });
 
 test("the fifth Wave announces the Boss and terminal states hide the banner", () => {
@@ -3004,6 +3023,19 @@ test("production starts Starter-only while playtest selection equips one or two 
   inputs[2].checked = true;
   playtest.listeners["playtestWeaponSelector:change"]({ target: inputs[2] });
   assert.equal(inputs.filter(input => input.checked).length, 2);
+});
+
+test("playtest-only Wave Coming demo uses the real non-modal transition", () => {
+  const production = loadGame();
+  assert.equal(production.elements.playtestWaveComingButton.hidden, true);
+  const game = loadGame({}, { search: "?playtest=1" }); startGame(game);
+  assert.equal(game.elements.playtestWaveComingButton.hidden, false);
+  game.keys.d = true;
+  game.weaponRuntime.attackHeld = true;
+  game.listeners["playtestWaveComingButton:click"]();
+  assert.equal(game.getState().encounterController.phase, "WAVE_COMING");
+  assert.equal(game.keys.d, true);
+  assert.equal(game.weaponRuntime.attackHeld, true);
 });
 
 test("enemy discovery persists across restart and reload and Codex never creates Run state", () => {

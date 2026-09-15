@@ -40,6 +40,7 @@ const upgradeChoices = document.getElementById("upgradeChoices");
 const slotAValue = document.getElementById("slotAValue");
 const slotBValue = document.getElementById("slotBValue");
 const activeWeaponValue = document.getElementById("activeWeaponValue");
+const playtestWaveComingButton = document.getElementById("playtestWaveComingButton");
 const APP_VIEWS = Object.freeze({
   HUB: "hub",
   SHOP: "shop",
@@ -503,7 +504,7 @@ function clearBattlefieldRuntime() {
   pendingSpawnReservation = null;
   bossRuntime = null;
 }
-function startWave(index) {
+function startWave(index, { preserveInput = false } = {}) {
   currentEnemyIntroduction = null;
   introductionQueue = [];
   pendingWaveIndex = null;
@@ -525,7 +526,7 @@ function startWave(index) {
     ...battlefieldTelemetry(), player: telemetryPlayer() }));
   if (beginEnemyIntroductions(index)) return;
   runPhase = RUN_PHASES.WAVE_ACTIVE;
-  clearInput({ weaponReady: true });
+  if (!preserveInput) clearInput({ weaponReady: true });
 }
 function enterStage() {
   runPhase = RUN_PHASES.STAGE_ENTER;
@@ -567,7 +568,9 @@ function handleLogicalWaveComplete(fill) {
     return;
   }
   completeCurrentEncounter("wave", waveRuntime);
-  startWave(stageRuntime.waveIndex + 1);
+  // Logical Wave transitions are non-modal. Preserve held movement, firing, and
+  // per-Weapon cooldown state unless an Enemy Introduction actually opens.
+  startWave(stageRuntime.waveIndex + 1, { preserveInput: true });
   ContinuousEncounter.beginWaveComing(encounterController, fill.projectedFill);
   waveComingBannerTimer = 2.2;
   audioManager.play("waveComing");
@@ -778,6 +781,15 @@ document.getElementById("armoryBackButton").addEventListener("click", requestHub
 document.getElementById("equipmentBackButton").addEventListener("click", requestHub);
 codexBackButton.addEventListener("click", requestHub);
 backToHubButton.addEventListener("click", requestHub);
+if (playtestWaveComingButton) {
+  playtestWaveComingButton.hidden = !isPlaytestMode;
+  playtestWaveComingButton.addEventListener("click", () => {
+    if (!isGameStarted || runPhase !== RUN_PHASES.WAVE_ACTIVE ||
+        stageRuntime.waveIndex + 1 >= stageRuntime.definition.waveCount) return;
+    const viewport = cameraViewportRect();
+    handleLogicalWaveComplete(ContinuousEncounter.computeFill(enemies, viewport, pendingSpawnArea()));
+  });
+}
 if (playtestWeaponSelector) {
   playtestWeaponSelector.hidden = !isPlaytestMode;
   playtestWeaponSelector.addEventListener("change", event => {
@@ -2820,7 +2832,7 @@ function updateArenaPresentation() {
   intermissionBanner.classList[showIntermission ? "add" : "remove"]("boss-incoming");
   if (showWaveComing) {
     intermissionTitle.textContent = "WAVE COMING";
-    intermissionDetail.textContent = "REINFORCEMENTS INBOUND";
+    intermissionDetail.textContent = "";
     intermissionCountdown.textContent = "";
   } else if (showIntermission) {
     intermissionTitle.textContent = `WAVE ${stageRuntime.waveIndex + 1} CLEAR`;
@@ -2828,13 +2840,17 @@ function updateArenaPresentation() {
     intermissionCountdown.textContent = String(Math.ceil(Math.max(0, Encounters.CONFIG.intermission - intermissionTimer)));
   }
   const edgeCounts = { top: 0, right: 0, bottom: 0, left: 0 };
-  for (const enemy of enemies) if (enemy.lifecycle === ContinuousEncounter.LIFECYCLES.ENTERING &&
-      enemy.reservationPhase === ContinuousEncounter.PHASES.WAVE_COMING && edgeCounts[enemy.spawnSide] !== undefined) {
-    edgeCounts[enemy.spawnSide]++;
-  }
-  for (const pending of encounterController?.pendingReservations || []) {
-    if (pending.reservation.phase === ContinuousEncounter.PHASES.WAVE_COMING && edgeCounts[pending.enemy.spawnSide] !== undefined) {
-      edgeCounts[pending.enemy.spawnSide]++;
+  const showReinforcementEdges = runPhase === RUN_PHASES.WAVE_ACTIVE &&
+    !isGameOver && !isVictory && !isAbandoned;
+  if (showReinforcementEdges) {
+    for (const enemy of enemies) if (enemy.lifecycle === ContinuousEncounter.LIFECYCLES.ENTERING &&
+        enemy.reservationPhase === ContinuousEncounter.PHASES.WAVE_COMING && edgeCounts[enemy.spawnSide] !== undefined) {
+      edgeCounts[enemy.spawnSide]++;
+    }
+    for (const pending of encounterController?.pendingReservations || []) {
+      if (pending.reservation.phase === ContinuousEncounter.PHASES.WAVE_COMING && edgeCounts[pending.enemy.spawnSide] !== undefined) {
+        edgeCounts[pending.enemy.spawnSide]++;
+      }
     }
   }
   for (const indicator of reinforcementEdges.children) {
