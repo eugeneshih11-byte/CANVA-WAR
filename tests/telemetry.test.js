@@ -612,6 +612,17 @@ test("combat-pass telemetry observes density, onboarding, collision, loadout, an
   telemetry.recordWeaponKill({ weaponId: "launcher" });
   telemetry.recordWeaponPierce({ weaponId: "launcher" });
   telemetry.recordWeaponExplosion({ weaponId: "launcher", targetCount: 3 });
+  telemetry.recordLauncherAttack({ chainReactionActive: true });
+  telemetry.recordLauncherExplosion({ effectKind: "primary", targetCount: 3,
+    chainReactionActive: true });
+  telemetry.recordLauncherExplosion({ effectKind: "cluster", targetCount: 2,
+    chainReactionActive: true });
+  telemetry.recordLauncherExplosion({ effectKind: "cluster", targetCount: 1,
+    chainReactionActive: true });
+  telemetry.recordLauncherExplosion({ effectKind: "cluster", targetCount: 0,
+    chainReactionActive: true });
+  telemetry.recordLauncherExplosion({ effectKind: "siege-bloom", targetCount: 4,
+    chainReactionActive: true });
   telemetry.recordArcBladeSweep({ weaponId: "launcher", targetCount: 2 });
   telemetry.recordBurstShot({ weaponId: "launcher" });
   frame(telemetry, { deltaTime: 2 });
@@ -648,4 +659,8 @@ test("combat-pass telemetry observes density, onboarding, collision, loadout, an
   assert.deepEqual(encounter.weaponMetrics.launcher, { attacks: 1, projectiles: 1, hits: 1,
     damage: 2, kills: 1, pierceEvents: 1, explosionTargets: 3,
     arcBladeTargets: 2, burstShots: 1, killsPerActiveCombatSecond: 0.5 });
+  assert.deepEqual(encounter.launcherEffects, { primaryAttacks: 1, primaryExplosions: 1,
+    primaryExplosionTargets: 3, clusterExplosions: 3, clusterExplosionTargets: 3,
+    siegeBloomBlasts: 1, siegeBloomTargets: 4,
+    chainReactionCommittedAttacks: 1, chainReactionClusterExplosions: 3 });
 });

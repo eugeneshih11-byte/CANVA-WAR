@@ -101,7 +101,9 @@ function loadGame(search = "", options = {}) {
       handleBulletEnemyCollisions, handlePlayerEnemyCollisions,
       handleBulletBossCollisions, handleBossPlayerCollision,
       chooseUpgrade, updateLevel, takeDamage, settleRun, observeTelemetry,
-      fireWeaponAttack, beginAttack, endAttack, updateWeaponRuntime,
+      fireWeaponAttack, beginAttack, endAttack, updateWeaponRuntime, configureWeaponLoadout,
+      get weaponEffects() { return weaponEffects; },
+      get pendingLauncherEffects() { return pendingLauncherEffects; },
       get telemetry() { return playtestTelemetry; },
       get discovery() { return enemyDiscovery; },
       get weapon() { return weapon; },
@@ -132,6 +134,11 @@ function loadGame(search = "", options = {}) {
       },
       setUpgradeRng(rng) {
         upgradeRng = rng;
+      },
+      setBuild(value) {
+        buildState = RunBuild.createBuildState(value);
+        weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[weaponSlots[activeWeaponSlotIndex].weaponId], buildState);
+        playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
       }
     };
   `, context, { filename: "game.js" });
@@ -486,11 +493,40 @@ test("telemetry configuration snapshots immutable Weapon, Upgrade and Player bal
   assert.deepEqual(plain(configuration.playerBaseStats), { maxHp: 5, speed: 240, damage: 2 });
   assert.equal(configuration.technicalFireRateCap, 12);
   assert.deepEqual(Object.keys(configuration.buildContent.rewards).sort(),
-    ["cyclone-blade", "heavy-shot", "rapid-fire", "split-shot", "swift-feet", "vitality", "wide-arc"]);
+    ["cluster-shell", "cyclone-blade", "heavy-shot", "rapid-fire", "siege-bloom",
+      "split-shot", "swift-feet", "vitality", "wide-arc"]);
   assert.equal(configuration.buildContent.rewards["cyclone-blade"].category, "weapon-evolution");
   assert.equal(configuration.buildContent.rewards["wide-arc"].weaponId, "arc-blade");
+  assert.equal(configuration.buildContent.rewards["cluster-shell"].weaponId, "launcher");
+  assert.equal(configuration.buildContent.rewards["siege-bloom"].category, "weapon-evolution");
   assert.equal(configuration.buildContent.combos["blade-dance"].hidden, true);
+  assert.equal(configuration.buildContent.combos["chain-reaction"].hidden, true);
   assert.equal(JSON.stringify(configuration).includes("function"), false);
+});
+
+test("production Launcher hooks report primary, cluster, bloom, and Chain Reaction aggregates", () => {
+  const game = loadGame("?playtest=1"); game.start();
+  game.configureWeaponLoadout(["launcher"]);
+  game.setBuild({ sharedUpgrades: { "heavy-shot": 2 },
+    weaponModsByWeaponId: { launcher: { "cluster-shell": 2 } },
+    weaponEvolutionByWeaponId: { launcher: "siege-bloom" },
+    passives: { vitality: 2 }, discoveredCombos: ["chain-reaction"] });
+  primaryAttack(game);
+  const rocket = game.bullets[0];
+  Object.assign(rocket, { x: 100, y: 100 });
+  game.enemies.push(enemy(game, { x: 100, y: 100, hp: 100, maxHp: 100 }));
+  game.handleBulletEnemyCollisions();
+  let metrics = currentEncounter(game).launcherEffects;
+  assert.deepEqual(plain(metrics), { primaryAttacks: 1, primaryExplosions: 1,
+    primaryExplosionTargets: 1, clusterExplosions: 3, clusterExplosionTargets: 3,
+    siegeBloomBlasts: 0, siegeBloomTargets: 0,
+    chainReactionCommittedAttacks: 1, chainReactionClusterExplosions: 3 });
+  assert.equal(game.pendingLauncherEffects.length, 1);
+  game.updateWeaponRuntime(0.45);
+  metrics = currentEncounter(game).launcherEffects;
+  assert.equal(metrics.siegeBloomBlasts, 1);
+  assert.equal(metrics.siegeBloomTargets, 1);
+  assert.equal(game.pendingLauncherEffects.length, 0);
 });
 
 test.skip("legacy generated-Wave deterministic integration fixture (generator retained as historical coverage)", () => {

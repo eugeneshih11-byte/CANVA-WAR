@@ -52,7 +52,8 @@ test("Player Damage owns production base damage and legacy Weapon damage is igno
   const player = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, build);
   assert.equal(player.damage, 4);
   for (const base of [{ ...Weapons.DEFINITIONS.starter, damage: 99 },
-    { ...Weapons.DEFINITIONS.piercer, damage: 0.1 }, { ...Weapons.DEFINITIONS["arc-blade"], damage: 500 }]) {
+    { ...Weapons.DEFINITIONS.piercer, damage: 0.1 }, { ...Weapons.DEFINITIONS.launcher, damage: 700 },
+    { ...Weapons.DEFINITIONS["arc-blade"], damage: 500 }]) {
     assert.equal(RunBuild.resolveWeaponStats(base, build).damage, 4);
   }
   const split = state({ sharedUpgrades: { "heavy-shot": 2, "split-shot": 1 } });
@@ -111,6 +112,78 @@ test("Blade Dance stays hidden, auto-discovers, and changes Cyclone cadence to e
   assert.equal(RunBuild.hasDiscoveredCombo(result.buildState, "blade-dance"), true);
   assert.deepEqual([1, 2, 3, 4].map(n => RunBuild.getArcBladeSweep(result.buildState, n).fullSweep),
     [false, true, false, true]);
+});
+
+test("Cluster Shell is Launcher-only, Run-owned, and resolves exact rank counts", () => {
+  const launcherLoadout = ["launcher", "starter"];
+  let build = state();
+  assert.equal(RunBuild.canSelectReward(build, "cluster-shell", ["starter"]), false);
+  assert.equal(RunBuild.canSelectReward(build, "cluster-shell", launcherLoadout), true);
+  build = RunBuild.applyReward(build, "cluster-shell", { loadout: launcherLoadout }).buildState;
+  assert.equal(RunBuild.getLauncherEffectProfile(build, 80).clusterExplosionCount, 2);
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.STARTER, build).launcherEffects, undefined);
+  build = RunBuild.applyReward(build, "cluster-shell", { loadout: launcherLoadout }).buildState;
+  assert.equal(RunBuild.getLauncherEffectProfile(build, 80).clusterExplosionCount, 3);
+  assert.deepEqual(build.weaponModsByWeaponId, { launcher: { "cluster-shell": 2 } });
+  assert.equal(RunBuild.getWeaponModRank(build, "launcher", "cluster-shell"), 2);
+  assert.equal(RunBuild.getWeaponModRank(build, "starter", "cluster-shell"), 0);
+  assert.equal(RunBuild.createBuildState(build).weaponModsByWeaponId.launcher["cluster-shell"], 2);
+});
+
+test("Siege Bloom is legal only after Cluster Shell II and shared Heavy Shot II", () => {
+  const launcherLoadout = ["launcher"];
+  let build = state({ weaponModsByWeaponId: { launcher: { "cluster-shell": 2 } } });
+  assert.equal(RunBuild.canSelectReward(build, "siege-bloom", launcherLoadout), false);
+  build = state({ sharedUpgrades: { "heavy-shot": 2 },
+    weaponModsByWeaponId: { launcher: { "cluster-shell": 1 } } });
+  assert.equal(RunBuild.canSelectReward(build, "siege-bloom", launcherLoadout), false);
+  build.weaponModsByWeaponId.launcher["cluster-shell"] = 2;
+  assert.equal(RunBuild.canSelectReward(build, "siege-bloom", launcherLoadout), true);
+  assert.equal(RunBuild.generateRewardChoices(build, RunBuild.REWARD_LIST.length, () => 0, launcherLoadout)
+    .some(reward => reward.id === "siege-bloom"), true);
+  const result = RunBuild.applyReward(build, "siege-bloom", { loadout: launcherLoadout });
+  assert.equal(result.applied, true);
+  assert.equal(RunBuild.getWeaponEvolution(result.buildState, "launcher"), "siege-bloom");
+  const profile = RunBuild.resolveWeaponStats({ ...Weapons.DEFINITIONS.launcher, damage: 999 },
+    result.buildState).launcherEffects;
+  assert.equal(profile.siegeBloomDelay, 0.45);
+  assert.equal(profile.siegeBloomRadius, 120);
+});
+
+test("Chain Reaction stays hidden, auto-discovers, and only concentrates deterministic cluster geometry", () => {
+  const launcherLoadout = ["launcher"];
+  let build = state({ sharedUpgrades: { "heavy-shot": 2 },
+    weaponModsByWeaponId: { launcher: { "cluster-shell": 2 } },
+    passives: { vitality: 1 } });
+  build = RunBuild.applyReward(build, "siege-bloom", { loadout: launcherLoadout }).buildState;
+  assert.equal(RunBuild.REWARDS["chain-reaction"], undefined);
+  assert.equal(RunBuild.hasDiscoveredCombo(build, "chain-reaction"), false);
+  const defaultProfile = RunBuild.getLauncherEffectProfile(build, 80);
+  assert.equal(defaultProfile.clusterExplosionCount, 3);
+  assert.equal(defaultProfile.clusterDistributionRadius, 80);
+  const result = RunBuild.applyReward(build, "vitality", { loadout: launcherLoadout, playerHp: 6 });
+  assert.deepEqual(result.discoveries.map(combo => combo.id), ["chain-reaction"]);
+  const concentrated = RunBuild.getLauncherEffectProfile(result.buildState, 80);
+  assert.equal(concentrated.clusterExplosionCount, 3);
+  assert.equal(concentrated.clusterDistributionRadius, 48);
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.launcher, result.buildState).damage,
+    RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, result.buildState).damage);
+  assert.deepEqual(concentrated.clusterOffsets, RunBuild.getLauncherEffectProfile(result.buildState, 80).clusterOffsets);
+});
+
+test("Launcher effect geometry and Reward RNG remain mutually deterministic and isolated", () => {
+  const build = state({ sharedUpgrades: { "heavy-shot": 2 },
+    weaponModsByWeaponId: { launcher: { "cluster-shell": 2 } },
+    weaponEvolutionByWeaponId: { launcher: "siege-bloom" },
+    passives: { vitality: 2 }, discoveredCombos: ["chain-reaction"] });
+  const rewardA = RunBuild.createRewardRng(2468), rewardB = RunBuild.createRewardRng(2468);
+  const before = rewardA.getState();
+  const geometryA = RunBuild.getLauncherEffectProfile(build, 80);
+  assert.equal(rewardA.getState(), before);
+  assert.deepEqual(Array.from({ length: 12 }, () => rewardA()),
+    Array.from({ length: 12 }, () => rewardB()));
+  const geometryB = RunBuild.getLauncherEffectProfile(build, 80);
+  assert.deepEqual(geometryA, geometryB);
 });
 
 test("reward choices remove maxed, incompatible, and premature entries without synergy weighting", () => {

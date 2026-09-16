@@ -212,6 +212,7 @@ let weaponRuntime = createWeaponRuntime();
 let weaponSlots = [{ weaponId: Weapons.STARTER.id, runtime: weaponRuntime }];
 let activeWeaponSlotIndex = 0;
 const weaponEffects = [];
+const pendingLauncherEffects = [];
 let nextWeaponAttackId = 1;
 let isBuildDetailOpen = false;
 let comboNotificationTimer = 0;
@@ -323,6 +324,10 @@ function clearWeaponActions({ ready = false } = {}) {
     if (ready) slot.runtime.timeUntilNextShot = 0;
   }
   weaponEffects.length = 0;
+}
+
+function clearPendingLauncherEffects() {
+  pendingLauncherEffects.length = 0;
 }
 
 function createUpgradeRng() {
@@ -482,6 +487,7 @@ function clearBattlefieldRuntime() {
   enemySpatialHash = new Map();
   bullets.length = 0;
   clearWeaponActions();
+  clearPendingLauncherEffects();
   EnemyBehaviors.clearTransient(enemies, hazards);
   resetHazardDamageRuntime();
   boss = null;
@@ -852,7 +858,11 @@ function createProjectile(direction, weaponSnapshot, attackId) {
     pierceRemaining: weaponSnapshot.pierce,
     hitTargets: new Set(), weaponId: weaponSnapshot.id, attackId,
     remainingRange: Number.isFinite(weaponSnapshot.maxRange) ? weaponSnapshot.maxRange : null,
-    explosionRadius: weaponSnapshot.explosionRadius || 0, exploded: false
+    explosionRadius: weaponSnapshot.explosionRadius || 0, exploded: false,
+    launcherEffects: weaponSnapshot.launcherEffects ? {
+      ...weaponSnapshot.launcherEffects,
+      clusterOffsets: weaponSnapshot.launcherEffects.clusterOffsets.map(offset => ({ ...offset }))
+    } : null
   };
   bullets.push(bullet);
   observeTelemetry("recordShot");
@@ -905,6 +915,10 @@ function fireWeaponAttack() {
   const attackId = nextWeaponAttackId++;
   observeTelemetry("recordAttack");
   observeTelemetry("recordWeaponAttack", () => ({ weaponId: weaponSnapshot.id, attackKind: weaponSnapshot.attackKind }));
+  if (weaponSnapshot.id === "launcher") {
+    observeTelemetry("recordLauncherAttack", () => ({ attackId,
+      chainReactionActive: weaponSnapshot.launcherEffects?.chainReactionActive === true }));
+  }
   if (weaponSnapshot.attackKind === "arc") {
     fireArcBlade(weaponSnapshot, aimAngle, attackId);
   } else if (weaponSnapshot.attackKind === "burst") {
@@ -968,6 +982,7 @@ function updateWeaponRuntime(deltaTime) {
     weaponEffects[index].elapsed += dt;
     if (weaponEffects[index].elapsed >= weaponEffects[index].duration) weaponEffects.splice(index, 1);
   }
+  updatePendingLauncherEffects(dt);
 }
 
 canvas.addEventListener("pointermove", updateAim);
@@ -1065,6 +1080,7 @@ document.addEventListener("keyup", (event) => {
 });
 
 function resetGame() {
+  clearPendingLauncherEffects();
   configureWeaponLoadout(selectedPlaytestWeaponIds());
   battlefieldRuntime = null;
   initializeBattlefield(activeStages[0], true);
@@ -1779,30 +1795,81 @@ function damageBoss(target, amount, { weaponId = "starter", hitKind = "projectil
   return { hit: true, killed: boss.hp <= 0, waveCompleted: false };
 }
 
+function resolveExplosionEvent({ x, y, radius, damage, weaponId = "launcher", attackId = null,
+  effectKind = "primary", chainReactionActive = false, damageEnabled = true }) {
+  let targets = 0, waveCompleted = false;
+  const hitTargets = new Set();
+  const candidates = damageEnabled && !isChoosingUpgrade && !isGameOver && !isVictory && !isAbandoned
+    ? (runPhase === RUN_PHASES.BOSS_ACTIVE && boss ? [boss] : enemies.slice()) : [];
+  for (const target of candidates) {
+    if (hitTargets.has(target) || (target !== boss && !isCurrentEncounterEnemy(target))) continue;
+    const distance = Math.hypot(target.x + target.width / 2 - x,
+      target.y + target.height / 2 - y);
+    if (distance > radius + Math.hypot(target.width, target.height) / 2) continue;
+    hitTargets.add(target);
+    const result = target === boss
+      ? damageBoss(target, damage, { weaponId, hitKind: effectKind })
+      : damageRegularEnemy(target, damage, { weaponId, hitKind: effectKind });
+    if (result.hit) targets++;
+    if (result.waveCompleted || isChoosingUpgrade || isGameOver) {
+      waveCompleted = result.waveCompleted;
+      break;
+    }
+  }
+  weaponEffects.push({ kind: "explosion", effectKind, x, y, radius,
+    elapsed: 0, duration: effectKind === "siege-bloom" ? 0.36 : effectKind === "cluster" ? 0.2 : 0.22 });
+  if (effectKind === "primary") {
+    observeTelemetry("recordWeaponExplosion", () => ({ weaponId, targetCount: targets }));
+  }
+  if (weaponId === "launcher") {
+    observeTelemetry("recordLauncherExplosion", () => ({ attackId, effectKind, targetCount: targets,
+      chainReactionActive }));
+  }
+  audioManager.play("launcherExplosion", { world: true,
+    pan: worldAudioPan({ x, y, width: 0 }), concurrency: effectKind === "primary" ? 3 : 6 });
+  return { targets, waveCompleted };
+}
+
+function commitSiegeBloom(bullet, centerX, centerY) {
+  const profile = bullet.launcherEffects;
+  if (!profile?.siegeBloom) return;
+  pendingLauncherEffects.push({ kind: "siege-bloom", x: centerX, y: centerY,
+    radius: profile.siegeBloomRadius, damage: bullet.damage, weaponId: bullet.weaponId,
+    attackId: bullet.attackId, chainReactionActive: profile.chainReactionActive,
+    delayRemaining: profile.siegeBloomDelay });
+}
+
+function updatePendingLauncherEffects(deltaTime) {
+  const dt = Number.isFinite(deltaTime) ? Math.max(0, deltaTime) : 0;
+  for (const effect of pendingLauncherEffects) effect.delayRemaining -= dt;
+  for (let index = 0; index < pendingLauncherEffects.length;) {
+    const effect = pendingLauncherEffects[index];
+    if (effect.delayRemaining > 1e-9) { index++; continue; }
+    pendingLauncherEffects.splice(index, 1);
+    resolveExplosionEvent({ ...effect, effectKind: "siege-bloom" });
+    if (isChoosingUpgrade || isGameOver || isVictory || isAbandoned) break;
+  }
+}
+
 function explodeProjectile(bullet) {
   if (bullet.exploded) return { targets: 0, waveCompleted: false };
   bullet.exploded = true;
   removeProjectile(bullet);
   const centerX = bullet.x + bullet.width / 2, centerY = bullet.y + bullet.height / 2;
-  let targets = 0, waveCompleted = false;
-  const candidates = runPhase === RUN_PHASES.BOSS_ACTIVE && boss ? [boss] : enemies.slice();
-  for (const target of candidates) {
-    if (target !== boss && !isCurrentEncounterEnemy(target)) continue;
-    const distance = Math.hypot(target.x + target.width / 2 - centerX,
-      target.y + target.height / 2 - centerY);
-    if (distance > bullet.explosionRadius + Math.hypot(target.width, target.height) / 2) continue;
-    const result = target === boss
-      ? damageBoss(target, bullet.damage, { weaponId: bullet.weaponId, hitKind: "explosion" })
-      : damageRegularEnemy(target, bullet.damage,
-        { weaponId: bullet.weaponId, hitKind: "explosion" });
-    if (result.hit) targets++;
-    if (result.waveCompleted || isChoosingUpgrade || isGameOver) { waveCompleted = result.waveCompleted; break; }
+  const profile = bullet.launcherEffects;
+  const primary = resolveExplosionEvent({ x: centerX, y: centerY, radius: bullet.explosionRadius,
+    damage: bullet.damage, weaponId: bullet.weaponId, attackId: bullet.attackId,
+    effectKind: "primary", chainReactionActive: profile?.chainReactionActive === true });
+  let damageEnabled = !primary.waveCompleted;
+  for (const offset of profile?.clusterOffsets || []) {
+    const cluster = resolveExplosionEvent({ x: centerX + offset.x, y: centerY + offset.y,
+      radius: bullet.explosionRadius, damage: bullet.damage, weaponId: bullet.weaponId,
+      attackId: bullet.attackId, effectKind: "cluster",
+      chainReactionActive: profile.chainReactionActive, damageEnabled });
+    if (cluster.waveCompleted) damageEnabled = false;
   }
-  weaponEffects.push({ kind: "explosion", x: centerX, y: centerY, radius: bullet.explosionRadius,
-    elapsed: 0, duration: 0.22 });
-  observeTelemetry("recordWeaponExplosion", () => ({ weaponId: bullet.weaponId, targetCount: targets }));
-  audioManager.play("launcherExplosion", { world: true, pan: worldAudioPan(bullet), concurrency: 3 });
-  return { targets, waveCompleted };
+  commitSiegeBloom(bullet, centerX, centerY);
+  return primary;
 }
 
 function handleBulletEnemyCollisions() {
@@ -1842,6 +1909,7 @@ function settleRun(endReason) {
 
   ContinuousEncounter.resetProgressReadiness(encounterController, "run-ended");
   clearInput();
+  clearPendingLauncherEffects();
 
   const settlementState = selectSettlementState(runSettlementState, endReason);
   if (!settlementState) {
@@ -2729,9 +2797,17 @@ function drawWeaponEffects() {
       ctx.arc(effect.x, effect.y, effect.range, effect.angle - effect.halfAngle,
         effect.angle + effect.halfAngle); ctx.closePath(); ctx.fill(); ctx.stroke();
     } else if (effect.kind === "explosion") {
-      ctx.fillStyle = `rgba(251,146,60,${0.28 * alpha})`;
-      ctx.strokeStyle = `rgba(254,215,170,${0.9 * alpha})`;
+      const bloom = effect.effectKind === "siege-bloom";
+      const cluster = effect.effectKind === "cluster";
+      ctx.fillStyle = bloom ? `rgba(192,132,252,${0.3 * alpha})` :
+        cluster ? `rgba(250,204,21,${0.26 * alpha})` : `rgba(251,146,60,${0.28 * alpha})`;
+      ctx.strokeStyle = bloom ? `rgba(233,213,255,${0.95 * alpha})` :
+        cluster ? `rgba(254,249,195,${0.9 * alpha})` : `rgba(254,215,170,${0.9 * alpha})`;
+      ctx.lineWidth = bloom ? 5 : cluster ? 2 : 3;
       ctx.beginPath(); ctx.arc(effect.x, effect.y, effect.radius, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      if (bloom) {
+        ctx.beginPath(); ctx.arc(effect.x, effect.y, effect.radius * 0.55, 0, Math.PI * 2); ctx.stroke();
+      }
     }
     ctx.restore();
   }
@@ -2793,6 +2869,10 @@ function addBuildDetailSection(title, entries) {
   return section;
 }
 
+function buildRankLabel(rank) {
+  return ["", "I", "II", "III", "IV"][rank] || String(rank);
+}
+
 function renderBuildDetail() {
   if (!buildDetailContent) return;
   clearElement(buildDetailContent);
@@ -2803,9 +2883,9 @@ function renderBuildDetail() {
     const definition = Weapons.DEFINITIONS[slot.weaponId];
     const mods = Object.values(RunBuild.WEAPON_MODS)
       .filter(item => item.weaponId === slot.weaponId && RunBuild.getWeaponModRank(buildState, slot.weaponId, item.id) > 0)
-      .map(item => `${item.name} · Rank ${RunBuild.getWeaponModRank(buildState, slot.weaponId, item.id)}`);
+      .map(item => `${item.displayName} ${buildRankLabel(RunBuild.getWeaponModRank(buildState, slot.weaponId, item.id))}`);
     const evolutionId = RunBuild.getWeaponEvolution(buildState, slot.weaponId);
-    if (evolutionId) mods.push(`Evolution · ${RunBuild.WEAPON_EVOLUTIONS[evolutionId].name}`);
+    if (evolutionId) mods.push(`Evolution · ${RunBuild.WEAPON_EVOLUTIONS[evolutionId].displayName}`);
     addBuildDetailSection(`${definition.name} Mods`, mods);
   }
   const passiveEntries = Object.values(RunBuild.PASSIVES)
@@ -2845,6 +2925,27 @@ function closeBuildDetail() {
 // Combo through the real Level-Up selection path without a long XP grind.
 function preparePlaytestBuildDemoStep() {
   if (!isPlaytestMode || !isGameStarted || isChoosingUpgrade || isBuildDetailOpen) return false;
+  if (weaponSlots.some(slot => slot.weaponId === "launcher")) {
+    const steps = [
+      { id: "cluster-shell", rank: 2 },
+      { id: "heavy-shot", rank: 2 },
+      { id: "siege-bloom", rank: 1 },
+      { id: "vitality", rank: 2 }
+    ];
+    const next = steps.find(step => RunBuild.getRewardRank(buildState, step.id) < step.rank);
+    if (!next) {
+      comboNotificationTimer = 2.6;
+      comboNotification.textContent = "COMBO ACTIVE — CHAIN REACTION";
+      comboNotification.hidden = false;
+      return true;
+    }
+    currentUpgradeChoices = [RunBuild.REWARDS[next.id]];
+    isChoosingUpgrade = true;
+    clearInput();
+    renderBuildPanel();
+    renderUpgradeChoices();
+    return true;
+  }
   if (!weaponSlots.some(slot => slot.weaponId === "arc-blade")) {
     configureWeaponLoadout(["arc-blade", weaponSlots[0]?.weaponId || "starter"]);
   }

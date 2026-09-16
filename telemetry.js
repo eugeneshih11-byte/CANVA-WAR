@@ -183,6 +183,10 @@
         weaponSlotB: playerStart.loadout?.slotB || null,
         activeWeapon: playerStart.loadout?.activeWeapon || playerStart.weapon?.id || null,
         weaponSwitchCount: 0, weaponMetrics: {},
+        launcherEffects: { primaryAttacks: 0, primaryExplosions: 0, primaryExplosionTargets: 0,
+          clusterExplosions: 0, clusterExplosionTargets: 0,
+          siegeBloomBlasts: 0, siegeBloomTargets: 0,
+          chainReactionCommittedAttacks: 0, chainReactionClusterExplosions: 0 },
         outcome: null };
       encounter = { data, enemyIntegral: 0, threatIntegral: 0, pressureBlocked: false, released: new Set(),
         behaviorEvents: {
@@ -587,6 +591,27 @@
       recordWeaponExplosion: safe("record Weapon explosion", ({ weaponId, targetCount } = {}) => {
         if (encounter?.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].explosionTargets += nonNegative(targetCount);
       }),
+      recordLauncherAttack: safe("record Launcher attack", ({ chainReactionActive } = {}) => {
+        if (!encounter) return;
+        encounter.data.launcherEffects.primaryAttacks++;
+        if (chainReactionActive) encounter.data.launcherEffects.chainReactionCommittedAttacks++;
+      }),
+      recordLauncherExplosion: safe("record Launcher explosion",
+        ({ effectKind, targetCount, chainReactionActive } = {}) => {
+          if (!encounter) return;
+          const metrics = encounter.data.launcherEffects;
+          if (effectKind === "primary") {
+            metrics.primaryExplosions++;
+            metrics.primaryExplosionTargets += nonNegative(targetCount);
+          } else if (effectKind === "cluster") {
+            metrics.clusterExplosions++;
+            metrics.clusterExplosionTargets += nonNegative(targetCount);
+            if (chainReactionActive) metrics.chainReactionClusterExplosions++;
+          } else if (effectKind === "siege-bloom") {
+            metrics.siegeBloomBlasts++;
+            metrics.siegeBloomTargets += nonNegative(targetCount);
+          }
+        }),
       recordArcBladeSweep: safe("record Arc Blade sweep", ({ weaponId, targetCount } = {}) => {
         if (encounter?.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].arcBladeTargets += nonNegative(targetCount);
       }),

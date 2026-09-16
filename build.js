@@ -20,6 +20,12 @@
   });
   const BUILD_TAGS = freeze(["Melee", "Projectile", "AoE", "Pierce", "Mobility", "Multi-hit"]);
   const PLAYER_BASE_STATS = freeze({ maxHp: 5, speed: 240, damage: 2 });
+  const LAUNCHER_EFFECTS = freeze({
+    clusterDistributionRadiusMultiplier: 1,
+    chainReactionDistributionMultiplier: 0.6,
+    siegeBloomDelay: 0.45,
+    siegeBloomRadiusMultiplier: 1.5
+  });
   const SHARED_UPGRADES = freeze({
     "rapid-fire": {
       id: "rapid-fire", name: "Rapid Fire", category: REWARD_CATEGORIES.SHARED_UPGRADE, maxRank: 4,
@@ -53,6 +59,12 @@
       id: "wide-arc", name: "Wide Arc", displayName: "Arc Blade — Wide Arc",
       category: REWARD_CATEGORIES.WEAPON_MOD, weaponId: "arc-blade", maxRank: 2,
       description: "+10° sweep half-angle", effectLines: ["+10° sweep half-angle"]
+    },
+    "cluster-shell": {
+      id: "cluster-shell", name: "Cluster Shell", displayName: "Launcher — Cluster Shell",
+      category: REWARD_CATEGORIES.WEAPON_MOD, weaponId: "launcher", maxRank: 2,
+      description: "Primary impacts create secondary cluster explosions",
+      effectLines: ["Rank I: 2 cluster explosions", "Rank II: 3 cluster explosions"]
     }
   });
   const WEAPON_EVOLUTIONS = freeze({
@@ -65,6 +77,16 @@
       ]),
       description: "Every 3rd Arc Blade attack is a 360° sweep",
       effectLines: ["Every 3rd attack: 360° sweep"]
+    },
+    "siege-bloom": {
+      id: "siege-bloom", name: "Siege Bloom", displayName: "Launcher — Siege Bloom",
+      category: REWARD_CATEGORIES.WEAPON_EVOLUTION, weaponId: "launcher", maxRank: 1,
+      requirements: freeze([
+        { kind: "weapon-mod", weaponId: "launcher", id: "cluster-shell", rank: 2 },
+        { kind: "shared-upgrade", id: "heavy-shot", rank: 2 }
+      ]),
+      description: "Primary impacts create a delayed larger blast",
+      effectLines: ["After 0.45s: 1.5× radius center blast"]
     }
   });
   const COMBOS = freeze({
@@ -75,6 +97,14 @@
         { kind: "passive", id: "swift-feet", rank: 2 }
       ]),
       description: "Cyclone Blade becomes a full sweep every 2nd Arc Blade attack."
+    },
+    "chain-reaction": {
+      id: "chain-reaction", name: "Chain Reaction", hidden: true,
+      requirements: freeze([
+        { kind: "weapon-evolution", weaponId: "launcher", id: "siege-bloom" },
+        { kind: "passive", id: "vitality", rank: 2 }
+      ]),
+      description: "Cluster Shell explosions concentrate closer to the primary impact."
     }
   });
   const REWARDS = freeze({ ...SHARED_UPGRADES, ...PASSIVES, ...WEAPON_MODS, ...WEAPON_EVOLUTIONS });
@@ -252,6 +282,10 @@
       ...(Number.isFinite(baseWeapon.sweepHalfAngleDegrees) ? {
         sweepHalfAngleDegrees: baseWeapon.sweepHalfAngleDegrees + wideArc * 10,
         evolutionId: getWeaponEvolution(state, baseWeapon.id)
+      } : {}),
+      ...(baseWeapon.id === "launcher" ? {
+        evolutionId: getWeaponEvolution(state, baseWeapon.id),
+        launcherEffects: getLauncherEffectProfile(state, baseWeapon.explosionRadius)
       } : {}) };
   }
   function getArcBladeSweep(state, attackNumber) {
@@ -259,6 +293,35 @@
     const cadence = hasDiscoveredCombo(state, "blade-dance") ? 2 : 3;
     const fullSweep = evolved && Number.isInteger(attackNumber) && attackNumber > 0 && attackNumber % cadence === 0;
     return { fullSweep, cadence, halfAngleDegrees: fullSweep ? 180 : 55 + getWeaponModRank(state, "arc-blade", "wide-arc") * 10 };
+  }
+  function getLauncherClusterOffsets(count, distributionRadius) {
+    const amount = Math.max(0, Math.trunc(Number.isFinite(count) ? count : 0));
+    const radius = Number.isFinite(distributionRadius) ? Math.max(0, distributionRadius) : 0;
+    return Array.from({ length: amount }, (_, index) => {
+      const angle = -Math.PI / 2 + index * Math.PI * 2 / amount;
+      return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+    });
+  }
+  function getLauncherEffectProfile(state, primaryExplosionRadius) {
+    const clusterShellRank = getWeaponModRank(state, "launcher", "cluster-shell");
+    const clusterExplosionCount = clusterShellRank > 0 ? clusterShellRank + 1 : 0;
+    const siegeBloom = getWeaponEvolution(state, "launcher") === "siege-bloom";
+    const chainReactionActive = siegeBloom && hasDiscoveredCombo(state, "chain-reaction");
+    const primaryRadius = Number.isFinite(primaryExplosionRadius) ? Math.max(0, primaryExplosionRadius) : 0;
+    const defaultDistributionRadius = primaryRadius * LAUNCHER_EFFECTS.clusterDistributionRadiusMultiplier;
+    const clusterDistributionRadius = defaultDistributionRadius *
+      (chainReactionActive ? LAUNCHER_EFFECTS.chainReactionDistributionMultiplier : 1);
+    return {
+      clusterShellRank,
+      clusterExplosionCount,
+      defaultDistributionRadius,
+      clusterDistributionRadius,
+      clusterOffsets: getLauncherClusterOffsets(clusterExplosionCount, clusterDistributionRadius),
+      siegeBloom,
+      siegeBloomDelay: LAUNCHER_EFFECTS.siegeBloomDelay,
+      siegeBloomRadius: primaryRadius * LAUNCHER_EFFECTS.siegeBloomRadiusMultiplier,
+      chainReactionActive
+    };
   }
   function createRewardRng(seed) {
     const initialSeed = (Number(seed) >>> 0) || 0x43414e56;
@@ -273,14 +336,15 @@
   }
 
   const api = Object.freeze({
-    BUILD_TAGS, REWARD_CATEGORIES, PLAYER_BASE_STATS,
+    BUILD_TAGS, REWARD_CATEGORIES, PLAYER_BASE_STATS, LAUNCHER_EFFECTS,
     SHARED_UPGRADES, PASSIVES, WEAPON_MODS, WEAPON_EVOLUTIONS, COMBOS,
     REWARDS, REWARD_LIST, UPGRADES, UPGRADE_LIST, PLAYER_UPGRADE_IDS,
     createBuildState, getSharedUpgradeRank, getPassiveRank, getWeaponModRank,
     getWeaponEvolution, hasDiscoveredCombo, getUpgradeStacks, getRewardRank,
     isUpgradeCompatible, canSelectReward, canSelectUpgrade,
     generateRewardChoices, generateUpgradeChoices, applyReward, applyUpgrade,
-    discoverCombos, resolvePlayerStats, resolveWeaponStats, getArcBladeSweep, createRewardRng
+    discoverCombos, resolvePlayerStats, resolveWeaponStats, getArcBladeSweep,
+    getLauncherClusterOffsets, getLauncherEffectProfile, createRewardRng
   });
   global.RunBuild = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

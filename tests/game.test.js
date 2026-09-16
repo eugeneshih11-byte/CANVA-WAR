@@ -29,6 +29,7 @@ globalThis.__gameTest = {
   get weaponSlots() { return weaponSlots; },
   get activeWeaponSlotIndex() { return activeWeaponSlotIndex; },
   get weaponEffects() { return weaponEffects; },
+  get pendingLauncherEffects() { return pendingLauncherEffects; },
   keys,
   listeners: globalThis.__listeners,
   elements: globalThis.__elements,
@@ -55,6 +56,7 @@ globalThis.__gameTest = {
   beginAttack,
   endAttack,
   updateWeaponRuntime,
+  updatePendingLauncherEffects,
   chooseUpgrade,
   renderUpgradeChoices,
   renderBuildPanel,
@@ -892,7 +894,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="armoryView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="equipmentView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="gameView" class="app-view game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=20260912-combat-c1"/);
+  assert.match(indexSource, /href="style\.css\?v=20260916-launcher-b1"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1 id="hubTitle">CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
@@ -912,7 +914,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="reinforcementEdges"/);
   assert.match(indexSource, /id="audioMuteButton"/);
   assert.doesNotMatch(indexSource, /Choose your next destination|ROGUELITE OPERATIONS/);
-  const scriptVersion = "20260912-combat-c1";
+  const scriptVersion = "20260916-launcher-b1";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
   assert.deepEqual(scriptSources, ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js",
@@ -3094,6 +3096,140 @@ test("Scatter projectiles carry a short range and Launcher and Arc Blade can dam
   blade.setMouse(800, 320);
   pressPrimary(blade); releasePrimary(blade);
   assert.equal(blade.getState().boss.hp, 98);
+});
+
+test("Launcher Cluster Shell ranks create exactly two then three non-recursive secondary explosions", () => {
+  for (const [rank, expected] of [[1, 2], [2, 3]]) {
+    const game = loadGame(); startGame(game);
+    game.configureWeaponLoadout(["launcher"]);
+    game.setBuildState({ weaponModsByWeaponId: { launcher: { "cluster-shell": rank } } });
+    game.setMouse(game.player.x + 300, game.player.y);
+    pressPrimary(game); releasePrimary(game);
+    const rocket = game.bullets[0];
+    Object.assign(rocket, { x: 100, y: 100 });
+    const target = makeEnemy(game, "tank", { x: 100, y: 100, hp: 100, maxHp: 100, speed: 0 });
+    game.enemies.push(target);
+    game.handleBulletEnemyCollisions();
+    assert.equal(game.weaponEffects.filter(effect => effect.effectKind === "primary").length, 1);
+    assert.equal(game.weaponEffects.filter(effect => effect.effectKind === "cluster").length, expected);
+    const effectCount = game.weaponEffects.length;
+    game.handleBulletEnemyCollisions();
+    assert.equal(game.weaponEffects.length, effectCount);
+    assert.equal(game.bullets.length, 0);
+    assert.equal(game.pendingLauncherEffects.length, 0);
+  }
+});
+
+test("Siege Bloom uses resolved Player Damage, exact delay, original center, and one hit per event", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["launcher"]);
+  game.setBuildState({ sharedUpgrades: { "heavy-shot": 2 },
+    weaponModsByWeaponId: { launcher: { "cluster-shell": 2 } },
+    weaponEvolutionByWeaponId: { launcher: "siege-bloom" } });
+  game.setMouse(game.player.x + 300, game.player.y);
+  pressPrimary(game); releasePrimary(game);
+  const rocket = game.bullets[0];
+  assert.equal(rocket.damage, 4);
+  Object.assign(rocket, { x: 100, y: 100 });
+  const impactCenter = { x: rocket.x + rocket.width / 2, y: rocket.y + rocket.height / 2 };
+  const target = makeEnemy(game, "tank", { x: 100, y: 100, hp: 100, maxHp: 100, speed: 0 });
+  game.enemies.push(target, target);
+  game.handleBulletEnemyCollisions();
+  assert.equal(target.hp, 84);
+  assert.equal(game.pendingLauncherEffects.length, 1);
+  assert.equal(game.bullets.includes(rocket), false);
+  game.updateWeaponRuntime(0.44);
+  assert.equal(game.pendingLauncherEffects.length, 1);
+  assert.equal(target.hp, 84);
+  game.updateWeaponRuntime(0.01);
+  assert.equal(game.pendingLauncherEffects.length, 0);
+  assert.equal(target.hp, 80);
+  const bloom = game.weaponEffects.find(effect => effect.effectKind === "siege-bloom");
+  assert.deepEqual({ x: bloom.x, y: bloom.y }, impactCenter);
+  assert.equal(bloom.radius, 120);
+});
+
+test("committed Siege Bloom survives weapon switching and projectile cleanup but not Run cleanup", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["launcher", "starter"]);
+  game.setBuildState({ sharedUpgrades: { "heavy-shot": 2 },
+    weaponModsByWeaponId: { launcher: { "cluster-shell": 2 } },
+    weaponEvolutionByWeaponId: { launcher: "siege-bloom" } });
+  game.setMouse(game.player.x + 300, game.player.y);
+  pressPrimary(game); releasePrimary(game);
+  Object.assign(game.bullets[0], { x: 100, y: 100 });
+  game.enemies.push(makeEnemy(game, "tank", { x: 100, y: 100, hp: 100, maxHp: 100, speed: 0 }));
+  game.handleBulletEnemyCollisions();
+  assert.equal(game.pendingLauncherEffects.length, 1);
+  assert.equal(game.bullets.length, 0);
+  game.activateWeaponSlot(1);
+  assert.equal(game.weapon.id, "starter");
+  assert.equal(game.buildState.weaponModsByWeaponId.launcher["cluster-shell"], 2);
+  assert.deepEqual(Object.keys(game.buildState.weaponModsByWeaponId), ["launcher"]);
+  game.updatePendingLauncherEffects(0.45);
+  assert.equal(game.weaponEffects.some(effect => effect.effectKind === "siege-bloom"), true);
+
+  game.activateWeaponSlot(0);
+  game.weaponRuntime.timeUntilNextShot = 0;
+  pressPrimary(game); releasePrimary(game);
+  Object.assign(game.bullets[0], { x: 100, y: 100 });
+  game.handleBulletEnemyCollisions();
+  assert.equal(game.pendingLauncherEffects.length, 1);
+  game.settleRun("death");
+  assert.equal(game.pendingLauncherEffects.length, 0);
+  game.resetGame();
+  assert.equal(game.pendingLauncherEffects.length, 0);
+});
+
+test("Chain Reaction preserves cluster count and damage while concentrating runtime geometry to 0.6D", () => {
+  const impact = combo => {
+    const game = loadGame(); startGame(game);
+    game.configureWeaponLoadout(["launcher"]);
+    game.setBuildState({ sharedUpgrades: { "heavy-shot": 2 },
+      weaponModsByWeaponId: { launcher: { "cluster-shell": 2 } },
+      weaponEvolutionByWeaponId: { launcher: "siege-bloom" },
+      passives: { vitality: 2 }, discoveredCombos: combo ? ["chain-reaction"] : [] });
+    game.setMouse(game.player.x + 300, game.player.y);
+    pressPrimary(game); releasePrimary(game);
+    const rocket = game.bullets[0];
+    Object.assign(rocket, { x: 100, y: 100 });
+    const center = { x: rocket.x + rocket.width / 2, y: rocket.y + rocket.height / 2 };
+    const target = makeEnemy(game, "tank", { x: 100, y: 100, hp: 100, maxHp: 100, speed: 0 });
+    game.enemies.push(target);
+    game.handleBulletEnemyCollisions();
+    const clusters = game.weaponEffects.filter(effect => effect.effectKind === "cluster");
+    return { count: clusters.length, damage: 100 - target.hp,
+      distances: clusters.map(effect => Math.hypot(effect.x - center.x, effect.y - center.y)) };
+  };
+  const normal = impact(false), chain = impact(true);
+  assert.equal(normal.count, 3);
+  assert.equal(chain.count, 3);
+  assert.equal(normal.damage, chain.damage);
+  normal.distances.forEach(distance => closeTo(distance, 80));
+  chain.distances.forEach(distance => closeTo(distance, 48));
+});
+
+test("Launcher Build Detail and playtest route use production reward and Combo discovery logic", () => {
+  const game = loadGame({}, { search: "?playtest=1" }); startGame(game);
+  game.configureWeaponLoadout(["launcher", "starter"]);
+  game.openBuildDetail();
+  assert.equal(game.elements.buildDetailContent.children.some(section => section.dataset.section === "combos"), false);
+  game.closeBuildDetail();
+  const expectedChoices = ["cluster-shell", "cluster-shell", "heavy-shot", "heavy-shot",
+    "siege-bloom", "vitality", "vitality"];
+  for (const rewardId of expectedChoices) {
+    game.listeners["playtestBuildDemoButton:click"]();
+    assert.deepEqual(Array.from(game.currentUpgradeChoices, reward => reward.id), [rewardId]);
+    game.chooseUpgrade("1");
+  }
+  assert.equal(game.buildState.weaponEvolutionByWeaponId.launcher, "siege-bloom");
+  assert.deepEqual(Array.from(game.buildState.discoveredCombos), ["chain-reaction"]);
+  assert.equal(game.elements.comboNotification.textContent, "COMBO DISCOVERED — CHAIN REACTION");
+  game.openBuildDetail();
+  const detailText = game.elements.buildDetailContent.textContent;
+  assert.match(detailText, /Launcher — Cluster Shell II/);
+  assert.match(detailText, /Launcher — Siege Bloom/);
+  assert.match(detailText, /Chain Reaction/);
 });
 
 test("production starts Starter-only while playtest selection equips one or two of six", () => {
