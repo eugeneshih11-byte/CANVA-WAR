@@ -1654,6 +1654,35 @@ test("Upgrade cards show three numbered choices and card clicks select without f
   assert.equal(game.weaponRuntime.attackHeld, false);
 });
 
+test("rank-aware Reward cards show only the next Cluster Shell effect and preserve Wide Arc copy", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["launcher"]);
+  game.setUpgradeChoices(["cluster-shell"]);
+  let card = game.elements.upgradeChoices.children[0];
+  assert.match(card.textContent, /1 · LAUNCHER — CLUSTER SHELL/);
+  assert.equal(card.children[1].textContent, "Creates 2 cluster explosions");
+  assert.equal(card.children[2].textContent, "WEAPON-MOD · 0 / 2");
+  assert.doesNotMatch(card.textContent, /3 cluster explosions/);
+  assert.doesNotMatch(card.getAttribute("aria-label"), /3 cluster explosions/);
+  card.click();
+  assert.equal(game.buildState.weaponModsByWeaponId.launcher["cluster-shell"], 1);
+
+  game.setUpgradeChoices(["cluster-shell"]);
+  card = game.elements.upgradeChoices.children[0];
+  assert.equal(card.children[1].textContent, "Increases to 3 cluster explosions");
+  assert.equal(card.children[2].textContent, "WEAPON-MOD · 1 / 2");
+  assert.doesNotMatch(card.children[1].textContent, /2 cluster explosions/);
+  assert.doesNotMatch(card.getAttribute("aria-label"), /2 cluster explosions/);
+  card.click();
+  assert.equal(game.buildState.weaponModsByWeaponId.launcher["cluster-shell"], 2);
+
+  game.configureWeaponLoadout(["arc-blade"]);
+  game.setBuildState({});
+  game.setUpgradeChoices(["wide-arc"]);
+  assert.equal(game.elements.upgradeChoices.children[0].children[1].textContent,
+    "+10° sweep half-angle");
+});
+
 test("keyboard 1, 2, and 3 select the matching displayed Upgrade", () => {
   const ids = ["rapid-fire", "heavy-shot", "split-shot"];
   ids.forEach((expectedId, index) => {

@@ -2987,14 +2987,15 @@ function renderUpgradeChoices() {
   upgradeMessage.textContent = "Choose one upgrade. Press 1, 2, or 3.";
   currentUpgradeChoices.forEach((upgrade, index) => {
     const currentStack = RunBuild.getRewardRank(buildState, upgrade.id);
+    const effectLines = RunBuild.getNextRewardEffectLines(buildState, upgrade.id);
     const card = document.createElement("button");
     card.type = "button";
     card.className = "upgrade-card";
     card.dataset.choiceIndex = String(index);
-    card.setAttribute?.("aria-label", `${index + 1}. ${upgrade.displayName || upgrade.name}. ${upgrade.effectLines.join(". ")}. ${currentStack} of ${upgrade.maxRank}`);
+    card.setAttribute?.("aria-label", `${index + 1}. ${upgrade.displayName || upgrade.name}. ${effectLines.join(". ")}. ${currentStack} of ${upgrade.maxRank}`);
     card.append(
       textElement("span", "upgrade-card-name", `${index + 1} · ${(upgrade.displayName || upgrade.name).toUpperCase()}`),
-      textElement("span", "upgrade-card-effect", upgrade.effectLines.join(" · ")),
+      textElement("span", "upgrade-card-effect", effectLines.join(" · ")),
       textElement("span", "upgrade-card-stack", `${upgrade.category.toUpperCase()} · ${currentStack} / ${upgrade.maxRank}`)
     );
     card.addEventListener("click", () => chooseUpgrade(String(index + 1)));

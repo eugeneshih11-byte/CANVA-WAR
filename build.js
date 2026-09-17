@@ -64,7 +64,11 @@
       id: "cluster-shell", name: "Cluster Shell", displayName: "Launcher — Cluster Shell",
       category: REWARD_CATEGORIES.WEAPON_MOD, weaponId: "launcher", maxRank: 2,
       description: "Primary impacts create secondary cluster explosions",
-      effectLines: ["Rank I: 2 cluster explosions", "Rank II: 3 cluster explosions"]
+      effectLines: ["Creates 2 cluster explosions"],
+      effectLinesByRank: {
+        1: ["Creates 2 cluster explosions"],
+        2: ["Increases to 3 cluster explosions"]
+      }
     }
   });
   const WEAPON_EVOLUTIONS = freeze({
@@ -168,6 +172,13 @@
     if (reward.category === REWARD_CATEGORIES.PASSIVE) return getPassiveRank(state, id);
     if (reward.category === REWARD_CATEGORIES.WEAPON_MOD) return getWeaponModRank(state, reward.weaponId, id);
     return getWeaponEvolution(state, reward.weaponId) === id ? 1 : 0;
+  }
+  function getNextRewardEffectLines(state, id) {
+    const reward = REWARDS[id];
+    if (!reward) return [];
+    const nextRank = getRewardRank(state, id) + 1;
+    if (nextRank > reward.maxRank) return [];
+    return reward.effectLinesByRank?.[nextRank] || reward.effectLines || [];
   }
 
   function isUpgradeCompatible(baseWeapon, upgradeId) {
@@ -341,6 +352,7 @@
     REWARDS, REWARD_LIST, UPGRADES, UPGRADE_LIST, PLAYER_UPGRADE_IDS,
     createBuildState, getSharedUpgradeRank, getPassiveRank, getWeaponModRank,
     getWeaponEvolution, hasDiscoveredCombo, getUpgradeStacks, getRewardRank,
+    getNextRewardEffectLines,
     isUpgradeCompatible, canSelectReward, canSelectUpgrade,
     generateRewardChoices, generateUpgradeChoices, applyReward, applyUpgrade,
     discoverCombos, resolvePlayerStats, resolveWeaponStats, getArcBladeSweep,

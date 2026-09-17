@@ -78,9 +78,11 @@ test("Passive identity cap filters a fourth identity but permits owned rank-ups"
 
 test("Wide Arc is Arc Blade-only with exact 55 to 65 to 75 degree progression", () => {
   let build = state();
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "wide-arc"), ["+10° sweep half-angle"]);
   assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS["arc-blade"], build).sweepHalfAngleDegrees, 55);
   assert.equal(RunBuild.canSelectReward(build, "wide-arc", ["starter"]), false);
   build = RunBuild.applyReward(build, "wide-arc", { loadout }).buildState;
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "wide-arc"), ["+10° sweep half-angle"]);
   assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS["arc-blade"], build).sweepHalfAngleDegrees, 65);
   assert.equal(RunBuild.resolveWeaponStats(Weapons.STARTER, build).sweepHalfAngleDegrees, undefined);
   build = RunBuild.applyReward(build, "wide-arc", { loadout }).buildState;
@@ -117,12 +119,17 @@ test("Blade Dance stays hidden, auto-discovers, and changes Cyclone cadence to e
 test("Cluster Shell is Launcher-only, Run-owned, and resolves exact rank counts", () => {
   const launcherLoadout = ["launcher", "starter"];
   let build = state();
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "cluster-shell"),
+    ["Creates 2 cluster explosions"]);
   assert.equal(RunBuild.canSelectReward(build, "cluster-shell", ["starter"]), false);
   assert.equal(RunBuild.canSelectReward(build, "cluster-shell", launcherLoadout), true);
   build = RunBuild.applyReward(build, "cluster-shell", { loadout: launcherLoadout }).buildState;
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "cluster-shell"),
+    ["Increases to 3 cluster explosions"]);
   assert.equal(RunBuild.getLauncherEffectProfile(build, 80).clusterExplosionCount, 2);
   assert.equal(RunBuild.resolveWeaponStats(Weapons.STARTER, build).launcherEffects, undefined);
   build = RunBuild.applyReward(build, "cluster-shell", { loadout: launcherLoadout }).buildState;
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "cluster-shell"), []);
   assert.equal(RunBuild.getLauncherEffectProfile(build, 80).clusterExplosionCount, 3);
   assert.deepEqual(build.weaponModsByWeaponId, { launcher: { "cluster-shell": 2 } });
   assert.equal(RunBuild.getWeaponModRank(build, "launcher", "cluster-shell"), 2);
