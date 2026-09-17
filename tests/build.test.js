@@ -178,6 +178,61 @@ test("Chain Reaction stays hidden, auto-discovers, and only concentrates determi
   assert.deepEqual(concentrated.clusterOffsets, RunBuild.getLauncherEffectProfile(result.buildState, 80).clusterOffsets);
 });
 
+test("Tight Cadence is Burst-only, rank-aware, and changes only internal Burst spacing", () => {
+  const burstLoadout = ["burst", "launcher"];
+  let build = state();
+  assert.equal(RunBuild.canSelectReward(build, "tight-cadence", ["launcher"]), false);
+  assert.equal(RunBuild.canSelectReward(build, "tight-cadence", burstLoadout), true);
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "tight-cadence"),
+    ["Internal spacing 0.110s → 0.085s"]);
+  let resolved = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.burst, build);
+  close(resolved.burstSpacing, 0.110);
+  const baseFireRate = resolved.fireRate;
+
+  build = RunBuild.applyReward(build, "tight-cadence", { loadout: burstLoadout }).buildState;
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "tight-cadence"),
+    ["Internal spacing 0.085s → 0.060s"]);
+  resolved = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.burst, build);
+  close(resolved.burstSpacing, 0.085);
+  close(resolved.fireRate, baseFireRate);
+
+  build = RunBuild.applyReward(build, "tight-cadence", { loadout: burstLoadout }).buildState;
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "tight-cadence"), []);
+  close(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.burst, build).burstSpacing, 0.060);
+  assert.equal(RunBuild.canSelectReward(build, "tight-cadence", burstLoadout), false);
+
+  const rapid = state({ sharedUpgrades: { "rapid-fire": 2 },
+    weaponModsByWeaponId: { burst: { "tight-cadence": 2 } } });
+  resolved = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.burst, rapid);
+  close(resolved.burstSpacing, 0.060);
+  close(resolved.fireRate, Weapons.DEFINITIONS.burst.fireRate * 1.4);
+});
+
+test("Execution Protocol legality and hidden Double Tap discovery use the shared Build architecture", () => {
+  const burstLoadout = ["burst"];
+  let build = state({ sharedUpgrades: { "heavy-shot": 2 },
+    weaponModsByWeaponId: { burst: { "tight-cadence": 1 } } });
+  assert.equal(RunBuild.canSelectReward(build, "execution-protocol", burstLoadout), false);
+  build.weaponModsByWeaponId.burst["tight-cadence"] = 2;
+  assert.equal(RunBuild.canSelectReward(build, "execution-protocol", burstLoadout), true);
+  let result = RunBuild.applyReward(build, "execution-protocol", { loadout: burstLoadout });
+  assert.equal(result.applied, true);
+  assert.equal(RunBuild.getWeaponEvolution(result.buildState, "burst"), "execution-protocol");
+  assert.equal(RunBuild.hasDiscoveredCombo(result.buildState, "double-tap"), false);
+  assert.equal(RunBuild.REWARDS["double-tap"], undefined);
+  assert.equal(RunBuild.generateRewardChoices(result.buildState, RunBuild.REWARD_LIST.length,
+    () => 0, burstLoadout).some(reward => reward.id === "double-tap"), false);
+
+  build = state({ ...result.buildState, sharedUpgrades: { "heavy-shot": 2, "rapid-fire": 1 } });
+  result = RunBuild.applyReward(build, "rapid-fire", { loadout: burstLoadout });
+  assert.deepEqual(result.discoveries.map(combo => combo.id), ["double-tap"]);
+  assert.equal(RunBuild.hasDiscoveredCombo(result.buildState, "double-tap"), true);
+  const profile = RunBuild.getBurstEffectProfile(result.buildState);
+  assert.deepEqual(profile, { tightCadenceRank: 2, burstSpacing: 0.060,
+    executionProtocol: true, executionDamageMultiplier: 2,
+    doubleTapActive: true, doubleTapDelay: 0.06 });
+});
+
 test("Launcher effect geometry and Reward RNG remain mutually deterministic and isolated", () => {
   const build = state({ sharedUpgrades: { "heavy-shot": 2 },
     weaponModsByWeaponId: { launcher: { "cluster-shell": 2 } },

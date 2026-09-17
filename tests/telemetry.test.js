@@ -664,3 +664,35 @@ test("combat-pass telemetry observes density, onboarding, collision, loadout, an
     siegeBloomBlasts: 1, siegeBloomTargets: 4,
     chainReactionCommittedAttacks: 1, chainReactionClusterExplosions: 3 });
 });
+
+test("Burst telemetry keeps committed sequence, Execution, follow-up, cancellation, and switch counters distinct", () => {
+  const telemetry = create();
+  telemetry.startRun({ player });
+  telemetry.startEncounter({ type: "wave", definition: wave, player });
+  telemetry.recordWeaponAttack({ weaponId: "burst" });
+  telemetry.recordBurstAttackInitiated({ sequenceId: 41, shotsScheduled: 3, spacing: 0.06 });
+  for (let shotIndex = 1; shotIndex <= 3; shotIndex++) {
+    telemetry.recordWeaponProjectile({ weaponId: "burst" });
+    telemetry.recordBurstShotFired({ weaponId: "burst", sequenceId: 41, shotIndex });
+  }
+  telemetry.recordExecutionRound({ sequenceId: 41, targetId: 77, bonusDamage: 4 });
+  telemetry.recordExecutionFollowupScheduled({ sequenceId: 41, delay: 0.06 });
+  telemetry.recordWeaponProjectile({ weaponId: "burst" });
+  telemetry.recordExecutionFollowupFired({ weaponId: "burst", sequenceId: 41 });
+  telemetry.recordDoubleTapHit({ damage: 4, killed: true });
+  telemetry.recordBurstShotsCanceled({ count: 2 });
+  telemetry.recordCommittedBurstWeaponSwitch({ sequenceId: 42 });
+
+  const encounter = currentEncounter(telemetry);
+  assert.deepEqual(encounter.burstEffects, {
+    burstAttacksInitiated: 1, burstShotsScheduled: 3, burstShotsFired: 3,
+    burstShotsCanceled: 2, executionRounds: 1, executionBonusDamage: 4,
+    executionFollowupsScheduled: 1, executionFollowupsFired: 1,
+    doubleTapHits: 1, doubleTapDamage: 4, doubleTapKills: 1,
+    weaponSwitchDuringCommittedBurst: 1,
+    recentSequences: [{ sequenceId: 41, spacing: 0.06, lastShotIndex: 3, executionTargetId: 77 }]
+  });
+  assert.equal(encounter.weaponMetrics.burst.attacks, 1);
+  assert.equal(encounter.weaponMetrics.burst.projectiles, 4);
+  assert.equal(encounter.weaponMetrics.burst.burstShots, 4);
+});

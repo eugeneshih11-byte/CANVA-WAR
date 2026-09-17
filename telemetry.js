@@ -187,6 +187,12 @@
           clusterExplosions: 0, clusterExplosionTargets: 0,
           siegeBloomBlasts: 0, siegeBloomTargets: 0,
           chainReactionCommittedAttacks: 0, chainReactionClusterExplosions: 0 },
+        burstEffects: { burstAttacksInitiated: 0, burstShotsScheduled: 0,
+          burstShotsFired: 0, burstShotsCanceled: 0, executionRounds: 0,
+          executionBonusDamage: 0, executionFollowupsScheduled: 0,
+          executionFollowupsFired: 0, doubleTapHits: 0, doubleTapDamage: 0,
+          doubleTapKills: 0, weaponSwitchDuringCommittedBurst: 0,
+          recentSequences: [] },
         outcome: null };
       encounter = { data, enemyIntegral: 0, threatIntegral: 0, pressureBlocked: false, released: new Set(),
         behaviorEvents: {
@@ -614,6 +620,50 @@
         }),
       recordArcBladeSweep: safe("record Arc Blade sweep", ({ weaponId, targetCount } = {}) => {
         if (encounter?.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].arcBladeTargets += nonNegative(targetCount);
+      }),
+      recordBurstAttackInitiated: safe("record Burst attack", ({ sequenceId, shotsScheduled, spacing } = {}) => {
+        if (!encounter) return;
+        const metrics = encounter.data.burstEffects;
+        metrics.burstAttacksInitiated++;
+        metrics.burstShotsScheduled += nonNegative(shotsScheduled);
+        metrics.recentSequences.push({ sequenceId, spacing: nonNegative(spacing) });
+        if (metrics.recentSequences.length > 12) metrics.recentSequences.shift();
+      }),
+      recordBurstShotFired: safe("record Burst shot fired", ({ weaponId, sequenceId, shotIndex } = {}) => {
+        if (!encounter) return;
+        encounter.data.burstEffects.burstShotsFired++;
+        if (encounter.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].burstShots++;
+        const recent = encounter.data.burstEffects.recentSequences.find(entry => entry.sequenceId === sequenceId);
+        if (recent) recent.lastShotIndex = shotIndex;
+      }),
+      recordBurstShotsCanceled: safe("record Burst shots canceled", ({ count } = {}) => {
+        if (encounter) encounter.data.burstEffects.burstShotsCanceled += nonNegative(count);
+      }),
+      recordExecutionRound: safe("record Execution Round", ({ sequenceId, targetId, bonusDamage } = {}) => {
+        if (!encounter) return;
+        const metrics = encounter.data.burstEffects;
+        metrics.executionRounds++;
+        metrics.executionBonusDamage += nonNegative(bonusDamage);
+        const recent = metrics.recentSequences.find(entry => entry.sequenceId === sequenceId);
+        if (recent) recent.executionTargetId = targetId ?? null;
+      }),
+      recordExecutionFollowupScheduled: safe("record Execution follow-up scheduled", () => {
+        if (encounter) encounter.data.burstEffects.executionFollowupsScheduled++;
+      }),
+      recordExecutionFollowupFired: safe("record Execution follow-up fired", ({ weaponId } = {}) => {
+        if (!encounter) return;
+        encounter.data.burstEffects.executionFollowupsFired++;
+        if (encounter.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].burstShots++;
+      }),
+      recordDoubleTapHit: safe("record Double Tap hit", ({ damage, killed } = {}) => {
+        if (!encounter) return;
+        const metrics = encounter.data.burstEffects;
+        metrics.doubleTapHits++;
+        metrics.doubleTapDamage += nonNegative(damage);
+        if (killed) metrics.doubleTapKills++;
+      }),
+      recordCommittedBurstWeaponSwitch: safe("record switch during committed Burst", () => {
+        if (encounter) encounter.data.burstEffects.weaponSwitchDuringCommittedBurst++;
       }),
       recordBurstShot: safe("record Burst shot", ({ weaponId } = {}) => {
         if (encounter?.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].burstShots++;

@@ -75,12 +75,15 @@
               `Offscreen ${seconds(encounter.enemyOffscreenEngagementTime + encounter.bossOffscreenTime)} · ` +
               `Boss blocks ${format(encounter.bossObstructionEvents)} · ` +
               `Empty camera ${seconds(encounter.cameraEmptyTerrainTime)}`,
-            encounter.type === "boss" ? "—" :
+            `${encounter.type === "boss" ? "—" :
               `I ${format(encounter.interceptor?.attempts)}/${format(encounter.interceptor?.chargeContacts)}/${format(encounter.interceptor?.missedCharges)} · ` +
               `D ${format(encounter.denier?.hazardsCreated)}/${format(encounter.denier?.hazardContacts)}/${format(encounter.denier?.hazardDamageEvents)} · ` +
               `S ${seconds(encounter.support?.affectedEnemyTime)}/${format(encounter.support?.affectedSpecialActions)}/${format(encounter.support?.linksCreated)} · ` +
               `G ${format(encounter.gunner?.bursts)}/${format(encounter.gunner?.telegraphs)}/${format(encounter.gunner?.telegraphCancels)} · ` +
-              `Block ${seconds(encounter.gunner?.rangeBlockedTime)}/${seconds(encounter.gunner?.losBlockedTime)}`,
+              `Block ${seconds(encounter.gunner?.rangeBlockedTime)}/${seconds(encounter.gunner?.losBlockedTime)}`} · ` +
+              `Burst ${format(encounter.burstEffects?.burstAttacksInitiated)}/${format(encounter.burstEffects?.burstShotsFired)}` +
+              ` · Exec ${format(encounter.burstEffects?.executionRounds)}/${format(encounter.burstEffects?.executionFollowupsFired)}` +
+              ` · Cancel ${format(encounter.burstEffects?.burstShotsCanceled)}`,
             encounter.outcome];
           values.forEach(value => row.append(element("td", String(value))));
           body.append(row);

@@ -104,6 +104,8 @@ function encounter(overrides) {
     pressureBlockedTime: 0,
     attackEvents: 4,
     shotsFired: 6,
+    burstEffects: { burstAttacksInitiated: 0, burstShotsFired: 0,
+      executionRounds: 0, executionFollowupsFired: 0, burstShotsCanceled: 0 },
     outcome: "death",
     ...overrides
   };
@@ -149,7 +151,8 @@ test("report UI exposes special behavior and enemy-separation outcomes", () => {
     maxEnemyEnemyPenetration: 17
   })]);
   const cells = fixture.nodes().filter(node => node.tagName === "TD").map(node => node.textContent);
-  assert.ok(cells.includes("I 4/1/3 · D 2/1/4 · S 5.25s/2/3 · G 2/2/1 · Block 1.25s/0.5s"));
+  assert.ok(cells.includes("I 4/1/3 · D 2/1/4 · S 5.25s/2/3 · G 2/2/1 · Block 1.25s/0.5s · " +
+    "Burst 0/0 · Exec 0/0 · Cancel 0"));
   assert.ok(cells.includes("E 3 · N 2 · R 1 · Sep 8/12/17"));
 });
 

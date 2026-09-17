@@ -13,6 +13,7 @@
     trapperTrigger: [150, 0.20, "square", 4], tetherConnect: [560, 0.15, "sine", 3], tetherBreak: [220, 0.12, "triangle", 3],
     scatterFire: [260, 0.07, "sawtooth", 2], piercerFire: [690, 0.09, "square", 2],
     piercerHit: [115, 0.08, "triangle", 2], burstFire: [470, 0.055, "square", 2],
+    executionRound: [920, 0.11, "triangle", 4], doubleTap: [690, 0.06, "square", 3],
     launcherFire: [145, 0.16, "sawtooth", 3], launcherExplosion: [58, 0.25, "square", 4],
     arcBladeSweep: [780, 0.14, "sawtooth", 3], weaponSwitch: [620, 0.06, "sine", 1]
   });

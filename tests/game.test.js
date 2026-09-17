@@ -52,7 +52,7 @@ globalThis.__gameTest = {
   handleBossPlayerCollision,
   updateBossDamageCooldown,
   fireWeaponAttack,
-  configureWeaponLoadout, activateWeaponSlot, switchActiveWeapon,
+  configureWeaponLoadout, activateWeaponSlot, switchActiveWeapon, replaceWeaponSlot,
   beginAttack,
   endAttack,
   updateWeaponRuntime,
@@ -589,9 +589,21 @@ function assertResetState(game) {
     sharedUpgrades: { "rapid-fire": 0, "heavy-shot": 0, "split-shot": 0 },
     weaponModsByWeaponId: {}, weaponEvolutionByWeaponId: {}, passives: {}, discoveredCombos: []
   });
-  assert.deepEqual({ ...game.weaponRuntime }, { timeUntilNextShot: 0, attackHeld: false,
-    burstShotsRemaining: 0, burstShotTimer: 0, burstAimAngle: 0,
-    arcAttackCount: 0, burstWeapon: null, burstAttackId: null });
+  assert.deepEqual({ timeUntilNextShot: game.weaponRuntime.timeUntilNextShot,
+    attackHeld: game.weaponRuntime.attackHeld,
+    burstShotsRemaining: game.weaponRuntime.burstShotsRemaining,
+    burstShotTimer: game.weaponRuntime.burstShotTimer,
+    burstAimAngle: game.weaponRuntime.burstAimAngle,
+    burstNextShotIndex: game.weaponRuntime.burstNextShotIndex,
+    arcAttackCount: game.weaponRuntime.arcAttackCount,
+    burstWeapon: game.weaponRuntime.burstWeapon,
+    burstAttackId: game.weaponRuntime.burstAttackId,
+    burstSequence: game.weaponRuntime.burstSequence,
+    disposed: game.weaponRuntime.disposed }, { timeUntilNextShot: 0, attackHeld: false,
+    burstShotsRemaining: 0, burstShotTimer: 0, burstAimAngle: 0, burstNextShotIndex: 0,
+    arcAttackCount: 0, burstWeapon: null, burstAttackId: null, burstSequence: null, disposed: false });
+  assert.equal(game.weaponRuntime.committedBurstSequences.size, 0);
+  assert.equal(game.weaponRuntime.pendingBurstFollowups.length, 0);
   assert.equal(state.boss, null);
   assert.equal(state.hasBossSpawned, false);
   assert.equal(state.isBossDefeated, false);
@@ -894,7 +906,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="armoryView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="equipmentView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="gameView" class="app-view game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=20260916-launcher-b1"/);
+  assert.match(indexSource, /href="style\.css\?v=20260917-burst-b1"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1 id="hubTitle">CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
@@ -914,7 +926,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="reinforcementEdges"/);
   assert.match(indexSource, /id="audioMuteButton"/);
   assert.doesNotMatch(indexSource, /Choose your next destination|ROGUELITE OPERATIONS/);
-  const scriptVersion = "20260916-launcher-b1";
+  const scriptVersion = "20260917-burst-b1";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
   assert.deepEqual(scriptSources, ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js",
@@ -1681,6 +1693,18 @@ test("rank-aware Reward cards show only the next Cluster Shell effect and preser
   game.setUpgradeChoices(["wide-arc"]);
   assert.equal(game.elements.upgradeChoices.children[0].children[1].textContent,
     "+10° sweep half-angle");
+
+  game.configureWeaponLoadout(["burst"]);
+  game.setBuildState({});
+  game.setUpgradeChoices(["tight-cadence"]);
+  card = game.elements.upgradeChoices.children[0];
+  assert.equal(card.children[1].textContent, "Internal spacing 0.110s → 0.085s");
+  assert.doesNotMatch(card.textContent, /0\.060s/);
+  card.click();
+  game.setUpgradeChoices(["tight-cadence"]);
+  card = game.elements.upgradeChoices.children[0];
+  assert.equal(card.children[1].textContent, "Internal spacing 0.085s → 0.060s");
+  assert.doesNotMatch(card.children[1].textContent, /0\.110s/);
 });
 
 test("keyboard 1, 2, and 3 select the matching displayed Upgrade", () => {
@@ -3062,6 +3086,222 @@ test("Burst fires exactly three deterministic shots and pending shots clean up o
   assert.equal(game.weaponSlots.length, 1);
   assert.equal(game.weapon.id, "starter");
   assert.equal(game.weaponRuntime.burstShotsRemaining, 0);
+});
+
+function executionBuild({ doubleTap = false } = {}) {
+  return { sharedUpgrades: { "heavy-shot": 2, "rapid-fire": doubleTap ? 2 : 0 },
+    weaponModsByWeaponId: { burst: { "tight-cadence": 2 } },
+    weaponEvolutionByWeaponId: { burst: "execution-protocol" },
+    discoveredCombos: doubleTap ? ["double-tap"] : [] };
+}
+
+function resolveBurstPattern(pattern, { doubleTap = false } = {}) {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["burst"]);
+  game.setBuildState(executionBuild({ doubleTap }));
+  const targets = {
+    A: makeEnemy(game, "tank", { runtimeId: 901, x: 100, y: 100, hp: 100, maxHp: 100, speed: 0 }),
+    B: makeEnemy(game, "tank", { runtimeId: 902, x: 300, y: 100, hp: 100, maxHp: 100, speed: 0 })
+  };
+  game.enemies.push(targets.A, targets.B);
+  game.setMouse(game.player.x + 300, game.player.y);
+  pressPrimary(game); releasePrimary(game);
+  pattern.forEach((key, index) => {
+    if (index > 0) game.updateWeaponRuntime(0.06);
+    const bullet = game.bullets.at(-1);
+    if (key === "miss") {
+      Object.assign(bullet, { x: 1595, y: 1190, directionX: 1, directionY: 0 });
+      game.updateBullets(0.1);
+    } else {
+      Object.assign(bullet, { x: targets[key].x, y: targets[key].y });
+      game.handleBulletEnemyCollisions();
+    }
+  });
+  return { game, targets };
+}
+
+test("Execution Protocol is sequence-local and doubles exactly Shot 3 on A-A-A only", () => {
+  const execution = resolveBurstPattern(["A", "A", "A"]);
+  assert.equal(execution.targets.A.hp, 84);
+  assert.equal(execution.game.weaponEffects.filter(effect => effect.kind === "execution").length, 1);
+  assert.equal(execution.game.weaponRuntime.pendingBurstFollowups.length, 0);
+
+  for (const pattern of [["A", "B", "A"], ["A", "A", "B"], ["miss", "A", "A"]]) {
+    const result = resolveBurstPattern(pattern);
+    assert.equal(result.game.weaponEffects.some(effect => effect.kind === "execution"), false,
+      `${pattern.join("-")} must not execute`);
+  }
+});
+
+test("Burst target history does not leak between sequences or from another Weapon", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["burst", "starter"]);
+  game.setBuildState(executionBuild());
+  const target = makeEnemy(game, "tank", { runtimeId: 903, x: 100, y: 100, hp: 100, maxHp: 100, speed: 0 });
+  game.enemies.push(target);
+  game.setMouse(game.player.x + 300, game.player.y);
+  pressPrimary(game); releasePrimary(game);
+  let bullet = game.bullets.at(-1);
+  Object.assign(bullet, { x: 1595, y: 1190, directionX: 1, directionY: 0 });
+  game.updateBullets(0.1);
+
+  game.activateWeaponSlot(1);
+  pressPrimary(game); releasePrimary(game);
+  bullet = game.bullets.find(candidate => candidate.weaponId === "starter");
+  Object.assign(bullet, { x: target.x, y: target.y });
+  game.handleBulletEnemyCollisions();
+
+  game.updateWeaponRuntime(0.06);
+  bullet = game.bullets.find(candidate => candidate.burstShotIndex === 2);
+  Object.assign(bullet, { x: target.x, y: target.y });
+  game.handleBulletEnemyCollisions();
+  game.updateWeaponRuntime(0.06);
+  bullet = game.bullets.find(candidate => candidate.burstShotIndex === 3);
+  Object.assign(bullet, { x: target.x, y: target.y });
+  game.handleBulletEnemyCollisions();
+  assert.equal(game.weaponEffects.some(effect => effect.kind === "execution"), false);
+
+  game.activateWeaponSlot(0);
+  game.weaponRuntime.timeUntilNextShot = 0;
+  pressPrimary(game); releasePrimary(game);
+  for (const [index, position] of [[1, target], [2, target], [3, { x: 300, y: 100 }]]) {
+    if (index > 1) game.updateWeaponRuntime(0.06);
+    bullet = game.bullets.find(candidate => candidate.burstSequenceId === game.weaponRuntime.burstAttackId &&
+      candidate.burstShotIndex === index) || game.bullets.at(-1);
+    Object.assign(bullet, { x: position.x, y: position.y });
+    game.handleBulletEnemyCollisions();
+  }
+  assert.equal(game.weaponEffects.some(effect => effect.kind === "execution"), false);
+});
+
+test("Double Tap waits 0.06 simulation seconds, deals normal damage, and cannot recurse", () => {
+  const { game, targets } = resolveBurstPattern(["A", "A", "A"], { doubleTap: true });
+  assert.equal(targets.A.hp, 84);
+  assert.equal(game.weaponRuntime.pendingBurstFollowups.length, 1);
+  assert.equal(game.weaponEffects.filter(effect => effect.kind === "execution").length, 1);
+  game.updateWeaponRuntime(0.059);
+  assert.equal(game.bullets.length, 0);
+  game.updateWeaponRuntime(0.001);
+  assert.equal(game.bullets.length, 1);
+  const followup = game.bullets[0];
+  assert.equal(followup.burstFollowup, true);
+  assert.equal(followup.damage, 4);
+  Object.assign(followup, { x: targets.A.x, y: targets.A.y });
+  game.handleBulletEnemyCollisions();
+  assert.equal(targets.A.hp, 80);
+  game.updateWeaponRuntime(0.2);
+  assert.equal(game.weaponRuntime.pendingBurstFollowups.length, 0);
+  assert.equal(game.bullets.length, 0);
+});
+
+test("committed Burst completes after switching while inactive Burst cannot initiate and cooldown persists", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["burst", "launcher"]);
+  game.setBuildState({ weaponModsByWeaponId: { burst: { "tight-cadence": 2 } } });
+  game.setMouse(game.player.x + 300, game.player.y);
+  pressPrimary(game); releasePrimary(game);
+  const burstRuntime = game.weaponSlots[0].runtime;
+  const cooldown = burstRuntime.timeUntilNextShot;
+  game.activateWeaponSlot(1);
+  pressPrimary(game); releasePrimary(game);
+  assert.equal(game.weapon.id, "launcher");
+  assert.equal(game.bullets.filter(bullet => bullet.weaponId === "burst").length, 1);
+  game.updateWeaponRuntime(0.06);
+  game.updateWeaponRuntime(0.06);
+  assert.equal(game.bullets.filter(bullet => bullet.weaponId === "burst").length, 3);
+  assert.equal(burstRuntime.burstShotsRemaining, 0);
+  closeTo(burstRuntime.timeUntilNextShot, cooldown - 0.12);
+  assert.equal(game.weaponSlots[1].runtime.burstShotsRemaining, 0);
+  game.activateWeaponSlot(0);
+  const bulletCount = game.bullets.length;
+  pressPrimary(game); releasePrimary(game);
+  assert.equal(game.bullets.length, bulletCount);
+});
+
+test("Burst timers freeze in formal pauses and cleanup is slot-scoped and idempotent", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["burst", "launcher"]);
+  game.setBuildState(executionBuild({ doubleTap: true }));
+  game.setMouse(game.player.x + 300, game.player.y);
+  pressPrimary(game); releasePrimary(game);
+  const burstRuntime = game.weaponSlots[0].runtime;
+  const timer = burstRuntime.burstShotTimer;
+  game.setState({ isChoosingUpgrade: true });
+  game.update(0.5);
+  closeTo(burstRuntime.burstShotTimer, timer);
+  game.setState({ isChoosingUpgrade: false });
+  game.openBuildDetail();
+  game.update(0.5);
+  closeTo(burstRuntime.burstShotTimer, timer);
+  game.closeBuildDetail();
+  game.setState({ runPhase: "INTRODUCTION_ACTIVE" });
+  game.update(0.5);
+  closeTo(burstRuntime.burstShotTimer, timer);
+  game.setState({ runPhase: "WAVE_ACTIVE" });
+  game.updateWeaponRuntime(timer);
+  assert.equal(burstRuntime.burstShotsRemaining, 1);
+
+  const launcherRuntime = game.weaponSlots[1].runtime;
+  launcherRuntime.timeUntilNextShot = 0.37;
+  assert.equal(game.replaceWeaponSlot(0, "starter"), true);
+  assert.equal(burstRuntime.disposed, true);
+  assert.equal(burstRuntime.burstShotsRemaining, 0);
+  assert.equal(burstRuntime.pendingBurstFollowups.length, 0);
+  assert.equal(game.weaponSlots[1].runtime, launcherRuntime);
+  assert.equal(launcherRuntime.timeUntilNextShot, 0.37);
+  assert.equal(game.replaceWeaponSlot(0, "starter"), false);
+});
+
+test("Level-Up and Build Detail freeze Double Tap, while death, Run end, and restart cancel it", () => {
+  const paused = resolveBurstPattern(["A", "A", "A"], { doubleTap: true }).game;
+  const runtime = paused.weaponRuntime;
+  paused.setState({ isChoosingUpgrade: true });
+  paused.update(0.2);
+  closeTo(runtime.pendingBurstFollowups[0].delayRemaining, 0.06);
+  paused.setState({ isChoosingUpgrade: false });
+  paused.openBuildDetail();
+  paused.update(0.2);
+  closeTo(runtime.pendingBurstFollowups[0].delayRemaining, 0.06);
+  paused.closeBuildDetail();
+  paused.updateWeaponRuntime(0.06);
+  assert.equal(paused.bullets.some(bullet => bullet.burstFollowup), true);
+
+  const death = resolveBurstPattern(["A", "A", "A"], { doubleTap: true }).game;
+  const deathRuntime = death.weaponRuntime;
+  death.player.hp = 1;
+  death.enemies.push(makeEnemy(death, "normal", { x: death.player.x, y: death.player.y,
+    hp: 10, maxHp: 10, damage: 1, lifecycle: "ACTIVE" }));
+  death.handlePlayerEnemyCollisions();
+  assert.equal(death.getState().isGameOver, true);
+  assert.equal(deathRuntime.pendingBurstFollowups.length, 0);
+  death.updateWeaponRuntime(1);
+  assert.equal(death.bullets.some(bullet => bullet.burstFollowup), false);
+  death.resetGame();
+  assert.equal(death.weaponRuntime.pendingBurstFollowups.length, 0);
+
+  const ended = resolveBurstPattern(["A", "A", "A"], { doubleTap: true }).game;
+  ended.settleRun("abandon");
+  assert.equal(ended.weaponRuntime.pendingBurstFollowups.length, 0);
+});
+
+test("Burst playtest route uses real rewards to unlock Execution Protocol then discover Double Tap", () => {
+  const game = loadGame({}, { search: "?playtest=1" }); startGame(game);
+  game.configureWeaponLoadout(["burst", "launcher"]);
+  const expectedChoices = ["tight-cadence", "tight-cadence", "heavy-shot", "heavy-shot",
+    "execution-protocol", "rapid-fire", "rapid-fire"];
+  for (const rewardId of expectedChoices) {
+    game.listeners["playtestBuildDemoButton:click"]();
+    assert.deepEqual(Array.from(game.currentUpgradeChoices, reward => reward.id), [rewardId]);
+    game.chooseUpgrade("1");
+  }
+  assert.equal(game.buildState.weaponEvolutionByWeaponId.burst, "execution-protocol");
+  assert.deepEqual(Array.from(game.buildState.discoveredCombos), ["double-tap"]);
+  assert.equal(game.elements.comboNotification.textContent, "COMBO DISCOVERED — DOUBLE TAP");
+  game.openBuildDetail();
+  const detailText = game.elements.buildDetailContent.textContent;
+  assert.match(detailText, /Burst — Tight Cadence II/);
+  assert.match(detailText, /Burst — Execution Protocol/);
+  assert.match(detailText, /Double Tap/);
 });
 
 test("Launcher explosion hits nearby enemies once each and Arc Blade remains frontal", () => {

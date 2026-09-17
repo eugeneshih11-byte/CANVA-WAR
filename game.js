@@ -269,12 +269,16 @@ const abandonOverlay = document.getElementById("abandonOverlay");
 
 function createWeaponRuntime() {
   return { timeUntilNextShot: 0, attackHeld: false, burstShotsRemaining: 0,
-    burstShotTimer: 0, burstAimAngle: 0, arcAttackCount: 0 };
+    burstShotTimer: 0, burstAimAngle: 0, burstNextShotIndex: 0,
+    burstWeapon: null, burstAttackId: null, burstSequence: null,
+    committedBurstSequences: new Set(), pendingBurstFollowups: [],
+    arcAttackCount: 0, disposed: false };
 }
 
 function configureWeaponLoadout(ids = [Weapons.STARTER.id]) {
   const selected = [...new Set(ids)].filter(id => Weapons.DEFINITIONS[id]).slice(0, 2);
   if (!selected.length) selected.push(Weapons.STARTER.id);
+  clearWeaponActions();
   buildState = RunBuild.createBuildState();
   weaponSlots = selected.map(weaponId => ({ weaponId, runtime: createWeaponRuntime() }));
   activeWeaponSlotIndex = 0;
@@ -293,6 +297,8 @@ function selectedPlaytestWeaponIds() {
 
 function activateWeaponSlot(index, { record = true } = {}) {
   if (!Number.isInteger(index) || index < 0 || index >= weaponSlots.length || index === activeWeaponSlotIndex) return false;
+  const previousRuntime = weaponRuntime;
+  const switchedDuringCommittedBurst = previousRuntime.burstShotsRemaining > 0;
   weaponRuntime.attackHeld = false;
   activeWeaponSlotIndex = index;
   const slot = weaponSlots[index];
@@ -303,6 +309,12 @@ function activateWeaponSlot(index, { record = true } = {}) {
   if (record) {
     observeTelemetry("recordWeaponSwitch", () => ({ activeWeapon: weapon.id,
       slot: index === 0 ? "A" : "B" }));
+    if (switchedDuringCommittedBurst) {
+      observeTelemetry("recordCommittedBurstWeaponSwitch", () => ({
+        sequenceId: previousRuntime.burstSequence?.id || previousRuntime.burstAttackId,
+        fromSlot: index === 0 ? "B" : "A", toSlot: index === 0 ? "A" : "B"
+      }));
+    }
     audioManager.play("weaponSwitch", { concurrency: 1 });
   }
   renderBuildPanel();
@@ -314,16 +326,45 @@ function switchActiveWeapon() {
   return activateWeaponSlot(activeWeaponSlotIndex === 0 ? 1 : 0);
 }
 
-function clearWeaponActions({ ready = false } = {}) {
-  for (const slot of weaponSlots) {
-    slot.runtime.attackHeld = false;
-    slot.runtime.burstShotsRemaining = 0;
-    slot.runtime.burstShotTimer = 0;
-    slot.runtime.burstWeapon = null;
-    slot.runtime.burstAttackId = null;
-    if (ready) slot.runtime.timeUntilNextShot = 0;
+function clearWeaponRuntime(runtime, { ready = false, disposed = false } = {}) {
+  if (!runtime) return;
+  if (runtime.burstShotsRemaining > 0) {
+    observeTelemetry("recordBurstShotsCanceled", () => ({ count: runtime.burstShotsRemaining,
+      sequenceId: runtime.burstSequence?.id || runtime.burstAttackId }));
   }
+  for (const sequence of runtime.committedBurstSequences || []) sequence.canceled = true;
+  runtime.attackHeld = false;
+  runtime.burstShotsRemaining = 0;
+  runtime.burstShotTimer = 0;
+  runtime.burstNextShotIndex = 0;
+  runtime.burstWeapon = null;
+  runtime.burstAttackId = null;
+  runtime.burstSequence = null;
+  runtime.committedBurstSequences?.clear();
+  if (runtime.pendingBurstFollowups) runtime.pendingBurstFollowups.length = 0;
+  runtime.disposed = disposed;
+  if (ready) runtime.timeUntilNextShot = 0;
+}
+
+function clearWeaponActions({ ready = false } = {}) {
+  for (const slot of weaponSlots) clearWeaponRuntime(slot.runtime, { ready });
   weaponEffects.length = 0;
+}
+
+function replaceWeaponSlot(index, weaponId) {
+  if (!Number.isInteger(index) || index < 0 || index >= weaponSlots.length || !Weapons.DEFINITIONS[weaponId]) return false;
+  const slot = weaponSlots[index];
+  if (slot.weaponId === weaponId) return false;
+  clearWeaponRuntime(slot.runtime, { disposed: true });
+  slot.weaponId = weaponId;
+  slot.runtime = createWeaponRuntime();
+  if (index === activeWeaponSlotIndex) {
+    weaponRuntime = slot.runtime;
+    weapon = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS[weaponId], buildState);
+    playerStats = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, buildState);
+    renderBuildPanel();
+  }
+  return true;
 }
 
 function clearPendingLauncherEffects() {
@@ -843,7 +884,7 @@ function canAttack() {
     [RUN_PHASES.WAVE_ACTIVE, RUN_PHASES.BOSS_ACTIVE].includes(runPhase);
 }
 
-function createProjectile(direction, weaponSnapshot, attackId) {
+function createProjectile(direction, weaponSnapshot, attackId, metadata = {}) {
   const playerCenterX = player.x + player.width / 2;
   const playerCenterY = player.y + player.height / 2;
   const bullet = {
@@ -862,7 +903,8 @@ function createProjectile(direction, weaponSnapshot, attackId) {
     launcherEffects: weaponSnapshot.launcherEffects ? {
       ...weaponSnapshot.launcherEffects,
       clusterOffsets: weaponSnapshot.launcherEffects.clusterOffsets.map(offset => ({ ...offset }))
-    } : null
+    } : null,
+    ...metadata
   };
   bullets.push(bullet);
   observeTelemetry("recordShot");
@@ -870,12 +912,29 @@ function createProjectile(direction, weaponSnapshot, attackId) {
   return bullet;
 }
 
-function fireProjectileSet(weaponSnapshot, aimAngle, attackId) {
+function fireProjectileSet(weaponSnapshot, aimAngle, attackId, metadata = {}) {
   const directions = Weapons.getProjectileDirections(aimAngle,
     weaponSnapshot.projectileCount, weaponSnapshot.spreadDegrees);
   for (const direction of directions) {
-    createProjectile(direction, weaponSnapshot, attackId);
+    createProjectile(direction, weaponSnapshot, attackId, metadata);
   }
+}
+
+function fireCommittedBurstShot(runtime, sequence, shotIndex, { followup = false } = {}) {
+  if (!runtime || runtime.disposed || !sequence || sequence.canceled) return false;
+  fireProjectileSet(sequence.weaponSnapshot, sequence.aimAngle, sequence.id, {
+    burstSequence: sequence,
+    burstSequenceId: sequence.id,
+    burstShotIndex: shotIndex,
+    burstFollowup: followup,
+    burstResolutionClosed: false
+  });
+  sequence.outstandingProjectiles += sequence.weaponSnapshot.projectileCount;
+  observeTelemetry(followup ? "recordExecutionFollowupFired" : "recordBurstShotFired", () => ({
+    weaponId: sequence.weaponSnapshot.id, sequenceId: sequence.id, shotIndex
+  }));
+  audioManager.play(followup ? "doubleTap" : "burstFire", { concurrency: 3 });
+  return true;
 }
 
 function fireArcBlade(weaponSnapshot, aimAngle, attackId) {
@@ -922,14 +981,30 @@ function fireWeaponAttack() {
   if (weaponSnapshot.attackKind === "arc") {
     fireArcBlade(weaponSnapshot, aimAngle, attackId);
   } else if (weaponSnapshot.attackKind === "burst") {
-    fireProjectileSet(weaponSnapshot, aimAngle, attackId);
+    const sequence = {
+      id: attackId,
+      weaponId: weaponSnapshot.id,
+      runtime: weaponRuntime,
+      weaponSnapshot,
+      aimAngle,
+      hitTargets: [null, null, null],
+      executionTriggered: false,
+      doubleTapScheduled: false,
+      outstandingProjectiles: 0,
+      canceled: false
+    };
+    weaponRuntime.committedBurstSequences.add(sequence);
+    weaponRuntime.burstSequence = sequence;
+    observeTelemetry("recordBurstAttackInitiated", () => ({ weaponId: weaponSnapshot.id,
+      sequenceId: attackId, shotsScheduled: weaponSnapshot.burstCount,
+      spacing: weaponSnapshot.burstSpacing }));
+    fireCommittedBurstShot(weaponRuntime, sequence, 1);
     weaponRuntime.burstShotsRemaining = weaponSnapshot.burstCount - 1;
     weaponRuntime.burstShotTimer = weaponSnapshot.burstSpacing;
     weaponRuntime.burstAimAngle = aimAngle;
     weaponRuntime.burstWeapon = weaponSnapshot;
     weaponRuntime.burstAttackId = attackId;
-    observeTelemetry("recordBurstShot", () => ({ weaponId: weaponSnapshot.id }));
-    audioManager.play("burstFire", { concurrency: 3 });
+    weaponRuntime.burstNextShotIndex = 2;
   } else {
     fireProjectileSet(weaponSnapshot, aimAngle, attackId);
     const cue = weaponSnapshot.id === "scatter" ? "scatterFire" :
@@ -964,15 +1039,30 @@ function endAttack(event) {
 function updateWeaponRuntime(deltaTime) {
   const dt = Number.isFinite(deltaTime) ? Math.max(0, deltaTime) : 0;
   for (const slot of weaponSlots) {
-    slot.runtime.timeUntilNextShot = Math.max(0, slot.runtime.timeUntilNextShot - dt);
-  }
-  if (weaponRuntime.burstShotsRemaining > 0) {
-    weaponRuntime.burstShotTimer -= dt;
-    while (weaponRuntime.burstShotsRemaining > 0 && weaponRuntime.burstShotTimer <= 1e-9) {
-      fireProjectileSet(weaponRuntime.burstWeapon, weaponRuntime.burstAimAngle, weaponRuntime.burstAttackId);
-      weaponRuntime.burstShotsRemaining--;
-      observeTelemetry("recordBurstShot", () => ({ weaponId: "burst" }));
-      if (weaponRuntime.burstShotsRemaining > 0) weaponRuntime.burstShotTimer += weaponRuntime.burstWeapon.burstSpacing;
+    const runtime = slot.runtime;
+    runtime.timeUntilNextShot = Math.max(0, runtime.timeUntilNextShot - dt);
+    if (runtime.burstShotsRemaining > 0) {
+      runtime.burstShotTimer -= dt;
+      while (runtime.burstShotsRemaining > 0 && runtime.burstShotTimer <= 1e-9) {
+        fireCommittedBurstShot(runtime, runtime.burstSequence, runtime.burstNextShotIndex);
+        runtime.burstNextShotIndex++;
+        runtime.burstShotsRemaining--;
+        if (runtime.burstShotsRemaining > 0) runtime.burstShotTimer += runtime.burstWeapon.burstSpacing;
+        else {
+          runtime.burstShotTimer = 0;
+          runtime.burstNextShotIndex = 0;
+          runtime.burstWeapon = null;
+          runtime.burstAttackId = null;
+          runtime.burstSequence = null;
+        }
+      }
+    }
+    for (let index = 0; index < runtime.pendingBurstFollowups.length;) {
+      const followup = runtime.pendingBurstFollowups[index];
+      followup.delayRemaining -= dt;
+      if (followup.delayRemaining > 1e-9) { index++; continue; }
+      runtime.pendingBurstFollowups.splice(index, 1);
+      fireCommittedBurstShot(runtime, followup.sequence, 4, { followup: true });
     }
   }
   // A frame may produce at most one held attack. fireWeaponAttack owns the fresh
@@ -1732,10 +1822,70 @@ function prepareProjectileHitState(bullet) {
   }
 }
 
+function releaseBurstProjectile(bullet) {
+  if (!bullet?.burstSequence || bullet.burstResolutionClosed) return;
+  bullet.burstResolutionClosed = true;
+  const sequence = bullet.burstSequence;
+  sequence.outstandingProjectiles = Math.max(0, sequence.outstandingProjectiles - 1);
+  if (sequence.outstandingProjectiles === 0 && sequence.runtime?.burstSequence !== sequence) {
+    sequence.runtime?.committedBurstSequences?.delete(sequence);
+  }
+}
+
 function removeProjectile(bullet) {
   const index = bullets.indexOf(bullet);
-  if (index >= 0) bullets.splice(index, 1);
+  if (index >= 0) {
+    bullets.splice(index, 1);
+    releaseBurstProjectile(bullet);
+  }
   return index >= 0;
+}
+
+function resolveBurstProjectileHit(bullet, target) {
+  const sequence = bullet?.burstSequence;
+  if (!sequence || sequence.canceled || bullet.burstFollowup) {
+    return { damage: bullet.damage, execution: false, executionBonusDamage: 0 };
+  }
+  const shotIndex = bullet.burstShotIndex;
+  if (shotIndex === 1 || shotIndex === 2) {
+    sequence.hitTargets[shotIndex - 1] = target;
+    return { damage: bullet.damage, execution: false, executionBonusDamage: 0 };
+  }
+  const execution = shotIndex === 3 && sequence.weaponSnapshot.burstEffects?.executionProtocol === true &&
+    !sequence.executionTriggered && sequence.hitTargets[0] === target && sequence.hitTargets[1] === target;
+  if (!execution) return { damage: bullet.damage, execution: false, executionBonusDamage: 0 };
+  sequence.executionTriggered = true;
+  const damage = bullet.damage * sequence.weaponSnapshot.burstEffects.executionDamageMultiplier;
+  return { damage, execution: true, executionBonusDamage: bullet.damage };
+}
+
+function scheduleDoubleTap(sequence) {
+  const runtime = sequence?.runtime, profile = sequence?.weaponSnapshot?.burstEffects;
+  if (!runtime || runtime.disposed || sequence.canceled || sequence.doubleTapScheduled || !profile?.doubleTapActive) return false;
+  sequence.doubleTapScheduled = true;
+  runtime.pendingBurstFollowups.push({ sequence, delayRemaining: profile.doubleTapDelay });
+  observeTelemetry("recordExecutionFollowupScheduled", () => ({
+    weaponId: sequence.weaponId, sequenceId: sequence.id, delay: profile.doubleTapDelay
+  }));
+  return true;
+}
+
+function completeBurstProjectileHit(bullet, target, hitResolution, result, hpBefore) {
+  const sequence = bullet?.burstSequence;
+  if (bullet?.burstFollowup && result.hit) {
+    observeTelemetry("recordDoubleTapHit", () => ({ weaponId: bullet.weaponId,
+      sequenceId: bullet.burstSequenceId, damage: result.damage, killed: result.killed }));
+  }
+  if (!hitResolution.execution || !result.hit) return;
+  const actualBonusDamage = Math.max(0, Math.min(hitResolution.executionBonusDamage,
+    hpBefore - bullet.damage));
+  observeTelemetry("recordExecutionRound", () => ({ weaponId: bullet.weaponId,
+    sequenceId: bullet.burstSequenceId, targetId: target.runtimeId || (target === boss ? "boss-1" : null),
+    bonusDamage: actualBonusDamage }));
+  weaponEffects.push({ kind: "execution", x: target.x + target.width / 2,
+    y: target.y + target.height / 2, elapsed: 0, duration: 0.18 });
+  audioManager.play("executionRound", { world: true, pan: worldAudioPan(target), concurrency: 2 });
+  scheduleDoubleTap(sequence);
 }
 
 function consumeProjectileHit(bullet, target) {
@@ -1758,7 +1908,7 @@ function damageRegularEnemy(enemy, amount, { weaponId = "starter", hitKind = "pr
   observeTelemetry("recordWeaponHit", () => ({ weaponId, enemyType: enemy.type, damage, hitKind }));
   audioManager.play(weaponId === "piercer" ? "piercerHit" : "weaponHit",
     { world: true, pan: worldAudioPan(enemy), concurrency: 3 });
-  if (enemy.hp > 0) return { hit: true, killed: false, waveCompleted: false };
+  if (enemy.hp > 0) return { hit: true, killed: false, waveCompleted: false, damage };
 
   EnemyBehaviors.recordEnemyDefeat(enemy, hazards, { emit: emitBehaviorTelemetry, enemies });
   const enemyIndex = enemies.indexOf(enemy);
@@ -1778,7 +1928,7 @@ function damageRegularEnemy(enemy, amount, { weaponId = "starter", hitKind = "pr
     handleLogicalWaveComplete(fill);
   }
   updateLevel();
-  return { hit: true, killed: true, waveCompleted };
+  return { hit: true, killed: true, waveCompleted, damage };
 }
 
 function damageBoss(target, amount, { weaponId = "starter", hitKind = "projectile" } = {}) {
@@ -1792,7 +1942,7 @@ function damageBoss(target, amount, { weaponId = "starter", hitKind = "projectil
   observeTelemetry("recordWeaponHit", () => ({ weaponId, enemyType: "boss-1", damage, hitKind }));
   audioManager.play(weaponId === "piercer" ? "piercerHit" : "weaponHit",
     { world: true, pan: worldAudioPan(boss), concurrency: 3 });
-  return { hit: true, killed: boss.hp <= 0, waveCompleted: false };
+  return { hit: true, killed: boss.hp <= 0, waveCompleted: false, damage };
 }
 
 function resolveExplosionEvent({ x, y, radius, damage, weaponId = "launcher", attackId = null,
@@ -1887,9 +2037,13 @@ function handleBulletEnemyCollisions() {
           if (explosion.waveCompleted || isChoosingUpgrade || isGameOver) return;
           break;
         }
+        const hitResolution = resolveBurstProjectileHit(bullet, enemy);
+        const hpBefore = enemy.hp;
         const projectileRemoved = consumeProjectileHit(bullet, enemy);
-        const result = damageRegularEnemy(enemy, bullet.damage,
-          { weaponId: bullet.weaponId || "starter", hitKind: "projectile" });
+        const result = damageRegularEnemy(enemy, hitResolution.damage,
+          { weaponId: bullet.weaponId || "starter",
+            hitKind: hitResolution.execution ? "execution" : bullet.burstFollowup ? "double-tap" : "projectile" });
+        completeBurstProjectileHit(bullet, enemy, hitResolution, result, hpBefore);
         if (result.waveCompleted || isChoosingUpgrade || isGameOver) return;
         if (projectileRemoved) break;
       }
@@ -1909,6 +2063,7 @@ function settleRun(endReason) {
 
   ContinuousEncounter.resetProgressReadiness(encounterController, "run-ended");
   clearInput();
+  clearWeaponActions();
   clearPendingLauncherEffects();
 
   const settlementState = selectSettlementState(runSettlementState, endReason);
@@ -1937,8 +2092,12 @@ function handleBulletBossCollisions() {
     if (!bullet.hitTargets.has(boss) && isOverlapping(bullet, boss)) {
       if (bullet.explosionRadius > 0) explodeProjectile(bullet);
       else {
+        const hitResolution = resolveBurstProjectileHit(bullet, boss);
+        const hpBefore = boss.hp;
         consumeProjectileHit(bullet, boss);
-        damageBoss(boss, bullet.damage, { weaponId: bullet.weaponId || "starter", hitKind: "projectile" });
+        const result = damageBoss(boss, hitResolution.damage, { weaponId: bullet.weaponId || "starter",
+          hitKind: hitResolution.execution ? "execution" : bullet.burstFollowup ? "double-tap" : "projectile" });
+        completeBurstProjectileHit(bullet, boss, hitResolution, result, hpBefore);
       }
 
       if (boss.hp <= 0) {
@@ -2769,10 +2928,11 @@ function drawBoss() {
 }
 
 function drawBullets() {
-  ctx.fillStyle = "#facc15";
-
   for (const bullet of bullets) {
     if (!isWorldVisible(bullet, 8)) continue;
+    ctx.fillStyle = bullet.burstFollowup ? "#67e8f9" :
+      bullet.burstShotIndex === 3 && bullet.burstSequence?.weaponSnapshot?.burstEffects?.executionProtocol
+        ? "#fef08a" : "#facc15";
     ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
   }
 }
@@ -2808,6 +2968,10 @@ function drawWeaponEffects() {
       if (bloom) {
         ctx.beginPath(); ctx.arc(effect.x, effect.y, effect.radius * 0.55, 0, Math.PI * 2); ctx.stroke();
       }
+    } else if (effect.kind === "execution") {
+      ctx.strokeStyle = `rgba(103,232,249,${0.95 * alpha})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(effect.x, effect.y, 20 + 10 * (1 - alpha), 0, Math.PI * 2); ctx.stroke();
     }
     ctx.restore();
   }
@@ -2925,6 +3089,27 @@ function closeBuildDetail() {
 // Combo through the real Level-Up selection path without a long XP grind.
 function preparePlaytestBuildDemoStep() {
   if (!isPlaytestMode || !isGameStarted || isChoosingUpgrade || isBuildDetailOpen) return false;
+  if (weaponSlots.some(slot => slot.weaponId === "burst")) {
+    const steps = [
+      { id: "tight-cadence", rank: 2 },
+      { id: "heavy-shot", rank: 2 },
+      { id: "execution-protocol", rank: 1 },
+      { id: "rapid-fire", rank: 2 }
+    ];
+    const next = steps.find(step => RunBuild.getRewardRank(buildState, step.id) < step.rank);
+    if (!next) {
+      comboNotificationTimer = 2.6;
+      comboNotification.textContent = "COMBO ACTIVE — DOUBLE TAP";
+      comboNotification.hidden = false;
+      return true;
+    }
+    currentUpgradeChoices = [RunBuild.REWARDS[next.id]];
+    isChoosingUpgrade = true;
+    clearInput();
+    renderBuildPanel();
+    renderUpgradeChoices();
+    return true;
+  }
   if (weaponSlots.some(slot => slot.weaponId === "launcher")) {
     const steps = [
       { id: "cluster-shell", rank: 2 },

@@ -101,7 +101,7 @@ function loadGame(search = "", options = {}) {
       handleBulletEnemyCollisions, handlePlayerEnemyCollisions,
       handleBulletBossCollisions, handleBossPlayerCollision,
       chooseUpgrade, updateLevel, takeDamage, settleRun, observeTelemetry,
-      fireWeaponAttack, beginAttack, endAttack, updateWeaponRuntime, configureWeaponLoadout,
+      fireWeaponAttack, beginAttack, endAttack, updateWeaponRuntime, configureWeaponLoadout, activateWeaponSlot,
       get weaponEffects() { return weaponEffects; },
       get pendingLauncherEffects() { return pendingLauncherEffects; },
       get telemetry() { return playtestTelemetry; },
@@ -493,14 +493,17 @@ test("telemetry configuration snapshots immutable Weapon, Upgrade and Player bal
   assert.deepEqual(plain(configuration.playerBaseStats), { maxHp: 5, speed: 240, damage: 2 });
   assert.equal(configuration.technicalFireRateCap, 12);
   assert.deepEqual(Object.keys(configuration.buildContent.rewards).sort(),
-    ["cluster-shell", "cyclone-blade", "heavy-shot", "rapid-fire", "siege-bloom",
-      "split-shot", "swift-feet", "vitality", "wide-arc"]);
+    ["cluster-shell", "cyclone-blade", "execution-protocol", "heavy-shot", "rapid-fire",
+      "siege-bloom", "split-shot", "swift-feet", "tight-cadence", "vitality", "wide-arc"]);
   assert.equal(configuration.buildContent.rewards["cyclone-blade"].category, "weapon-evolution");
   assert.equal(configuration.buildContent.rewards["wide-arc"].weaponId, "arc-blade");
   assert.equal(configuration.buildContent.rewards["cluster-shell"].weaponId, "launcher");
   assert.equal(configuration.buildContent.rewards["siege-bloom"].category, "weapon-evolution");
   assert.equal(configuration.buildContent.combos["blade-dance"].hidden, true);
   assert.equal(configuration.buildContent.combos["chain-reaction"].hidden, true);
+  assert.equal(configuration.buildContent.rewards["tight-cadence"].weaponId, "burst");
+  assert.equal(configuration.buildContent.rewards["execution-protocol"].category, "weapon-evolution");
+  assert.equal(configuration.buildContent.combos["double-tap"].hidden, true);
   assert.equal(JSON.stringify(configuration).includes("function"), false);
 });
 
@@ -527,6 +530,50 @@ test("production Launcher hooks report primary, cluster, bloom, and Chain Reacti
   assert.equal(metrics.siegeBloomBlasts, 1);
   assert.equal(metrics.siegeBloomTargets, 1);
   assert.equal(game.pendingLauncherEffects.length, 0);
+});
+
+test("production Burst hooks separate committed attacks, shots, Execution, Double Tap, and switching", () => {
+  const game = loadGame("?playtest=1"); game.start();
+  game.configureWeaponLoadout(["burst", "launcher"]);
+  game.setBuild({ sharedUpgrades: { "heavy-shot": 2, "rapid-fire": 2 },
+    weaponModsByWeaponId: { burst: { "tight-cadence": 2 } },
+    weaponEvolutionByWeaponId: { burst: "execution-protocol" },
+    discoveredCombos: ["double-tap"] });
+  const target = enemy(game, { runtimeId: 7001, hp: 100, maxHp: 100 });
+  game.enemies.push(target);
+  primaryAttack(game);
+  game.activateWeaponSlot(1);
+  for (let shot = 1; shot <= 3; shot++) {
+    if (shot > 1) game.updateWeaponRuntime(0.06);
+    const projectile = game.bullets.find(candidate => candidate.burstShotIndex === shot);
+    Object.assign(projectile, { x: target.x, y: target.y });
+    game.handleBulletEnemyCollisions();
+  }
+  let metrics = currentEncounter(game).burstEffects;
+  assert.equal(currentEncounter(game).attackEvents, 1);
+  assert.equal(currentEncounter(game).shotsFired, 3);
+  assert.equal(metrics.burstAttacksInitiated, 1);
+  assert.equal(metrics.burstShotsScheduled, 3);
+  assert.equal(metrics.burstShotsFired, 3);
+  assert.equal(metrics.executionRounds, 1);
+  assert.equal(metrics.executionBonusDamage, 4);
+  assert.equal(metrics.executionFollowupsScheduled, 1);
+  assert.equal(metrics.weaponSwitchDuringCommittedBurst, 1);
+  assert.equal(target.hp, 84);
+
+  game.updateWeaponRuntime(0.06);
+  const followup = game.bullets.find(candidate => candidate.burstFollowup);
+  Object.assign(followup, { x: target.x, y: target.y });
+  game.handleBulletEnemyCollisions();
+  metrics = currentEncounter(game).burstEffects;
+  assert.equal(currentEncounter(game).attackEvents, 1);
+  assert.equal(currentEncounter(game).shotsFired, 4);
+  assert.equal(currentEncounter(game).weaponMetrics.burst.projectiles, 4);
+  assert.equal(metrics.executionFollowupsFired, 1);
+  assert.equal(metrics.doubleTapHits, 1);
+  assert.equal(metrics.doubleTapDamage, 4);
+  assert.equal(metrics.doubleTapKills, 0);
+  assert.equal(target.hp, 80);
 });
 
 test.skip("legacy generated-Wave deterministic integration fixture (generator retained as historical coverage)", () => {

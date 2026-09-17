@@ -26,6 +26,11 @@
     siegeBloomDelay: 0.45,
     siegeBloomRadiusMultiplier: 1.5
   });
+  const BURST_EFFECTS = freeze({
+    tightCadenceSpacingByRank: [0.110, 0.085, 0.060],
+    executionDamageMultiplier: 2,
+    doubleTapDelay: 0.06
+  });
   const SHARED_UPGRADES = freeze({
     "rapid-fire": {
       id: "rapid-fire", name: "Rapid Fire", category: REWARD_CATEGORIES.SHARED_UPGRADE, maxRank: 4,
@@ -69,6 +74,16 @@
         1: ["Creates 2 cluster explosions"],
         2: ["Increases to 3 cluster explosions"]
       }
+    },
+    "tight-cadence": {
+      id: "tight-cadence", name: "Tight Cadence", displayName: "Burst — Tight Cadence",
+      category: REWARD_CATEGORIES.WEAPON_MOD, weaponId: "burst", maxRank: 2,
+      description: "Compresses spacing inside each committed three-shot Burst",
+      effectLines: ["Internal spacing 0.110s → 0.085s"],
+      effectLinesByRank: {
+        1: ["Internal spacing 0.110s → 0.085s"],
+        2: ["Internal spacing 0.085s → 0.060s"]
+      }
     }
   });
   const WEAPON_EVOLUTIONS = freeze({
@@ -91,6 +106,16 @@
       ]),
       description: "Primary impacts create a delayed larger blast",
       effectLines: ["After 0.45s: 1.5× radius center blast"]
+    },
+    "execution-protocol": {
+      id: "execution-protocol", name: "Execution Protocol", displayName: "Burst — Execution Protocol",
+      category: REWARD_CATEGORIES.WEAPON_EVOLUTION, weaponId: "burst", maxRank: 1,
+      requirements: freeze([
+        { kind: "weapon-mod", weaponId: "burst", id: "tight-cadence", rank: 2 },
+        { kind: "shared-upgrade", id: "heavy-shot", rank: 2 }
+      ]),
+      description: "Shot 3 deals 2× damage when all three shots hit the same target",
+      effectLines: ["Same-target Shot 3: 2× resolved damage"]
     }
   });
   const COMBOS = freeze({
@@ -109,6 +134,14 @@
         { kind: "passive", id: "vitality", rank: 2 }
       ]),
       description: "Cluster Shell explosions concentrate closer to the primary impact."
+    },
+    "double-tap": {
+      id: "double-tap", name: "Double Tap", hidden: true,
+      requirements: freeze([
+        { kind: "weapon-evolution", weaponId: "burst", id: "execution-protocol" },
+        { kind: "shared-upgrade", id: "rapid-fire", rank: 2 }
+      ]),
+      description: "A successful Execution Round commits one normal follow-up round after 0.06s."
     }
   });
   const REWARDS = freeze({ ...SHARED_UPGRADES, ...PASSIVES, ...WEAPON_MODS, ...WEAPON_EVOLUTIONS });
@@ -297,6 +330,11 @@
       ...(baseWeapon.id === "launcher" ? {
         evolutionId: getWeaponEvolution(state, baseWeapon.id),
         launcherEffects: getLauncherEffectProfile(state, baseWeapon.explosionRadius)
+      } : {}),
+      ...(baseWeapon.id === "burst" ? {
+        evolutionId: getWeaponEvolution(state, baseWeapon.id),
+        burstSpacing: getBurstEffectProfile(state).burstSpacing,
+        burstEffects: getBurstEffectProfile(state)
       } : {}) };
   }
   function getArcBladeSweep(state, attackNumber) {
@@ -334,6 +372,18 @@
       chainReactionActive
     };
   }
+  function getBurstEffectProfile(state) {
+    const tightCadenceRank = getWeaponModRank(state, "burst", "tight-cadence");
+    const executionProtocol = getWeaponEvolution(state, "burst") === "execution-protocol";
+    return {
+      tightCadenceRank,
+      burstSpacing: BURST_EFFECTS.tightCadenceSpacingByRank[tightCadenceRank],
+      executionProtocol,
+      executionDamageMultiplier: BURST_EFFECTS.executionDamageMultiplier,
+      doubleTapActive: executionProtocol && hasDiscoveredCombo(state, "double-tap"),
+      doubleTapDelay: BURST_EFFECTS.doubleTapDelay
+    };
+  }
   function createRewardRng(seed) {
     const initialSeed = (Number(seed) >>> 0) || 0x43414e56;
     let state = initialSeed;
@@ -347,7 +397,7 @@
   }
 
   const api = Object.freeze({
-    BUILD_TAGS, REWARD_CATEGORIES, PLAYER_BASE_STATS, LAUNCHER_EFFECTS,
+    BUILD_TAGS, REWARD_CATEGORIES, PLAYER_BASE_STATS, LAUNCHER_EFFECTS, BURST_EFFECTS,
     SHARED_UPGRADES, PASSIVES, WEAPON_MODS, WEAPON_EVOLUTIONS, COMBOS,
     REWARDS, REWARD_LIST, UPGRADES, UPGRADE_LIST, PLAYER_UPGRADE_IDS,
     createBuildState, getSharedUpgradeRank, getPassiveRank, getWeaponModRank,
@@ -356,7 +406,7 @@
     isUpgradeCompatible, canSelectReward, canSelectUpgrade,
     generateRewardChoices, generateUpgradeChoices, applyReward, applyUpgrade,
     discoverCombos, resolvePlayerStats, resolveWeaponStats, getArcBladeSweep,
-    getLauncherClusterOffsets, getLauncherEffectProfile, createRewardRng
+    getLauncherClusterOffsets, getLauncherEffectProfile, getBurstEffectProfile, createRewardRng
   });
   global.RunBuild = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -41,7 +41,8 @@ test("required cue mapping is complete and retrigger/concurrency suppress spam",
   const required = ["playerFire", "weaponHit", "enemyKill", "playerDamage", "levelUp", "waveComing",
     "enemyIntroduction", "bossIncoming", "death", "victory", "interceptorTelegraph", "interceptorCharge",
     "tankSlamTelegraph", "tankSlamImpact", "gunnerBurst", "artilleryWarning", "artilleryImpact", "denierCast",
-    "supportLinkOn", "supportLinkOff", "trapperArm", "trapperTrigger", "tetherConnect", "tetherBreak"];
+    "supportLinkOn", "supportLinkOff", "trapperArm", "trapperTrigger", "tetherConnect", "tetherBreak",
+    "burstFire", "executionRound", "doubleTap"];
   assert.deepEqual(required.filter(name => !Audio.CUES[name]), []);
   const manager = Audio.createAudioManager({ AudioContext: FakeContext, storage: storage() });
   await manager.unlock();
