@@ -35,6 +35,10 @@
     railArrayLaneSpacing: 18,
     kineticCascadeMultipliers: [1, 1.2, 1.4, 1.6]
   });
+  const SCATTER_EFFECTS = freeze({
+    widePatternSpacingDegrees: 3,
+    saturationVolleyMultipliers: [1, 1.1, 1.2, 1.3]
+  });
   const SHARED_UPGRADES = freeze({
     "rapid-fire": {
       id: "rapid-fire", name: "Rapid Fire", category: REWARD_CATEGORIES.SHARED_UPGRADE, maxRank: 4,
@@ -98,6 +102,16 @@
         1: ["Pierce 4 → 5"],
         2: ["Pierce 5 → 6"]
       }
+    },
+    "wide-pattern": {
+      id: "wide-pattern", name: "Wide Pattern", displayName: "Scatter — Wide Pattern",
+      category: REWARD_CATEGORIES.WEAPON_MOD, weaponId: "scatter", maxRank: 2,
+      description: "Widens the resolved Scatter pellet fan",
+      effectLines: ["Pellet spacing +3°"],
+      effectLinesByRank: {
+        1: ["Pellet spacing +3°"],
+        2: ["Pellet spacing +3°"]
+      }
     }
   });
   const WEAPON_EVOLUTIONS = freeze({
@@ -140,6 +154,16 @@
       ]),
       description: "Piercer projectiles fire in symmetric parallel lanes",
       effectLines: ["Parallel lanes · 18px spacing"]
+    },
+    "saturation-volley": {
+      id: "saturation-volley", name: "Saturation Volley", displayName: "Scatter — Saturation Volley",
+      category: REWARD_CATEGORIES.WEAPON_EVOLUTION, weaponId: "scatter", maxRank: 1,
+      requirements: freeze([
+        { kind: "weapon-mod", weaponId: "scatter", id: "wide-pattern", rank: 2 },
+        { kind: "shared-upgrade", id: "split-shot", rank: 2 }
+      ]),
+      description: "Scatter pellets amplify by each attack's distinct target order",
+      effectLines: ["Distinct targets: 1.00× → 1.30×"]
     }
   });
   const COMBOS = freeze({
@@ -174,6 +198,14 @@
         { kind: "shared-upgrade", id: "heavy-shot", rank: 2 }
       ]),
       description: "Each distinct target in one projectile's traversal gains damage, up to 1.60×."
+    },
+    "crossfire": {
+      id: "crossfire", name: "Crossfire", hidden: true,
+      requirements: freeze([
+        { kind: "weapon-evolution", weaponId: "scatter", id: "saturation-volley" },
+        { kind: "shared-upgrade", id: "rapid-fire", rank: 2 }
+      ]),
+      description: "A four-target Scatter volley readies one interleaved follow-up fan."
     }
   });
   const REWARDS = freeze({ ...SHARED_UPGRADES, ...PASSIVES, ...WEAPON_MODS, ...WEAPON_EVOLUTIONS });
@@ -349,13 +381,16 @@
     const splitDefinition = SHARED_UPGRADES["split-shot"];
     const wideArc = getWeaponModRank(state, baseWeapon.id, "wide-arc");
     const deepBore = getWeaponModRank(state, baseWeapon.id, "deep-bore");
+    const widePattern = getWeaponModRank(state, baseWeapon.id, "wide-pattern");
+    const resolvedSpreadDegrees = split > 0 ? 12 : baseWeapon.spreadDegrees;
     return { ...baseWeapon,
       damage: playerDamage * splitDefinition.damageMultipliers[split],
       playerDamage,
       fireRate: Math.min(Weapons.MAX_FIRE_RATE, baseWeapon.fireRate * Math.max(0, 1 + 0.20 * rapid - 0.08 * heavy)),
       bulletSize: (baseWeapon.bulletSize || 0) + heavy,
       projectileCount: baseWeapon.projectileCount + split,
-      spreadDegrees: split > 0 ? 12 : baseWeapon.spreadDegrees,
+      spreadDegrees: resolvedSpreadDegrees + (baseWeapon.id === "scatter"
+        ? widePattern * SCATTER_EFFECTS.widePatternSpacingDegrees : 0),
       pierce: (baseWeapon.pierce || 0) + deepBore,
       ...(Number.isFinite(baseWeapon.sweepHalfAngleDegrees) ? {
         sweepHalfAngleDegrees: baseWeapon.sweepHalfAngleDegrees + wideArc * 10,
@@ -373,6 +408,10 @@
       ...(baseWeapon.id === "piercer" ? {
         evolutionId: getWeaponEvolution(state, baseWeapon.id),
         piercerEffects: getPiercerEffectProfile(state)
+      } : {}),
+      ...(baseWeapon.id === "scatter" ? {
+        evolutionId: getWeaponEvolution(state, baseWeapon.id),
+        scatterEffects: getScatterEffectProfile(state)
       } : {}) };
   }
   function getArcBladeSweep(state, attackNumber) {
@@ -433,6 +472,17 @@
       kineticCascadeMultipliers: [...PIERCER_EFFECTS.kineticCascadeMultipliers]
     };
   }
+  function getScatterEffectProfile(state) {
+    const widePatternRank = getWeaponModRank(state, "scatter", "wide-pattern");
+    const saturationVolley = getWeaponEvolution(state, "scatter") === "saturation-volley";
+    return {
+      widePatternRank,
+      widePatternSpacingDegrees: SCATTER_EFFECTS.widePatternSpacingDegrees,
+      saturationVolley,
+      saturationVolleyMultipliers: [...SCATTER_EFFECTS.saturationVolleyMultipliers],
+      crossfireActive: saturationVolley && hasDiscoveredCombo(state, "crossfire")
+    };
+  }
   function createRewardRng(seed) {
     const initialSeed = (Number(seed) >>> 0) || 0x43414e56;
     let state = initialSeed;
@@ -446,7 +496,7 @@
   }
 
   const api = Object.freeze({
-    BUILD_TAGS, REWARD_CATEGORIES, PLAYER_BASE_STATS, LAUNCHER_EFFECTS, BURST_EFFECTS, PIERCER_EFFECTS,
+    BUILD_TAGS, REWARD_CATEGORIES, PLAYER_BASE_STATS, LAUNCHER_EFFECTS, BURST_EFFECTS, PIERCER_EFFECTS, SCATTER_EFFECTS,
     SHARED_UPGRADES, PASSIVES, WEAPON_MODS, WEAPON_EVOLUTIONS, COMBOS,
     REWARDS, REWARD_LIST, UPGRADES, UPGRADE_LIST, PLAYER_UPGRADE_IDS,
     createBuildState, getSharedUpgradeRank, getPassiveRank, getWeaponModRank,
@@ -456,7 +506,7 @@
     generateRewardChoices, generateUpgradeChoices, applyReward, applyUpgrade,
     discoverCombos, resolvePlayerStats, resolveWeaponStats, getArcBladeSweep,
     getLauncherClusterOffsets, getLauncherEffectProfile, getBurstEffectProfile,
-    getPiercerEffectProfile, createRewardRng
+    getPiercerEffectProfile, getScatterEffectProfile, createRewardRng
   });
   global.RunBuild = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

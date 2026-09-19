@@ -190,6 +190,12 @@
         piercerEffects: { railArrayAttacks: 0, railArrayProjectiles: 0,
           kineticCascadeAmplifiedHits: 0, kineticCascadeBonusDamage: 0,
           maxDistinctTargetsHitBySingleProjectile: 0, recentTraversal: [] },
+        scatterEffects: { widePatternRewards: [], lastResolvedSpacing: null,
+          saturationVolleyAcquisitions: 0, saturationVolleyAttacks: 0,
+          ordinal2Hits: 0, ordinal3Hits: 0, ordinal4PlusHits: 0,
+          saturationBonusDamage: 0, crossfireDiscoveries: 0, crossfireArmed: 0,
+          crossfireConsumed: 0, crossfireAttacks: 0, normalFanProjectiles: 0,
+          interleavedFanProjectiles: 0, recentAttacks: [], recentTraversal: [] },
         burstEffects: { burstAttacksInitiated: 0, burstShotsScheduled: 0,
           burstShotsFired: 0, burstShotsCanceled: 0, executionRounds: 0,
           executionBonusDamage: 0, executionFollowupsScheduled: 0,
@@ -623,6 +629,60 @@
             ordinal: distinctHits, multiplier: traversalMultiplier });
           if (metrics.recentTraversal.length > 12) metrics.recentTraversal.shift();
         }),
+      recordScatterReward: safe("record Scatter reward", ({ rewardId, rankBefore, rankAfter, resolvedSpacing } = {}) => {
+        if (!encounter) return;
+        const metrics = encounter.data.scatterEffects;
+        if (rewardId === "wide-pattern") {
+          metrics.widePatternRewards.push({ rankBefore: nonNegative(rankBefore), rankAfter: nonNegative(rankAfter),
+            resolvedSpacing: Number.isFinite(resolvedSpacing) ? resolvedSpacing : null });
+          if (metrics.widePatternRewards.length > 4) metrics.widePatternRewards.shift();
+        }
+        if (rewardId === "saturation-volley") metrics.saturationVolleyAcquisitions++;
+      }),
+      recordCrossfireDiscovery: safe("record Crossfire discovery", () => {
+        if (encounter) encounter.data.scatterEffects.crossfireDiscoveries++;
+      }),
+      recordScatterAttack: safe("record Scatter attack",
+        ({ attackId, widePatternRank, resolvedSpacing, saturationVolley, crossfireAttack,
+          normalProjectiles, interleavedProjectiles } = {}) => {
+          if (!encounter) return;
+          const metrics = encounter.data.scatterEffects;
+          metrics.lastResolvedSpacing = Number.isFinite(resolvedSpacing) ? resolvedSpacing : null;
+          if (saturationVolley) metrics.saturationVolleyAttacks++;
+          if (crossfireAttack) metrics.crossfireAttacks++;
+          metrics.recentAttacks.push({ attackId: attackId ?? null, widePatternRank: nonNegative(widePatternRank),
+            resolvedSpacing: metrics.lastResolvedSpacing, saturationVolley: Boolean(saturationVolley),
+            crossfireAttack: Boolean(crossfireAttack), distinctTargetCount: 0,
+            normalProjectiles: nonNegative(normalProjectiles), interleavedProjectiles: nonNegative(interleavedProjectiles) });
+          if (metrics.recentAttacks.length > 12) metrics.recentAttacks.shift();
+        }),
+      recordScatterProjectile: safe("record Scatter projectile", ({ fan } = {}) => {
+        if (!encounter) return;
+        if (fan === "interleaved") encounter.data.scatterEffects.interleavedFanProjectiles++;
+        else encounter.data.scatterEffects.normalFanProjectiles++;
+      }),
+      recordScatterTraversal: safe("record Scatter traversal",
+        ({ attackId, projectileIndex, targetId, ordinal, multiplier, distinctTargetCount, bonusDamage } = {}) => {
+          if (!encounter) return;
+          const metrics = encounter.data.scatterEffects;
+          const resolvedOrdinal = Math.max(1, Math.trunc(nonNegative(ordinal)));
+          const resolvedMultiplier = nonNegative(multiplier);
+          if (resolvedOrdinal === 2) metrics.ordinal2Hits++;
+          else if (resolvedOrdinal === 3) metrics.ordinal3Hits++;
+          else if (resolvedOrdinal >= 4) metrics.ordinal4PlusHits++;
+          metrics.saturationBonusDamage += nonNegative(bonusDamage);
+          const attack = metrics.recentAttacks.find(entry => entry.attackId === attackId);
+          if (attack) attack.distinctTargetCount = Math.max(attack.distinctTargetCount, nonNegative(distinctTargetCount));
+          metrics.recentTraversal.push({ attackId: attackId ?? null, projectileIndex: projectileIndex ?? null,
+            targetId: targetId ?? null, ordinal: resolvedOrdinal, multiplier: resolvedMultiplier });
+          if (metrics.recentTraversal.length > 24) metrics.recentTraversal.shift();
+        }),
+      recordCrossfireArmed: safe("record Crossfire armed", () => {
+        if (encounter) encounter.data.scatterEffects.crossfireArmed++;
+      }),
+      recordCrossfireConsumed: safe("record Crossfire consumed", () => {
+        if (encounter) encounter.data.scatterEffects.crossfireConsumed++;
+      }),
       recordLauncherAttack: safe("record Launcher attack", ({ chainReactionActive } = {}) => {
         if (!encounter) return;
         encounter.data.launcherEffects.primaryAttacks++;

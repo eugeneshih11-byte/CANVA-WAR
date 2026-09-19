@@ -494,7 +494,8 @@ test("telemetry configuration snapshots immutable Weapon, Upgrade and Player bal
   assert.equal(configuration.technicalFireRateCap, 12);
   assert.deepEqual(Object.keys(configuration.buildContent.rewards).sort(),
     ["cluster-shell", "cyclone-blade", "deep-bore", "execution-protocol", "heavy-shot", "rail-array",
-      "rapid-fire", "siege-bloom", "split-shot", "swift-feet", "tight-cadence", "vitality", "wide-arc"]);
+      "rapid-fire", "saturation-volley", "siege-bloom", "split-shot", "swift-feet", "tight-cadence",
+      "vitality", "wide-arc", "wide-pattern"]);
   assert.equal(configuration.buildContent.rewards["cyclone-blade"].category, "weapon-evolution");
   assert.equal(configuration.buildContent.rewards["wide-arc"].weaponId, "arc-blade");
   assert.equal(configuration.buildContent.rewards["cluster-shell"].weaponId, "launcher");
@@ -507,6 +508,9 @@ test("telemetry configuration snapshots immutable Weapon, Upgrade and Player bal
   assert.equal(configuration.buildContent.rewards["deep-bore"].weaponId, "piercer");
   assert.equal(configuration.buildContent.rewards["rail-array"].category, "weapon-evolution");
   assert.equal(configuration.buildContent.combos["kinetic-cascade"].hidden, true);
+  assert.equal(configuration.buildContent.rewards["wide-pattern"].weaponId, "scatter");
+  assert.equal(configuration.buildContent.rewards["saturation-volley"].category, "weapon-evolution");
+  assert.equal(configuration.buildContent.combos.crossfire.hidden, true);
   assert.equal(JSON.stringify(configuration).includes("function"), false);
 });
 
@@ -564,6 +568,41 @@ test("production Piercer hooks report parallel projectiles and per-projectile Ki
   assert.equal(encounter.piercerEffects.maxDistinctTargetsHitBySingleProjectile, 3);
   assert.deepEqual(plain(encounter.piercerEffects.recentTraversal.map(entry => entry.multiplier)),
     [1, 1.2, 1.4]);
+  assert.equal(game.getRandomCalls(), randomCallsBefore);
+});
+
+test("production Scatter hooks preserve one attack event while recording Saturation and Crossfire accounting", () => {
+  const game = loadGame("?playtest=1"); game.start();
+  game.configureWeaponLoadout(["scatter"]);
+  game.setBuild({ sharedUpgrades: { "rapid-fire": 2, "split-shot": 2 },
+    weaponModsByWeaponId: { scatter: { "wide-pattern": 2 } },
+    weaponEvolutionByWeaponId: { scatter: "saturation-volley" }, discoveredCombos: ["crossfire"] });
+  const randomCallsBefore = game.getRandomCalls();
+  primaryAttack(game);
+  const ordinary = game.bullets.slice(0, 4);
+  game.bullets.splice(4);
+  const targets = ordinary.map((bullet, index) => enemy(game, {
+    runtimeId: 9400 + index, x: 100 + index * 80, y: 120, hp: 100, maxHp: 100
+  }));
+  ordinary.forEach((bullet, index) => Object.assign(bullet, { x: targets[index].x, y: targets[index].y }));
+  game.enemies.push(...targets);
+  game.handleBulletEnemyCollisions();
+  game.weaponRuntime.timeUntilNextShot = 0;
+  primaryAttack(game);
+
+  const encounter = currentEncounter(game), metrics = encounter.scatterEffects;
+  assert.equal(encounter.attackEvents, 2);
+  assert.equal(encounter.shotsFired, 21);
+  assert.equal(encounter.weaponMetrics.scatter.attacks, 2);
+  assert.equal(encounter.weaponMetrics.scatter.projectiles, 21);
+  assert.equal(metrics.saturationVolleyAttacks, 2);
+  assert.equal(metrics.crossfireArmed, 1);
+  assert.equal(metrics.crossfireConsumed, 1);
+  assert.equal(metrics.crossfireAttacks, 1);
+  assert.equal(metrics.normalFanProjectiles, 14);
+  assert.equal(metrics.interleavedFanProjectiles, 7);
+  assert.equal(metrics.lastResolvedSpacing, 18);
+  assert.equal(metrics.recentAttacks[0].distinctTargetCount, 4);
   assert.equal(game.getRandomCalls(), randomCallsBefore);
 });
 

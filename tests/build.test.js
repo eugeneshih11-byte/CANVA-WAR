@@ -47,6 +47,65 @@ test("Split Shot affects Starter, Scatter, and Piercer but no other Weapon", () 
   }
 });
 
+test("Wide Pattern is Scatter-only, adds exactly 3 degrees per rank, and preserves Split Shot count", () => {
+  const scatterLoadout = ["scatter"];
+  let build = state();
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.scatter, build).spreadDegrees, 14);
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.scatter, build).projectileCount, 5);
+  assert.equal(RunBuild.canSelectReward(build, "wide-pattern", ["starter"]), false);
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "wide-pattern"), ["Pellet spacing +3°"]);
+
+  build = RunBuild.applyReward(build, "wide-pattern", { loadout: scatterLoadout }).buildState;
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.scatter, build).spreadDegrees, 17);
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "wide-pattern"), ["Pellet spacing +3°"]);
+  build = RunBuild.applyReward(build, "wide-pattern", { loadout: scatterLoadout }).buildState;
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.scatter, build).spreadDegrees, 20);
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.scatter, build).projectileCount, 5);
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "wide-pattern"), []);
+
+  const split = state({ sharedUpgrades: { "split-shot": 2 }, weaponModsByWeaponId: { scatter: { "wide-pattern": 2 } } });
+  const resolved = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.scatter, split);
+  assert.deepEqual({ projectileCount: resolved.projectileCount, spreadDegrees: resolved.spreadDegrees },
+    { projectileCount: 7, spreadDegrees: 18 });
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.piercer, split).spreadDegrees, 12);
+});
+
+test("Saturation Volley is gated by Wide Pattern II and Split Shot II without changing Player Damage authority", () => {
+  const scatterLoadout = ["scatter"];
+  const missingSplit = state({ weaponModsByWeaponId: { scatter: { "wide-pattern": 2 } } });
+  const missingPattern = state({ sharedUpgrades: { "split-shot": 2 },
+    weaponModsByWeaponId: { scatter: { "wide-pattern": 1 } } });
+  assert.equal(RunBuild.canSelectReward(missingSplit, "saturation-volley", scatterLoadout), false);
+  assert.equal(RunBuild.canSelectReward(missingPattern, "saturation-volley", scatterLoadout), false);
+
+  const legal = state({ sharedUpgrades: { "split-shot": 2, "heavy-shot": 2 },
+    weaponModsByWeaponId: { scatter: { "wide-pattern": 2 } } });
+  const before = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.scatter, legal);
+  const acquired = RunBuild.applyReward(legal, "saturation-volley", { loadout: scatterLoadout }).buildState;
+  const after = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.scatter, acquired);
+  assert.equal(before.playerDamage, 4);
+  assert.deepEqual({ count: after.projectileCount, damage: after.damage, playerDamage: after.playerDamage,
+    fireRate: after.fireRate, spreadDegrees: after.spreadDegrees },
+  { count: 7, damage: 2.6, playerDamage: 4, fireRate: before.fireRate, spreadDegrees: 18 });
+  assert.deepEqual(after.scatterEffects, { widePatternRank: 2, widePatternSpacingDegrees: 3,
+    saturationVolley: true, saturationVolleyMultipliers: [1, 1.1, 1.2, 1.3], crossfireActive: false });
+});
+
+test("Crossfire stays hidden and auto-discovers only after Saturation Volley plus Rapid Fire II", () => {
+  const scatterLoadout = ["scatter"];
+  let build = state({ sharedUpgrades: { "split-shot": 2, "rapid-fire": 1 },
+    weaponModsByWeaponId: { scatter: { "wide-pattern": 2 } } });
+  build = RunBuild.applyReward(build, "saturation-volley", { loadout: scatterLoadout }).buildState;
+  assert.equal(RunBuild.REWARDS.crossfire, undefined);
+  assert.equal(RunBuild.generateRewardChoices(build, RunBuild.REWARD_LIST.length, () => 0, scatterLoadout)
+    .some(reward => reward.id === "crossfire"), false);
+  assert.equal(RunBuild.hasDiscoveredCombo(build, "crossfire"), false);
+  const result = RunBuild.applyReward(build, "rapid-fire", { loadout: scatterLoadout });
+  assert.deepEqual(result.discoveries.map(combo => combo.id), ["crossfire"]);
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.scatter,
+    result.buildState).scatterEffects.crossfireActive, true);
+});
+
 test("Deep Bore is Piercer-only with exact next-rank copy and 4 to 5 to 6 pierce resolution", () => {
   const piercerLoadout = ["piercer", "starter"];
   let build = state();

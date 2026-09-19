@@ -906,7 +906,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="armoryView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="equipmentView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="gameView" class="app-view game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=20260919-piercer-b1"/);
+  assert.match(indexSource, /href="style\.css\?v=20260919-scatter-b1"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1 id="hubTitle">CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
@@ -926,7 +926,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="reinforcementEdges"/);
   assert.match(indexSource, /id="audioMuteButton"/);
   assert.doesNotMatch(indexSource, /Choose your next destination|ROGUELITE OPERATIONS/);
-  const scriptVersion = "20260919-piercer-b1";
+  const scriptVersion = "20260919-scatter-b1";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
   assert.deepEqual(scriptSources, ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js",
@@ -1733,6 +1733,85 @@ test("Kinetic Cascade sibling projectiles restart traversal at 1.00x", () => {
   closeTo(100 - siblingFirst.hp, 2.6);
   assert.equal(projectileA.hitTargets.size, 2);
   assert.equal(projectileB.hitTargets.size, 1);
+});
+
+test("Scatter Saturation Volley shares target ordinals by attack while preserving independent pellet hitTargets", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["scatter"]);
+  game.setBuildState({ sharedUpgrades: { "heavy-shot": 2, "split-shot": 2 },
+    weaponModsByWeaponId: { scatter: { "wide-pattern": 2 } },
+    weaponEvolutionByWeaponId: { scatter: "saturation-volley" } });
+  game.setMouse(game.player.x + 400, game.player.y + game.player.height / 2);
+  game.fireWeaponAttack();
+  assert.equal(game.bullets.length, 7);
+  assert.equal(game.weapon.spreadDegrees, 18);
+  const [first, second, third, fourth, fifth] = game.bullets;
+  game.bullets.splice(5);
+  const targetOne = makeEnemy(game, "tank", { runtimeId: 9101, x: 500, y: 100, width: 20, height: 20, hp: 100, maxHp: 100, speed: 0 });
+  const targetTwo = makeEnemy(game, "tank", { runtimeId: 9102, x: 400, y: 100, width: 20, height: 20, hp: 100, maxHp: 100, speed: 0 });
+  const targetThree = makeEnemy(game, "tank", { runtimeId: 9103, x: 300, y: 100, width: 20, height: 20, hp: 100, maxHp: 100, speed: 0 });
+  const targetFour = makeEnemy(game, "tank", { runtimeId: 9104, x: 200, y: 100, width: 20, height: 20, hp: 100, maxHp: 100, speed: 0 });
+  Object.assign(first, { x: targetFour.x, y: targetFour.y });
+  Object.assign(second, { x: targetFour.x, y: targetFour.y });
+  Object.assign(third, { x: targetThree.x, y: targetThree.y });
+  Object.assign(fourth, { x: targetTwo.x, y: targetTwo.y });
+  Object.assign(fifth, { x: targetOne.x, y: targetOne.y });
+  game.enemies.push(targetOne, targetTwo, targetThree, targetFour);
+  game.handleBulletEnemyCollisions();
+  [2.6, 2.86, 3.12].forEach((expected, index) => closeTo(100 - [targetOne, targetTwo, targetThree][index].hp, expected));
+  closeTo(100 - targetFour.hp, 6.76);
+  assert.notEqual(first.hitTargets, second.hitTargets);
+  assert.equal(first.hitTargets.has(targetFour), true);
+  assert.equal(second.hitTargets.has(targetFour), true);
+  assert.equal(first.scatterAttackContext.targetOrdinals.size, 4);
+  assert.equal(first.scatterAttackContext.targetOrdinals.get(targetFour), 4);
+
+  game.weaponRuntime.timeUntilNextShot = 0;
+  game.fireWeaponAttack();
+  const nextContext = game.bullets[0].scatterAttackContext;
+  assert.notEqual(nextContext, first.scatterAttackContext);
+  assert.equal(nextContext.targetOrdinals.size, 0);
+});
+
+test("Crossfire arms from an ordinary four-target Scatter attack, consumes once, and cannot self-arm", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["scatter", "piercer"]);
+  game.setBuildState({ sharedUpgrades: { "rapid-fire": 2, "split-shot": 2 },
+    weaponModsByWeaponId: { scatter: { "wide-pattern": 2 } },
+    weaponEvolutionByWeaponId: { scatter: "saturation-volley" }, discoveredCombos: ["crossfire"] });
+  game.setMouse(game.player.x + 400, game.player.y + game.player.height / 2);
+  game.fireWeaponAttack();
+  const ordinary = game.bullets.slice(0, 4);
+  game.bullets.splice(4);
+  const targets = ordinary.map((bullet, index) => makeEnemy(game, "tank", {
+    runtimeId: 9200 + index, x: 100 + index * 80, y: 100, width: 20, height: 20, hp: 100, maxHp: 100, speed: 0
+  }));
+  ordinary.forEach((bullet, index) => Object.assign(bullet, { x: targets[index].x, y: targets[index].y }));
+  game.enemies.push(...targets);
+  game.activateWeaponSlot(1);
+  game.handleBulletEnemyCollisions();
+  game.activateWeaponSlot(0);
+  game.weaponRuntime.timeUntilNextShot = 0;
+  game.fireWeaponAttack();
+  assert.equal(game.bullets.length, 14);
+  assert.equal(new Set(game.bullets.map(bullet => bullet.attackId)).size, 1);
+  assert.equal(game.bullets.slice(0, 7).every(bullet => bullet.scatterFan === "normal"), true);
+  assert.equal(game.bullets.slice(7).every(bullet => bullet.scatterFan === "interleaved"), true);
+  const normalAngle = Math.atan2(game.bullets[3].directionY, game.bullets[3].directionX);
+  const interleavedAngle = Math.atan2(game.bullets[10].directionY, game.bullets[10].directionX);
+  closeTo((interleavedAngle - normalAngle) * 180 / Math.PI, 9);
+
+  const crossfireProjectiles = game.bullets.slice(0, 4);
+  game.bullets.splice(4);
+  const crossfireTargets = crossfireProjectiles.map((bullet, index) => makeEnemy(game, "tank", {
+    runtimeId: 9300 + index, x: 100 + index * 80, y: 300, width: 20, height: 20, hp: 100, maxHp: 100, speed: 0
+  }));
+  crossfireProjectiles.forEach((bullet, index) => Object.assign(bullet, { x: crossfireTargets[index].x, y: crossfireTargets[index].y }));
+  game.enemies.push(...crossfireTargets);
+  game.handleBulletEnemyCollisions();
+  game.weaponRuntime.timeUntilNextShot = 0;
+  game.fireWeaponAttack();
+  assert.equal(game.bullets.length, 7);
 });
 
 test("Upgrade cards show three numbered choices and card clicks select without firing", () => {

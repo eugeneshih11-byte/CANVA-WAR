@@ -728,3 +728,47 @@ test("Piercer telemetry bounds traversal detail and keeps Rail Array and Kinetic
     }))
   });
 });
+
+test("Scatter telemetry records bounded reward, ordinal, fan, and Crossfire observations without gameplay state", () => {
+  const telemetry = create();
+  telemetry.startRun({ player });
+  telemetry.startEncounter({ type: "wave", definition: wave, player });
+  telemetry.recordScatterReward({ rewardId: "wide-pattern", rankBefore: 0, rankAfter: 1, resolvedSpacing: 17 });
+  telemetry.recordScatterReward({ rewardId: "wide-pattern", rankBefore: 1, rankAfter: 2, resolvedSpacing: 20 });
+  telemetry.recordScatterReward({ rewardId: "saturation-volley" });
+  telemetry.recordCrossfireDiscovery();
+  telemetry.recordScatterAttack({ attackId: 61, widePatternRank: 2, resolvedSpacing: 18,
+    saturationVolley: true, crossfireAttack: false, normalProjectiles: 7, interleavedProjectiles: 0 });
+  telemetry.recordScatterProjectile({ fan: "normal" });
+  telemetry.recordScatterProjectile({ fan: "interleaved" });
+  telemetry.recordScatterTraversal({ attackId: 61, projectileIndex: 1, targetId: 1,
+    ordinal: 2, multiplier: 1.1, distinctTargetCount: 2, bonusDamage: 0.26 });
+  telemetry.recordScatterTraversal({ attackId: 61, projectileIndex: 2, targetId: 2,
+    ordinal: 3, multiplier: 1.2, distinctTargetCount: 3, bonusDamage: 0.52 });
+  telemetry.recordScatterTraversal({ attackId: 61, projectileIndex: 3, targetId: 3,
+    ordinal: 4, multiplier: 1.3, distinctTargetCount: 4, bonusDamage: 0.78 });
+  telemetry.recordCrossfireArmed({ attackId: 61 });
+  telemetry.recordCrossfireConsumed({ attackId: 62 });
+  telemetry.recordScatterAttack({ attackId: 62, widePatternRank: 2, resolvedSpacing: 18,
+    saturationVolley: true, crossfireAttack: true, normalProjectiles: 7, interleavedProjectiles: 7 });
+
+  const metrics = currentEncounter(telemetry).scatterEffects;
+  assert.deepEqual(metrics.widePatternRewards, [
+    { rankBefore: 0, rankAfter: 1, resolvedSpacing: 17 },
+    { rankBefore: 1, rankAfter: 2, resolvedSpacing: 20 }
+  ]);
+  assert.equal(metrics.saturationVolleyAcquisitions, 1);
+  assert.equal(metrics.crossfireDiscoveries, 1);
+  assert.equal(metrics.saturationVolleyAttacks, 2);
+  assert.equal(metrics.ordinal2Hits, 1);
+  assert.equal(metrics.ordinal3Hits, 1);
+  assert.equal(metrics.ordinal4PlusHits, 1);
+  assert.equal(metrics.saturationBonusDamage, 1.56);
+  assert.equal(metrics.crossfireArmed, 1);
+  assert.equal(metrics.crossfireConsumed, 1);
+  assert.equal(metrics.crossfireAttacks, 1);
+  assert.equal(metrics.normalFanProjectiles, 1);
+  assert.equal(metrics.interleavedFanProjectiles, 1);
+  assert.equal(metrics.recentAttacks[0].distinctTargetCount, 4);
+  assert.equal(metrics.recentTraversal.length, 3);
+});
