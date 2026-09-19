@@ -31,6 +31,10 @@
     executionDamageMultiplier: 2,
     doubleTapDelay: 0.06
   });
+  const PIERCER_EFFECTS = freeze({
+    railArrayLaneSpacing: 18,
+    kineticCascadeMultipliers: [1, 1.2, 1.4, 1.6]
+  });
   const SHARED_UPGRADES = freeze({
     "rapid-fire": {
       id: "rapid-fire", name: "Rapid Fire", category: REWARD_CATEGORIES.SHARED_UPGRADE, maxRank: 4,
@@ -84,6 +88,16 @@
         1: ["Internal spacing 0.110s → 0.085s"],
         2: ["Internal spacing 0.085s → 0.060s"]
       }
+    },
+    "deep-bore": {
+      id: "deep-bore", name: "Deep Bore", displayName: "Piercer — Deep Bore",
+      category: REWARD_CATEGORIES.WEAPON_MOD, weaponId: "piercer", maxRank: 2,
+      description: "Increases Piercer traversal capacity",
+      effectLines: ["Pierce 4 → 5"],
+      effectLinesByRank: {
+        1: ["Pierce 4 → 5"],
+        2: ["Pierce 5 → 6"]
+      }
     }
   });
   const WEAPON_EVOLUTIONS = freeze({
@@ -116,6 +130,16 @@
       ]),
       description: "Shot 3 deals 2× damage when all three shots hit the same target",
       effectLines: ["Same-target Shot 3: 2× resolved damage"]
+    },
+    "rail-array": {
+      id: "rail-array", name: "Rail Array", displayName: "Piercer — Rail Array",
+      category: REWARD_CATEGORIES.WEAPON_EVOLUTION, weaponId: "piercer", maxRank: 1,
+      requirements: freeze([
+        { kind: "weapon-mod", weaponId: "piercer", id: "deep-bore", rank: 2 },
+        { kind: "shared-upgrade", id: "split-shot", rank: 2 }
+      ]),
+      description: "Piercer projectiles fire in symmetric parallel lanes",
+      effectLines: ["Parallel lanes · 18px spacing"]
     }
   });
   const COMBOS = freeze({
@@ -142,6 +166,14 @@
         { kind: "shared-upgrade", id: "rapid-fire", rank: 2 }
       ]),
       description: "A successful Execution Round commits one normal follow-up round after 0.06s."
+    },
+    "kinetic-cascade": {
+      id: "kinetic-cascade", name: "Kinetic Cascade", hidden: true,
+      requirements: freeze([
+        { kind: "weapon-evolution", weaponId: "piercer", id: "rail-array" },
+        { kind: "shared-upgrade", id: "heavy-shot", rank: 2 }
+      ]),
+      description: "Each distinct target in one projectile's traversal gains damage, up to 1.60×."
     }
   });
   const REWARDS = freeze({ ...SHARED_UPGRADES, ...PASSIVES, ...WEAPON_MODS, ...WEAPON_EVOLUTIONS });
@@ -316,6 +348,7 @@
     const playerDamage = resolvePlayerStats(basePlayer, state).damage;
     const splitDefinition = SHARED_UPGRADES["split-shot"];
     const wideArc = getWeaponModRank(state, baseWeapon.id, "wide-arc");
+    const deepBore = getWeaponModRank(state, baseWeapon.id, "deep-bore");
     return { ...baseWeapon,
       damage: playerDamage * splitDefinition.damageMultipliers[split],
       playerDamage,
@@ -323,6 +356,7 @@
       bulletSize: (baseWeapon.bulletSize || 0) + heavy,
       projectileCount: baseWeapon.projectileCount + split,
       spreadDegrees: split > 0 ? 12 : baseWeapon.spreadDegrees,
+      pierce: (baseWeapon.pierce || 0) + deepBore,
       ...(Number.isFinite(baseWeapon.sweepHalfAngleDegrees) ? {
         sweepHalfAngleDegrees: baseWeapon.sweepHalfAngleDegrees + wideArc * 10,
         evolutionId: getWeaponEvolution(state, baseWeapon.id)
@@ -335,6 +369,10 @@
         evolutionId: getWeaponEvolution(state, baseWeapon.id),
         burstSpacing: getBurstEffectProfile(state).burstSpacing,
         burstEffects: getBurstEffectProfile(state)
+      } : {}),
+      ...(baseWeapon.id === "piercer" ? {
+        evolutionId: getWeaponEvolution(state, baseWeapon.id),
+        piercerEffects: getPiercerEffectProfile(state)
       } : {}) };
   }
   function getArcBladeSweep(state, attackNumber) {
@@ -384,6 +422,17 @@
       doubleTapDelay: BURST_EFFECTS.doubleTapDelay
     };
   }
+  function getPiercerEffectProfile(state) {
+    const deepBoreRank = getWeaponModRank(state, "piercer", "deep-bore");
+    const railArray = getWeaponEvolution(state, "piercer") === "rail-array";
+    return {
+      deepBoreRank,
+      railArray,
+      railArrayLaneSpacing: PIERCER_EFFECTS.railArrayLaneSpacing,
+      kineticCascadeActive: railArray && hasDiscoveredCombo(state, "kinetic-cascade"),
+      kineticCascadeMultipliers: [...PIERCER_EFFECTS.kineticCascadeMultipliers]
+    };
+  }
   function createRewardRng(seed) {
     const initialSeed = (Number(seed) >>> 0) || 0x43414e56;
     let state = initialSeed;
@@ -397,7 +446,7 @@
   }
 
   const api = Object.freeze({
-    BUILD_TAGS, REWARD_CATEGORIES, PLAYER_BASE_STATS, LAUNCHER_EFFECTS, BURST_EFFECTS,
+    BUILD_TAGS, REWARD_CATEGORIES, PLAYER_BASE_STATS, LAUNCHER_EFFECTS, BURST_EFFECTS, PIERCER_EFFECTS,
     SHARED_UPGRADES, PASSIVES, WEAPON_MODS, WEAPON_EVOLUTIONS, COMBOS,
     REWARDS, REWARD_LIST, UPGRADES, UPGRADE_LIST, PLAYER_UPGRADE_IDS,
     createBuildState, getSharedUpgradeRank, getPassiveRank, getWeaponModRank,
@@ -406,7 +455,8 @@
     isUpgradeCompatible, canSelectReward, canSelectUpgrade,
     generateRewardChoices, generateUpgradeChoices, applyReward, applyUpgrade,
     discoverCombos, resolvePlayerStats, resolveWeaponStats, getArcBladeSweep,
-    getLauncherClusterOffsets, getLauncherEffectProfile, getBurstEffectProfile, createRewardRng
+    getLauncherClusterOffsets, getLauncherEffectProfile, getBurstEffectProfile,
+    getPiercerEffectProfile, createRewardRng
   });
   global.RunBuild = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

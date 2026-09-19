@@ -47,6 +47,82 @@ test("Split Shot affects Starter, Scatter, and Piercer but no other Weapon", () 
   }
 });
 
+test("Deep Bore is Piercer-only with exact next-rank copy and 4 to 5 to 6 pierce resolution", () => {
+  const piercerLoadout = ["piercer", "starter"];
+  let build = state();
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.piercer, build).pierce, 4);
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "deep-bore"), ["Pierce 4 → 5"]);
+  assert.equal(RunBuild.canSelectReward(build, "deep-bore", ["starter"]), false);
+  assert.equal(RunBuild.canSelectReward(build, "deep-bore", piercerLoadout), true);
+
+  build = RunBuild.applyReward(build, "deep-bore", { loadout: piercerLoadout }).buildState;
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.piercer, build).pierce, 5);
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "deep-bore"), ["Pierce 5 → 6"]);
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.STARTER, build).pierce, 0);
+
+  build = RunBuild.applyReward(build, "deep-bore", { loadout: piercerLoadout }).buildState;
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.piercer, build).pierce, 6);
+  assert.deepEqual(RunBuild.getNextRewardEffectLines(build, "deep-bore"), []);
+  assert.deepEqual(build.weaponModsByWeaponId, { piercer: { "deep-bore": 2 } });
+});
+
+test("Rail Array requires Deep Bore II and Split Shot II without changing resolved combat stats", () => {
+  const piercerLoadout = ["piercer"];
+  const missingSplit = state({ weaponModsByWeaponId: { piercer: { "deep-bore": 2 } } });
+  const missingBore = state({ sharedUpgrades: { "split-shot": 2 },
+    weaponModsByWeaponId: { piercer: { "deep-bore": 1 } } });
+  assert.equal(RunBuild.canSelectReward(missingSplit, "rail-array", piercerLoadout), false);
+  assert.equal(RunBuild.canSelectReward(missingBore, "rail-array", piercerLoadout), false);
+
+  const legal = state({ sharedUpgrades: { "split-shot": 2 },
+    weaponModsByWeaponId: { piercer: { "deep-bore": 2 } } });
+  assert.equal(RunBuild.canSelectReward(legal, "rail-array", piercerLoadout), true);
+  const before = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.piercer, legal);
+  const acquired = RunBuild.applyReward(legal, "rail-array", { loadout: piercerLoadout }).buildState;
+  const after = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.piercer, acquired);
+  assert.deepEqual({ count: after.projectileCount, damage: after.damage, playerDamage: after.playerDamage,
+    fireRate: after.fireRate, pierce: after.pierce },
+  { count: 3, damage: 1.3, playerDamage: 2, fireRate: before.fireRate, pierce: 6 });
+  assert.equal(before.spreadDegrees, 12);
+  assert.equal(after.spreadDegrees, 12);
+  assert.equal(after.evolutionId, "rail-array");
+  assert.deepEqual(after.piercerEffects, { deepBoreRank: 2, railArray: true,
+    railArrayLaneSpacing: 18, kineticCascadeActive: false,
+    kineticCascadeMultipliers: [1, 1.2, 1.4, 1.6] });
+});
+
+test("Kinetic Cascade stays out of Rewards and auto-discovers only after Rail Array plus Heavy Shot II", () => {
+  const piercerLoadout = ["piercer"];
+  let build = state({ sharedUpgrades: { "split-shot": 2, "heavy-shot": 1 },
+    weaponModsByWeaponId: { piercer: { "deep-bore": 2 } } });
+  build = RunBuild.applyReward(build, "rail-array", { loadout: piercerLoadout }).buildState;
+  assert.equal(RunBuild.REWARDS["kinetic-cascade"], undefined);
+  assert.equal(RunBuild.generateRewardChoices(build, RunBuild.REWARD_LIST.length,
+    () => 0, piercerLoadout).some(reward => reward.id === "kinetic-cascade"), false);
+  assert.equal(RunBuild.hasDiscoveredCombo(build, "kinetic-cascade"), false);
+  const result = RunBuild.applyReward(build, "heavy-shot", { loadout: piercerLoadout });
+  assert.deepEqual(result.discoveries.map(combo => combo.id), ["kinetic-cascade"]);
+  assert.equal(RunBuild.hasDiscoveredCombo(result.buildState, "kinetic-cascade"), true);
+  assert.equal(RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.piercer,
+    result.buildState).piercerEffects.kineticCascadeActive, true);
+});
+
+test("Piercer effect resolution consumes no Reward RNG and leaves Rapid Fire and Heavy Shot semantics unchanged", () => {
+  const build = state({ sharedUpgrades: { "rapid-fire": 2, "heavy-shot": 2, "split-shot": 2 },
+    weaponModsByWeaponId: { piercer: { "deep-bore": 2 } },
+    weaponEvolutionByWeaponId: { piercer: "rail-array" },
+    discoveredCombos: ["kinetic-cascade"] });
+  const rewardA = RunBuild.createRewardRng(7719), rewardB = RunBuild.createRewardRng(7719);
+  const before = rewardA.getState();
+  const resolved = RunBuild.resolveWeaponStats(Weapons.DEFINITIONS.piercer, build);
+  assert.equal(rewardA.getState(), before);
+  assert.deepEqual(Array.from({ length: 8 }, () => rewardA()),
+    Array.from({ length: 8 }, () => rewardB()));
+  assert.equal(resolved.playerDamage, 4);
+  assert.equal(resolved.damage, 2.6);
+  close(resolved.fireRate, Weapons.DEFINITIONS.piercer.fireRate * (1 + 0.4 - 0.16));
+});
+
 test("Player Damage owns production base damage and legacy Weapon damage is ignored", () => {
   const build = state({ sharedUpgrades: { "heavy-shot": 2 } });
   const player = RunBuild.resolvePlayerStats(RunBuild.PLAYER_BASE_STATS, build);

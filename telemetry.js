@@ -187,6 +187,9 @@
           clusterExplosions: 0, clusterExplosionTargets: 0,
           siegeBloomBlasts: 0, siegeBloomTargets: 0,
           chainReactionCommittedAttacks: 0, chainReactionClusterExplosions: 0 },
+        piercerEffects: { railArrayAttacks: 0, railArrayProjectiles: 0,
+          kineticCascadeAmplifiedHits: 0, kineticCascadeBonusDamage: 0,
+          maxDistinctTargetsHitBySingleProjectile: 0, recentTraversal: [] },
         burstEffects: { burstAttacksInitiated: 0, burstShotsScheduled: 0,
           burstShotsFired: 0, burstShotsCanceled: 0, executionRounds: 0,
           executionBonusDamage: 0, executionFollowupsScheduled: 0,
@@ -597,6 +600,29 @@
       recordWeaponExplosion: safe("record Weapon explosion", ({ weaponId, targetCount } = {}) => {
         if (encounter?.data.weaponMetrics[weaponId]) encounter.data.weaponMetrics[weaponId].explosionTargets += nonNegative(targetCount);
       }),
+      recordRailArrayAttack: safe("record Rail Array attack", () => {
+        if (encounter) encounter.data.piercerEffects.railArrayAttacks++;
+      }),
+      recordRailArrayProjectile: safe("record Rail Array projectile", () => {
+        if (encounter) encounter.data.piercerEffects.railArrayProjectiles++;
+      }),
+      recordPiercerTraversal: safe("record Piercer traversal",
+        ({ attackId, projectileIndex, targetId, ordinal, multiplier, bonusDamage } = {}) => {
+          if (!encounter) return;
+          const metrics = encounter.data.piercerEffects;
+          const distinctHits = Math.max(0, Math.trunc(nonNegative(ordinal)));
+          const traversalMultiplier = nonNegative(multiplier);
+          metrics.maxDistinctTargetsHitBySingleProjectile = Math.max(
+            metrics.maxDistinctTargetsHitBySingleProjectile, distinctHits);
+          if (traversalMultiplier > 1) {
+            metrics.kineticCascadeAmplifiedHits++;
+            metrics.kineticCascadeBonusDamage += nonNegative(bonusDamage);
+          }
+          metrics.recentTraversal.push({ attackId: attackId ?? null,
+            projectileIndex: projectileIndex ?? null, targetId: targetId ?? null,
+            ordinal: distinctHits, multiplier: traversalMultiplier });
+          if (metrics.recentTraversal.length > 12) metrics.recentTraversal.shift();
+        }),
       recordLauncherAttack: safe("record Launcher attack", ({ chainReactionActive } = {}) => {
         if (!encounter) return;
         encounter.data.launcherEffects.primaryAttacks++;

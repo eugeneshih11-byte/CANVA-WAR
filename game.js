@@ -884,12 +884,12 @@ function canAttack() {
     [RUN_PHASES.WAVE_ACTIVE, RUN_PHASES.BOSS_ACTIVE].includes(runPhase);
 }
 
-function createProjectile(direction, weaponSnapshot, attackId, metadata = {}) {
+function createProjectile(direction, weaponSnapshot, attackId, metadata = {}, originOffset = { x: 0, y: 0 }) {
   const playerCenterX = player.x + player.width / 2;
   const playerCenterY = player.y + player.height / 2;
   const bullet = {
-    x: playerCenterX - weaponSnapshot.bulletSize / 2,
-    y: playerCenterY - weaponSnapshot.bulletSize / 2,
+    x: playerCenterX - weaponSnapshot.bulletSize / 2 + originOffset.x,
+    y: playerCenterY - weaponSnapshot.bulletSize / 2 + originOffset.y,
     width: weaponSnapshot.bulletSize,
     height: weaponSnapshot.bulletSize,
     speed: weaponSnapshot.bulletSpeed,
@@ -898,6 +898,10 @@ function createProjectile(direction, weaponSnapshot, attackId, metadata = {}) {
     directionY: direction.y,
     pierceRemaining: weaponSnapshot.pierce,
     hitTargets: new Set(), weaponId: weaponSnapshot.id, attackId,
+    piercerEffects: weaponSnapshot.piercerEffects ? {
+      ...weaponSnapshot.piercerEffects,
+      kineticCascadeMultipliers: [...weaponSnapshot.piercerEffects.kineticCascadeMultipliers]
+    } : null,
     remainingRange: Number.isFinite(weaponSnapshot.maxRange) ? weaponSnapshot.maxRange : null,
     explosionRadius: weaponSnapshot.explosionRadius || 0, exploded: false,
     launcherEffects: weaponSnapshot.launcherEffects ? {
@@ -909,14 +913,26 @@ function createProjectile(direction, weaponSnapshot, attackId, metadata = {}) {
   bullets.push(bullet);
   observeTelemetry("recordShot");
   observeTelemetry("recordWeaponProjectile", () => ({ weaponId: weaponSnapshot.id }));
+  if (weaponSnapshot.id === "piercer" && weaponSnapshot.piercerEffects?.railArray) {
+    observeTelemetry("recordRailArrayProjectile", () => ({ attackId,
+      projectileIndex: metadata.projectileIndex }));
+  }
   return bullet;
 }
 
 function fireProjectileSet(weaponSnapshot, aimAngle, attackId, metadata = {}) {
-  const directions = Weapons.getProjectileDirections(aimAngle,
-    weaponSnapshot.projectileCount, weaponSnapshot.spreadDegrees);
-  for (const direction of directions) {
-    createProjectile(direction, weaponSnapshot, attackId, metadata);
+  const railArray = weaponSnapshot.id === "piercer" && weaponSnapshot.piercerEffects?.railArray === true;
+  const directions = railArray
+    ? Array.from({ length: weaponSnapshot.projectileCount }, () =>
+      Weapons.getProjectileDirections(aimAngle, 1, 0)[0])
+    : Weapons.getProjectileDirections(aimAngle, weaponSnapshot.projectileCount, weaponSnapshot.spreadDegrees);
+  for (let index = 0; index < directions.length; index++) {
+    const direction = directions[index];
+    const laneOffset = railArray
+      ? (index - (directions.length - 1) / 2) * weaponSnapshot.piercerEffects.railArrayLaneSpacing : 0;
+    createProjectile(direction, weaponSnapshot, attackId,
+      { ...metadata, projectileIndex: index },
+      { x: -direction.y * laneOffset, y: direction.x * laneOffset });
   }
 }
 
@@ -974,6 +990,10 @@ function fireWeaponAttack() {
   const attackId = nextWeaponAttackId++;
   observeTelemetry("recordAttack");
   observeTelemetry("recordWeaponAttack", () => ({ weaponId: weaponSnapshot.id, attackKind: weaponSnapshot.attackKind }));
+  if (weaponSnapshot.id === "piercer" && weaponSnapshot.piercerEffects?.railArray) {
+    observeTelemetry("recordRailArrayAttack", () => ({ attackId,
+      projectileCount: weaponSnapshot.projectileCount }));
+  }
   if (weaponSnapshot.id === "launcher") {
     observeTelemetry("recordLauncherAttack", () => ({ attackId,
       chainReactionActive: weaponSnapshot.launcherEffects?.chainReactionActive === true }));
@@ -1859,6 +1879,25 @@ function resolveBurstProjectileHit(bullet, target) {
   return { damage, execution: true, executionBonusDamage: bullet.damage };
 }
 
+function resolvePiercerProjectileHit(bullet) {
+  const profile = bullet?.piercerEffects;
+  const ordinal = bullet?.hitTargets instanceof Set ? bullet.hitTargets.size + 1 : 1;
+  if (bullet?.weaponId !== "piercer" || !profile?.kineticCascadeActive) {
+    return { damage: bullet.damage, kineticCascade: false, traversalOrdinal: ordinal,
+      traversalMultiplier: 1, baseProjectileDamage: bullet.damage };
+  }
+  const multipliers = profile.kineticCascadeMultipliers;
+  const multiplier = multipliers[Math.min(ordinal, multipliers.length) - 1] || 1;
+  return { damage: bullet.damage * multiplier, kineticCascade: multiplier > 1,
+    traversalOrdinal: ordinal, traversalMultiplier: multiplier, baseProjectileDamage: bullet.damage };
+}
+
+function resolveProjectileHit(bullet, target) {
+  return bullet?.weaponId === "piercer"
+    ? resolvePiercerProjectileHit(bullet)
+    : resolveBurstProjectileHit(bullet, target);
+}
+
 function scheduleDoubleTap(sequence) {
   const runtime = sequence?.runtime, profile = sequence?.weaponSnapshot?.burstEffects;
   if (!runtime || runtime.disposed || sequence.canceled || sequence.doubleTapScheduled || !profile?.doubleTapActive) return false;
@@ -1886,6 +1925,16 @@ function completeBurstProjectileHit(bullet, target, hitResolution, result, hpBef
     y: target.y + target.height / 2, elapsed: 0, duration: 0.18 });
   audioManager.play("executionRound", { world: true, pan: worldAudioPan(target), concurrency: 2 });
   scheduleDoubleTap(sequence);
+}
+
+function completePiercerProjectileHit(bullet, target, hitResolution, result, hpBefore) {
+  if (bullet?.weaponId !== "piercer" || !result.hit) return;
+  const baseDamageDealt = Math.min(hitResolution.baseProjectileDamage, hpBefore);
+  const bonusDamage = Math.max(0, result.damage - baseDamageDealt);
+  observeTelemetry("recordPiercerTraversal", () => ({ attackId: bullet.attackId,
+    projectileIndex: bullet.projectileIndex, targetId: target.runtimeId || (target === boss ? "boss-1" : null),
+    ordinal: hitResolution.traversalOrdinal, multiplier: hitResolution.traversalMultiplier,
+    bonusDamage }));
 }
 
 function consumeProjectileHit(bullet, target) {
@@ -2037,13 +2086,14 @@ function handleBulletEnemyCollisions() {
           if (explosion.waveCompleted || isChoosingUpgrade || isGameOver) return;
           break;
         }
-        const hitResolution = resolveBurstProjectileHit(bullet, enemy);
+        const hitResolution = resolveProjectileHit(bullet, enemy);
         const hpBefore = enemy.hp;
         const projectileRemoved = consumeProjectileHit(bullet, enemy);
         const result = damageRegularEnemy(enemy, hitResolution.damage,
           { weaponId: bullet.weaponId || "starter",
             hitKind: hitResolution.execution ? "execution" : bullet.burstFollowup ? "double-tap" : "projectile" });
         completeBurstProjectileHit(bullet, enemy, hitResolution, result, hpBefore);
+        completePiercerProjectileHit(bullet, enemy, hitResolution, result, hpBefore);
         if (result.waveCompleted || isChoosingUpgrade || isGameOver) return;
         if (projectileRemoved) break;
       }
@@ -2092,12 +2142,13 @@ function handleBulletBossCollisions() {
     if (!bullet.hitTargets.has(boss) && isOverlapping(bullet, boss)) {
       if (bullet.explosionRadius > 0) explodeProjectile(bullet);
       else {
-        const hitResolution = resolveBurstProjectileHit(bullet, boss);
+        const hitResolution = resolveProjectileHit(bullet, boss);
         const hpBefore = boss.hp;
         consumeProjectileHit(bullet, boss);
         const result = damageBoss(boss, hitResolution.damage, { weaponId: bullet.weaponId || "starter",
           hitKind: hitResolution.execution ? "execution" : bullet.burstFollowup ? "double-tap" : "projectile" });
         completeBurstProjectileHit(bullet, boss, hitResolution, result, hpBefore);
+        completePiercerProjectileHit(bullet, boss, hitResolution, result, hpBefore);
       }
 
       if (boss.hp <= 0) {
@@ -3089,6 +3140,27 @@ function closeBuildDetail() {
 // Combo through the real Level-Up selection path without a long XP grind.
 function preparePlaytestBuildDemoStep() {
   if (!isPlaytestMode || !isGameStarted || isChoosingUpgrade || isBuildDetailOpen) return false;
+  if (weaponSlots.some(slot => slot.weaponId === "piercer")) {
+    const steps = [
+      { id: "deep-bore", rank: 2 },
+      { id: "split-shot", rank: 2 },
+      { id: "rail-array", rank: 1 },
+      { id: "heavy-shot", rank: 2 }
+    ];
+    const next = steps.find(step => RunBuild.getRewardRank(buildState, step.id) < step.rank);
+    if (!next) {
+      comboNotificationTimer = 2.6;
+      comboNotification.textContent = "COMBO ACTIVE — KINETIC CASCADE";
+      comboNotification.hidden = false;
+      return true;
+    }
+    currentUpgradeChoices = [RunBuild.REWARDS[next.id]];
+    isChoosingUpgrade = true;
+    clearInput();
+    renderBuildPanel();
+    renderUpgradeChoices();
+    return true;
+  }
   if (weaponSlots.some(slot => slot.weaponId === "burst")) {
     const steps = [
       { id: "tight-cadence", rank: 2 },

@@ -696,3 +696,35 @@ test("Burst telemetry keeps committed sequence, Execution, follow-up, cancellati
   assert.equal(encounter.weaponMetrics.burst.projectiles, 4);
   assert.equal(encounter.weaponMetrics.burst.burstShots, 4);
 });
+
+test("Piercer telemetry bounds traversal detail and keeps Rail Array and Kinetic aggregates distinct", () => {
+  const telemetry = create();
+  telemetry.startRun({ player });
+  telemetry.startEncounter({ type: "wave", definition: wave, player });
+  telemetry.recordWeaponAttack({ weaponId: "piercer" });
+  telemetry.recordRailArrayAttack({ attackId: 77, projectileCount: 3 });
+  for (let index = 0; index < 3; index++) {
+    telemetry.recordWeaponProjectile({ weaponId: "piercer" });
+    telemetry.recordRailArrayProjectile({ attackId: 77, projectileIndex: index });
+  }
+  for (let ordinal = 1; ordinal <= 14; ordinal++) {
+    telemetry.recordPiercerTraversal({ attackId: 77, projectileIndex: 0,
+      targetId: 9000 + ordinal, ordinal, multiplier: ordinal === 1 ? 1 : 1.2,
+      bonusDamage: ordinal === 1 ? 0 : 0.5 });
+  }
+
+  const encounter = currentEncounter(telemetry);
+  assert.equal(encounter.weaponMetrics.piercer.attacks, 1);
+  assert.equal(encounter.weaponMetrics.piercer.projectiles, 3);
+  assert.deepEqual(encounter.piercerEffects, {
+    railArrayAttacks: 1,
+    railArrayProjectiles: 3,
+    kineticCascadeAmplifiedHits: 13,
+    kineticCascadeBonusDamage: 6.5,
+    maxDistinctTargetsHitBySingleProjectile: 14,
+    recentTraversal: Array.from({ length: 12 }, (_, index) => ({
+      attackId: 77, projectileIndex: 0, targetId: 9003 + index,
+      ordinal: 3 + index, multiplier: 1.2
+    }))
+  });
+});

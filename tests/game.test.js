@@ -906,7 +906,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="armoryView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="equipmentView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="gameView" class="app-view game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=20260917-burst-b1"/);
+  assert.match(indexSource, /href="style\.css\?v=20260919-piercer-b1"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1 id="hubTitle">CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
@@ -926,7 +926,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="reinforcementEdges"/);
   assert.match(indexSource, /id="audioMuteButton"/);
   assert.doesNotMatch(indexSource, /Choose your next destination|ROGUELITE OPERATIONS/);
-  const scriptVersion = "20260917-burst-b1";
+  const scriptVersion = "20260919-piercer-b1";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
   assert.deepEqual(scriptSources, ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js",
@@ -1647,6 +1647,94 @@ test("a piercing projectile cannot repeatedly damage the Boss", () => {
   assert.equal(game.bullets.length, 1);
 });
 
+test("Rail Array keeps three independent projectiles in symmetric parallel 18px lanes", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["piercer", "starter"]);
+  game.setBuildState({ sharedUpgrades: { "split-shot": 2 },
+    weaponModsByWeaponId: { piercer: { "deep-bore": 2 } },
+    weaponEvolutionByWeaponId: { piercer: "rail-array" } });
+  const centerY = game.player.y + game.player.height / 2;
+  game.setMouse(game.player.x + 400, centerY);
+  assert.equal(game.fireWeaponAttack(), true);
+  assert.equal(game.bullets.length, 3);
+  assert.deepEqual(Array.from(game.bullets, bullet => bullet.pierceRemaining), [6, 6, 6]);
+  assert.deepEqual(Array.from(game.bullets, bullet => bullet.damage), [1.3, 1.3, 1.3]);
+  for (const bullet of game.bullets) {
+    closeTo(bullet.directionX, 1);
+    closeTo(bullet.directionY, 0);
+  }
+  const baselineY = centerY - game.bullets[0].height / 2;
+  assert.deepEqual(Array.from(game.bullets, bullet => bullet.y - baselineY), [-18, 0, 18]);
+  assert.equal(new Set(game.bullets.map(bullet => bullet.x)).size, 1);
+  assert.notEqual(game.bullets[0].hitTargets, game.bullets[1].hitTargets);
+  assert.notEqual(game.bullets[1].hitTargets, game.bullets[2].hitTargets);
+  assert.equal(game.weaponRuntime.timeUntilNextShot, 1 / game.weapon.fireRate);
+});
+
+test("Kinetic Cascade uses one projectile Set for exact capped traversal damage and duplicate rejection", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["piercer"]);
+  game.setBuildState({ sharedUpgrades: { "heavy-shot": 2, "split-shot": 2 },
+    weaponModsByWeaponId: { piercer: { "deep-bore": 2 } },
+    weaponEvolutionByWeaponId: { piercer: "rail-array" },
+    discoveredCombos: ["kinetic-cascade"] });
+  game.setMouse(game.player.x + 400, game.player.y + game.player.height / 2);
+  game.fireWeaponAttack();
+  game.bullets.splice(1);
+  const bullet = game.bullets[0];
+  const targets = Array.from({ length: 5 }, (_, index) => makeEnemy(game, "tank", {
+    runtimeId: 8100 + index, x: bullet.x, y: bullet.y, width: 20, height: 20,
+    hp: 100, maxHp: 100, speed: 0
+  }));
+  game.enemies.push(...targets);
+  game.handleBulletEnemyCollisions();
+  const damageByTraversalOrder = targets.slice().reverse().map(target => 100 - target.hp);
+  [2.6, 3.12, 3.64, 4.16, 4.16].forEach((expected, index) =>
+    closeTo(damageByTraversalOrder[index], expected));
+  assert.equal(bullet.hitTargets.size, 5);
+  assert.equal(bullet.pierceRemaining, 1);
+
+  const hpAfterFirstTraversal = targets.map(target => target.hp);
+  game.handleBulletEnemyCollisions();
+  assert.deepEqual(targets.map(target => target.hp), hpAfterFirstTraversal);
+  assert.equal(bullet.hitTargets.size, 5);
+});
+
+test("Kinetic Cascade sibling projectiles restart traversal at 1.00x", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["piercer"]);
+  game.setBuildState({ sharedUpgrades: { "heavy-shot": 2, "split-shot": 2 },
+    weaponModsByWeaponId: { piercer: { "deep-bore": 2 } },
+    weaponEvolutionByWeaponId: { piercer: "rail-array" },
+    discoveredCombos: ["kinetic-cascade"] });
+  game.setMouse(game.player.x + 400, game.player.y + game.player.height / 2);
+  game.fireWeaponAttack();
+  game.bullets.splice(2);
+  const [projectileA, projectileB] = game.bullets;
+  Object.assign(projectileA, { x: 100, y: 100 });
+  Object.assign(projectileB, { x: 500, y: 500 });
+  const firstPair = [0, 1].map(index => makeEnemy(game, "tank", {
+    runtimeId: 8200 + index, x: 100, y: 100, width: 20, height: 20,
+    hp: 100, maxHp: 100, speed: 0
+  }));
+  game.enemies.push(...firstPair);
+  game.handleBulletEnemyCollisions();
+  assert.equal(projectileA.hitTargets.size, 2);
+  assert.equal(projectileB.hitTargets.size, 0);
+  firstPair.forEach(target => { target.x = 700; target.y = 700; });
+
+  Object.assign(projectileB, { x: 200, y: 200 });
+  const siblingFirst = makeEnemy(game, "tank", {
+    runtimeId: 8202, x: 200, y: 200, width: 20, height: 20,
+    hp: 100, maxHp: 100, speed: 0
+  });
+  game.enemies.push(siblingFirst);
+  game.handleBulletEnemyCollisions();
+  closeTo(100 - siblingFirst.hp, 2.6);
+  assert.equal(projectileA.hitTargets.size, 2);
+  assert.equal(projectileB.hitTargets.size, 1);
+});
+
 test("Upgrade cards show three numbered choices and card clicks select without firing", () => {
   const game = loadGame(); startGame(game);
   game.setUpgradeChoices(["rapid-fire", "heavy-shot", "split-shot"]);
@@ -1705,6 +1793,23 @@ test("rank-aware Reward cards show only the next Cluster Shell effect and preser
   card = game.elements.upgradeChoices.children[0];
   assert.equal(card.children[1].textContent, "Internal spacing 0.085s → 0.060s");
   assert.doesNotMatch(card.children[1].textContent, /0\.110s/);
+});
+
+test("Deep Bore Reward cards show only the immediate 4 to 5 then 5 to 6 transition", () => {
+  const game = loadGame(); startGame(game);
+  game.configureWeaponLoadout(["piercer"]);
+  game.setUpgradeChoices(["deep-bore"]);
+  let card = game.elements.upgradeChoices.children[0];
+  assert.equal(card.children[1].textContent, "Pierce 4 → 5");
+  assert.equal(card.children[2].textContent, "WEAPON-MOD · 0 / 2");
+  assert.doesNotMatch(card.textContent, /5 → 6/);
+  card.click();
+
+  game.setUpgradeChoices(["deep-bore"]);
+  card = game.elements.upgradeChoices.children[0];
+  assert.equal(card.children[1].textContent, "Pierce 5 → 6");
+  assert.equal(card.children[2].textContent, "WEAPON-MOD · 1 / 2");
+  assert.doesNotMatch(card.textContent, /4 → 5/);
 });
 
 test("keyboard 1, 2, and 3 select the matching displayed Upgrade", () => {
@@ -3499,6 +3604,31 @@ test("Launcher Build Detail and playtest route use production reward and Combo d
   assert.match(detailText, /Launcher — Cluster Shell II/);
   assert.match(detailText, /Launcher — Siege Bloom/);
   assert.match(detailText, /Chain Reaction/);
+});
+
+test("Piercer playtest route uses ranked cards, legal Rail Array, hidden discovery, and Build Detail", () => {
+  const game = loadGame({}, { search: "?playtest=1" }); startGame(game);
+  game.configureWeaponLoadout(["piercer", "starter"]);
+  const expectedChoices = ["deep-bore", "deep-bore", "split-shot", "split-shot",
+    "rail-array", "heavy-shot", "heavy-shot"];
+  for (let index = 0; index < expectedChoices.length; index++) {
+    game.listeners["playtestBuildDemoButton:click"]();
+    assert.deepEqual(Array.from(game.currentUpgradeChoices, reward => reward.id), [expectedChoices[index]]);
+    if (index === 0) assert.equal(game.elements.upgradeChoices.children[0].children[1].textContent, "Pierce 4 → 5");
+    if (index === 1) assert.equal(game.elements.upgradeChoices.children[0].children[1].textContent, "Pierce 5 → 6");
+    game.chooseUpgrade("1");
+    if (index < expectedChoices.length - 1) {
+      assert.equal(game.buildState.discoveredCombos.includes("kinetic-cascade"), false);
+    }
+  }
+  assert.equal(game.buildState.weaponEvolutionByWeaponId.piercer, "rail-array");
+  assert.deepEqual(Array.from(game.buildState.discoveredCombos), ["kinetic-cascade"]);
+  assert.equal(game.elements.comboNotification.textContent, "COMBO DISCOVERED — KINETIC CASCADE");
+  game.openBuildDetail();
+  const detailText = game.elements.buildDetailContent.textContent;
+  assert.match(detailText, /Piercer — Deep Bore II/);
+  assert.match(detailText, /Piercer — Rail Array/);
+  assert.match(detailText, /Kinetic Cascade/);
 });
 
 test("production starts Starter-only while playtest selection equips one or two of six", () => {

@@ -493,8 +493,8 @@ test("telemetry configuration snapshots immutable Weapon, Upgrade and Player bal
   assert.deepEqual(plain(configuration.playerBaseStats), { maxHp: 5, speed: 240, damage: 2 });
   assert.equal(configuration.technicalFireRateCap, 12);
   assert.deepEqual(Object.keys(configuration.buildContent.rewards).sort(),
-    ["cluster-shell", "cyclone-blade", "execution-protocol", "heavy-shot", "rapid-fire",
-      "siege-bloom", "split-shot", "swift-feet", "tight-cadence", "vitality", "wide-arc"]);
+    ["cluster-shell", "cyclone-blade", "deep-bore", "execution-protocol", "heavy-shot", "rail-array",
+      "rapid-fire", "siege-bloom", "split-shot", "swift-feet", "tight-cadence", "vitality", "wide-arc"]);
   assert.equal(configuration.buildContent.rewards["cyclone-blade"].category, "weapon-evolution");
   assert.equal(configuration.buildContent.rewards["wide-arc"].weaponId, "arc-blade");
   assert.equal(configuration.buildContent.rewards["cluster-shell"].weaponId, "launcher");
@@ -504,6 +504,9 @@ test("telemetry configuration snapshots immutable Weapon, Upgrade and Player bal
   assert.equal(configuration.buildContent.rewards["tight-cadence"].weaponId, "burst");
   assert.equal(configuration.buildContent.rewards["execution-protocol"].category, "weapon-evolution");
   assert.equal(configuration.buildContent.combos["double-tap"].hidden, true);
+  assert.equal(configuration.buildContent.rewards["deep-bore"].weaponId, "piercer");
+  assert.equal(configuration.buildContent.rewards["rail-array"].category, "weapon-evolution");
+  assert.equal(configuration.buildContent.combos["kinetic-cascade"].hidden, true);
   assert.equal(JSON.stringify(configuration).includes("function"), false);
 });
 
@@ -530,6 +533,38 @@ test("production Launcher hooks report primary, cluster, bloom, and Chain Reacti
   assert.equal(metrics.siegeBloomBlasts, 1);
   assert.equal(metrics.siegeBloomTargets, 1);
   assert.equal(game.pendingLauncherEffects.length, 0);
+});
+
+test("production Piercer hooks report parallel projectiles and per-projectile Kinetic traversal", () => {
+  const game = loadGame("?playtest=1"); game.start();
+  game.configureWeaponLoadout(["piercer"]);
+  game.setBuild({ sharedUpgrades: { "heavy-shot": 2, "split-shot": 2 },
+    weaponModsByWeaponId: { piercer: { "deep-bore": 2 } },
+    weaponEvolutionByWeaponId: { piercer: "rail-array" },
+    discoveredCombos: ["kinetic-cascade"] });
+  const randomCallsBefore = game.getRandomCalls();
+  primaryAttack(game);
+  game.bullets.splice(1);
+  const projectile = game.bullets[0];
+  game.enemies.push(...[1, 2, 3].map(index => enemy(game, {
+    runtimeId: 8800 + index, x: projectile.x, y: projectile.y,
+    hp: 100, maxHp: 100
+  })));
+  game.handleBulletEnemyCollisions();
+
+  const encounter = currentEncounter(game);
+  assert.equal(encounter.attackEvents, 1);
+  assert.equal(encounter.shotsFired, 3);
+  assert.equal(encounter.weaponMetrics.piercer.projectiles, 3);
+  assert.equal(encounter.weaponMetrics.piercer.hits, 3);
+  assert.equal(encounter.piercerEffects.railArrayAttacks, 1);
+  assert.equal(encounter.piercerEffects.railArrayProjectiles, 3);
+  assert.equal(encounter.piercerEffects.kineticCascadeAmplifiedHits, 2);
+  assert.ok(Math.abs(encounter.piercerEffects.kineticCascadeBonusDamage - 1.56) < 1e-12);
+  assert.equal(encounter.piercerEffects.maxDistinctTargetsHitBySingleProjectile, 3);
+  assert.deepEqual(plain(encounter.piercerEffects.recentTraversal.map(entry => entry.multiplier)),
+    [1, 1.2, 1.4]);
+  assert.equal(game.getRandomCalls(), randomCallsBefore);
 });
 
 test("production Burst hooks separate committed attacks, shots, Execution, Double Tap, and switching", () => {
