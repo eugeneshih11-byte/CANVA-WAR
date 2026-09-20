@@ -3537,7 +3537,7 @@ function initializePlaytestTelemetry() {
     });
     if (typeof PlaytestUI !== "undefined") {
       try {
-        playtestView = PlaytestUI.create(telemetry);
+        playtestView = PlaytestUI.create(telemetry, playtestBridge);
       } catch (error) {
         console.warn("Playtest report UI initialization failed.", error);
       }
@@ -3577,9 +3577,22 @@ function observeRunEnd(endReason, result, sourceState) {
     endReason, settlementSource: sourceState ? (endReason === RUN_END_REASONS.ABANDON ? "secured-checkpoint" : "current-run") : "none",
     result, sourceState, securedCheckpoint: runSettlementState.securedCheckpoint
   } }));
+  try {
+    playtestBridge?.submitCompletedRun(playtestTelemetry?.getSessionReport?.(), endReason);
+  } catch (error) {
+    console.warn("Playtest telemetry relay failed; gameplay continues.", error);
+  }
 }
 let playtestView = null;
 let playtestTelemetry = null;
+let playtestBridge = null;
+try {
+  if (typeof PlaytestBridge !== "undefined") {
+    playtestBridge = PlaytestBridge.create({ getTelemetry: () => playtestTelemetry });
+  }
+} catch (error) {
+  console.warn("Playtest telemetry bridge initialization failed; gameplay continues.", error);
+}
 function ensurePlaytestTelemetry() {
   if (!playtestTelemetry) playtestTelemetry = initializePlaytestTelemetry();
   return playtestTelemetry;

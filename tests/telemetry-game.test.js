@@ -63,7 +63,11 @@ function loadGame(search = "", options = {}) {
   };
   const context = {
     Date, URLSearchParams,
-    location: { search }, innerWidth: 1000, innerHeight: 800, devicePixelRatio: 1,
+    location: { search, hash: options.hash || "", pathname: "/CANVA-WAR/" },
+    history: { state: null, replaceState() {} },
+    opener: options.opener || null,
+    crypto: { randomUUID() { return "00000000-0000-4000-8000-000000000001"; } },
+    innerWidth: 1000, innerHeight: 800, devicePixelRatio: 1,
     console: { log() {}, warn(...args) { warnings.push(args); } },
     Math: Object.assign(Object.create(Math), { random() {
       randomCalls++;
@@ -86,7 +90,7 @@ function loadGame(search = "", options = {}) {
   context.globalThis = context;
   context.window = context;
   vm.createContext(context);
-  for (const file of ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js", "layout.js", "audio.js", "enemy-discovery.js", "telemetry.js"]) {
+  for (const file of ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js", "layout.js", "audio.js", "enemy-discovery.js", "telemetry.js", "playtest-bridge.js"]) {
     vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context, { filename: file });
   }
   options.beforeGame?.(context);
@@ -207,6 +211,24 @@ test("production Continuous Encounter exposes the same ten per-spawn types indep
   assert.equal(prototype.state.stageRuntime.definition, prototype.context.Encounters.PROTOTYPE_STAGES[0]);
   assert.equal(prototype.telemetry?.enabled ?? false, false);
   assert.equal(both.telemetry.enabled, true);
+});
+
+test("terminal telemetry observation relays exactly the newly completed Run after Settlement", () => {
+  const opener = { closed: false, messages: [], postMessage(message, origin) {
+    this.messages.push([plain(message), origin]);
+  } };
+  const game = loadGame("?playtest=1", { opener,
+    hash: "#session=CW-0123456789ABCDEF0123&testPlan=CW-GENERAL-MVP-01&build=0123456789abcdef0123456789abcdef01234567" });
+  game.start();
+  game.takeDamage(5);
+  assert.equal(opener.messages.length, 1);
+  const [message, origin] = opener.messages[0];
+  assert.equal(origin, game.context.PlaytestBridge.PORTAL_ORIGIN);
+  assert.equal(message.type, "canva-war:telemetry");
+  assert.equal(message.payload.uploadReason, "run-death");
+  assert.equal(message.payload.runs.length, 1);
+  assert.equal(message.payload.runs[0].completed, true);
+  assert.deepEqual(message.payload.runs[0].settlement.result, plain(game.state.lastSettlement));
 });
 
 test("production behavior hooks pause with gameplay and feed exact encounter telemetry", () => {

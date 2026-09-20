@@ -906,7 +906,7 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /<section id="armoryView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="equipmentView" class="app-view meta-view"[^>]*hidden>/);
   assert.match(indexSource, /<section id="gameView" class="app-view game-screen" hidden>/);
-  assert.match(indexSource, /href="style\.css\?v=20260919-scatter-b1"/);
+  assert.match(indexSource, /href="style\.css\?v=20260920-telemetry-bridge"/);
   assert.match(indexSource, /<title>CANVA WAR<\/title>/);
   assert.match(indexSource, /<h1 id="hubTitle">CANVA WAR<\/h1>/);
   assert.match(indexSource, /id="upgradeOverlay"/);
@@ -926,11 +926,11 @@ function testInitialPageMarkup() {
   assert.match(indexSource, /id="reinforcementEdges"/);
   assert.match(indexSource, /id="audioMuteButton"/);
   assert.doesNotMatch(indexSource, /Choose your next destination|ROGUELITE OPERATIONS/);
-  const scriptVersion = "20260919-scatter-b1";
+  const scriptVersion = "20260920-telemetry-bridge";
   const scriptSources = [...indexSource.matchAll(/<script src="([^"]+)"><\/script>/g)]
     .map(match => match[1]);
   assert.deepEqual(scriptSources, ["settlement.js", "battlefields.js", "encounters.js", "continuous-encounter.js", "behaviors.js", "weapons.js", "build.js",
-    "layout.js", "audio.js", "enemy-discovery.js", "telemetry.js", "telemetry-ui.js", "game.js"]
+    "layout.js", "audio.js", "enemy-discovery.js", "telemetry.js", "playtest-bridge.js", "telemetry-ui.js", "game.js"]
     .map(source => `${source}?v=${scriptVersion}`));
 }
 

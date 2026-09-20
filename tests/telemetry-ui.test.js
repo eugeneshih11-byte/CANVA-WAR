@@ -33,7 +33,7 @@ function reportContent(panel) {
     .map(node => [node.tagName, node.textContent]);
 }
 
-function loadUi(encounters) {
+function loadUi(encounters, bridge = null) {
   const body = new Element("body");
   const canvasArea = new Element("div");
   const gameView = new Element("main");
@@ -73,7 +73,7 @@ function loadUi(encounters) {
   vm.createContext(context);
   const source = fs.readFileSync(path.join(__dirname, "..", "telemetry-ui.js"), "utf8");
   vm.runInContext(source, context, { filename: "telemetry-ui.js" });
-  context.PlaytestUI.create(telemetry);
+  context.PlaytestUI.create(telemetry, bridge);
   const viewButton = descendants(body).find(node => node.tagName === "BUTTON" && node.textContent === "VIEW REPORT");
   assert.ok(viewButton);
   viewButton.click();
@@ -176,4 +176,27 @@ test("fixed report closes and reopens without either control changing report con
   fixture.viewButton.click();
   assert.equal(fixture.panel.hidden, true);
   assert.deepEqual(reportContent(fixture.panel), contentBefore);
+});
+
+test("relay controls expose live status, retry, and manual download actions", () => {
+  let retried = 0, downloaded = 0, listener = null;
+  const bridge = {
+    enabled: true,
+    getStatus() { return { queueCount: 1, message: "Telemetry queued (1)." }; },
+    subscribe(callback) { listener = callback; return () => {}; },
+    retry() { retried++; },
+    downloadPending() { downloaded++; }
+  };
+  const fixture = loadUi([encounter({ outcome: "clear" })], bridge);
+  const retry = fixture.nodes().find(node => node.tagName === "BUTTON" && node.textContent === "RETRY TELEMETRY");
+  const download = fixture.nodes().find(node => node.tagName === "BUTTON" && node.textContent === "DOWNLOAD TELEMETRY JSON");
+  const transport = fixture.nodes().find(node => node.className.includes("playtest-transport-status"));
+  assert.equal(retry.hidden, false);
+  assert.equal(download.hidden, false);
+  assert.equal(transport.textContent, "Telemetry queued (1).");
+  retry.click(); download.click();
+  assert.deepEqual({ retried, downloaded }, { retried: 1, downloaded: 1 });
+  listener({ queueCount: 0, message: "Telemetry acknowledged." });
+  assert.equal(retry.hidden, true);
+  assert.equal(transport.textContent, "Telemetry acknowledged.");
 });

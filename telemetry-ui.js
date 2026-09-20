@@ -1,6 +1,6 @@
 // Development UI only. It reads reports and never changes game state.
 (function (global) {
-  function create(telemetry) {
+  function create(telemetry, bridge = null) {
     if (!telemetry?.enabled) return null;
     const element = (tag, text, className) => {
       const node = document.createElement(tag);
@@ -26,9 +26,11 @@
     raw.setAttribute("aria-label", "Report JSON for manual copy");
     const status = element("p", "", "playtest-status");
     status.setAttribute("role", "status");
+    const transportStatus = element("p", "", "playtest-status playtest-transport-status");
+    transportStatus.setAttribute("role", "status");
     panel.append(closeReport, summary, raw);
     document.getElementById("gameView").append(panel);
-    controls.append(status);
+    controls.append(status, transportStatus);
     const warn = error => console.warn("Playtest report unavailable; gameplay continues.", error);
     const safe = action => (...args) => {
       try { return action(...args); } catch (error) { warn(error); return null; }
@@ -130,13 +132,22 @@
     });
     const sessionButton = button("COPY SESSION REPORT", () => copyReport(true));
     button("COPY RUN REPORT", () => copyReport(false));
+    const retryButton = button("RETRY TELEMETRY", () => bridge?.retry());
+    const downloadButton = button("DOWNLOAD TELEMETRY JSON", () => bridge?.downloadPending());
+    function refreshTransport(transport = bridge?.getStatus?.()) {
+      retryButton.hidden = !transport?.queueCount;
+      downloadButton.hidden = !bridge?.enabled;
+      transportStatus.textContent = transport?.message || "";
+    }
+    bridge?.subscribe?.(refreshTransport);
     const refresh = safe(() => {
       const run = telemetry.getCurrentRun();
-      controls.hidden = !run?.completed;
+      controls.hidden = !(run?.completed || bridge?.enabled);
       sessionButton.hidden = telemetry.getSessionReport().runs.length < 2;
       panel.hidden = true;
       raw.hidden = true;
       status.textContent = "";
+      refreshTransport();
     });
     global.CanvaWarPlaytest = Object.freeze({
       getCurrentRun: safe(() => telemetry.getCurrentRun()),
@@ -144,7 +155,7 @@
       copySessionReport: () => copyReport(true)
     });
     refresh();
-    return Object.freeze({ refresh });
+    return Object.freeze({ refresh, refreshTransport });
   }
   global.PlaytestUI = Object.freeze({ create });
 })(globalThis);
